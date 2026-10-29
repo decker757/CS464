@@ -92,9 +92,8 @@ export function compareCredits(left: string, right: string): number {
 }
 
 /**
- * `left` minus `right`, as a decimal string — the one piece of arithmetic in
- * this file (`addCredits` below is this, with the sign of `right` turned),
- * and exact.
+ * `left` minus `right`, as a decimal string — the only arithmetic in this
+ * file, and exact.
  *
  * A buy's profit is what it pays if it wins minus what the server charged
  * for it (#357), and both arrive as decimal strings. BigInt subtracts the
@@ -120,16 +119,6 @@ export function subtractCredits(left: string, right: string): string | null {
   const padded = digits.padStart(scaled.fractionDigits + 1, '0')
   const whole = padded.slice(0, padded.length - scaled.fractionDigits)
   return `${sign}${whole}.${padded.slice(padded.length - scaled.fractionDigits)}`
-}
-
-/**
- * `left` plus `right`, exactly: `left` less the negative of `right`, so the
- * digits are worked the one way `subtractCredits` works them. For a total of
- * several orders' reservations. Null on the same terms.
- */
-export function addCredits(left: string, right: string): string | null {
-  const { digits, isNegative } = splitSign(right)
-  return subtractCredits(left, isNegative ? digits : `-${digits}`)
 }
 
 // A fresh position's unrealized P&L is zero, not a gain — ADR 0018/[T-4] #24

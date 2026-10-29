@@ -74,20 +74,6 @@ async function registerTraderUnlessSeeded(username: string): Promise<Session> {
   }
 }
 
-// A blocking execFileSync (the promotion's `docker compose exec`) can outlive
-// uvicorn's keep-alive, so the next request goes out on a connection the
-// server has just closed and fails with ECONNRESET (#423's diagnosis; the
-// root-cause fix belongs to #492). Logging in again is harmless, so one retry
-// on a network failure keeps that from burning a one-shot seed.
-async function logInAfterPromotion(username: string): Promise<Session> {
-  try {
-    return await logInThroughApi(username)
-  } catch (failure) {
-    if (!(failure instanceof TypeError)) throw failure
-    return logInThroughApi(username)
-  }
-}
-
 /**
  * Registers, promotes by hand the way a first admin is made (ADR 0007), and
  * logs in again. Then checks the new token really is an admin's: the SQL step
@@ -95,8 +81,8 @@ async function logInAfterPromotion(username: string): Promise<Session> {
  */
 async function registerFirstAdmin(username: string, project: string): Promise<Session> {
   const trader = await registerTraderUnlessSeeded(username)
-  promoteToAdmin(trader.username)
-  const admin = await logInAfterPromotion(trader.username)
+  await promoteToAdmin(trader.username)
+  const admin = await logInThroughApi(trader.username)
   refuseUnlessAdmin(admin.accessToken, project)
   return admin
 }
@@ -114,20 +100,15 @@ async function registerPromotedAdmin(promoter: Session, username: string): Promi
 }
 
 // Settlement is safe to repeat: a repeat writes nothing and answers the same
-// 200 (ledger-service.md, "A repeat writes nothing here"). So one retry covers
-// a network failure, which the first run of this seed met: the backdate's
-// blocking execFileSync outlived uvicorn's keep-alive, and the settlement went
-// out on the connection the ledger had just closed (#423's diagnosis; the
-// root-cause fix belongs to #492). It also covers `503
-// settlement_unconfirmed`: the winners are paid and only telling
+// 200 (ledger-service.md, "A repeat writes nothing here"). The retry is for
+// `503 settlement_unconfirmed` — the winners are paid and only telling
 // market_service failed, and the same doc says to repeat the request.
 async function settle(admin: Session, marketId: string): Promise<void> {
   try {
     await settleMarket(admin, marketId)
   } catch (failure) {
-    const isNetworkFailure = failure instanceof TypeError
     const isUnconfirmed = failure instanceof Error && failure.message.includes('settlement_unconfirmed')
-    if (!isNetworkFailure && !isUnconfirmed) throw failure
+    if (!isUnconfirmed) throw failure
     await settleMarket(admin, marketId)
   }
 }
@@ -142,7 +123,7 @@ async function driveToItsEnd(demo: DemoMarket, market: Market, creator: Session,
   if (demo.endsAs === 'pending_resolution') return
   await approveOutcome(approver, market.id, proposed.proposal_id)
   if (demo.endsAs === 'approved') return
-  backdateDisputeWindow(market.id)
+  await backdateDisputeWindow(market.id)
   await settle(creator, market.id)
 }
 

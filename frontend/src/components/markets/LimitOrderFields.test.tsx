@@ -40,12 +40,14 @@ interface FieldsOptions {
   outcomeLabel?: string
   heldQuantity?: string | null
   sellableQuantity?: string | null
+  holdsNoneToSell?: boolean
+  onBuyInstead?: () => void
   onPlaced?: () => void
 }
 
 function fieldsFor({
   side = 'buy', outcomeId = 'o-yes', outcomeLabel = 'Yes', heldQuantity = '100.0000', sellableQuantity = heldQuantity,
-  onPlaced = vi.fn(),
+  holdsNoneToSell = false, onBuyInstead = vi.fn(), onPlaced = vi.fn(),
 }: FieldsOptions = {}) {
   return (
     <LimitOrderFields
@@ -53,6 +55,8 @@ function fieldsFor({
       side={side}
       outcomeId={outcomeId}
       outcomeLabel={outcomeLabel}
+      holdsNoneToSell={holdsNoneToSell}
+      onBuyInstead={onBuyInstead}
       heldQuantity={heldQuantity}
       sellableQuantity={sellableQuantity}
       onPlaced={onPlaced}
@@ -102,7 +106,7 @@ describe('LimitOrderFields', () => {
     await actor.click(screen.getByRole('button', { name: /place buy order/i }))
 
     // The limit in the units it was typed in.
-    expect(await screen.findByRole('status')).toHaveTextContent('Buy 50.0000 Yes at 0.3000: resting until the price reaches it.')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Buy 50.0000 Yes at 0.3000: resting until the price reaches it.'))
     expect(onPlaced).toHaveBeenCalled()
   })
 
@@ -122,7 +126,7 @@ describe('LimitOrderFields', () => {
     // The average fill price, not the limit: what it actually cost. Credits
     // per share, never a percentage (#247): it can pass 1.0000 on a skewed
     // book, which a percentage cannot show.
-    expect(await screen.findByRole('status')).toHaveTextContent('filled in full at 0.5125 credits/share.')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('filled in full at 0.5125 credits/share.'))
   })
 
   it('says how much filled when only part of the order did', async () => {
@@ -135,7 +139,7 @@ describe('LimitOrderFields', () => {
     await fillIn(actor, '0.6', '100')
     await actor.click(screen.getByRole('button', { name: /place buy order/i }))
 
-    expect(await screen.findByRole('status')).toHaveTextContent(/20\.5465 filled, the rest is resting/i)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/20\.5465 filled, the rest is resting/i))
   })
 
   it('refuses to send a limit price the ledger would answer invalid_request for', async () => {
@@ -192,6 +196,36 @@ describe('LimitOrderFields', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/3,970\.1250 short/i)
   })
 
+  // [T-6] #496's first criterion: the limit ticket makes the same offer the
+  // market ticket does. Before this, a trader could choose Sell on an outcome
+  // they hold none of, fill in a price and a quantity, and learn only from the
+  // ledger's refusal that it could never work.
+  it('says so and offers to buy when the trader holds none of the outcome', async () => {
+    renderFields({ side: 'sell', outcomeLabel: 'No', heldQuantity: '0.0000', holdsNoneToSell: true })
+
+    expect(screen.getByRole('status')).toHaveTextContent("You don't hold any No shares.")
+    expect(screen.getByRole('button', { name: 'Buy No instead' })).toBeInTheDocument()
+    // The form it replaces: a price and a quantity for shares the trader does
+    // not hold lead only to that refusal.
+    expect(screen.queryByLabelText('Limit price')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Quantity (shares)')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /place sell order/i })).not.toBeInTheDocument()
+  })
+
+  // The region is mounted before the sentence arrives in it: a screen reader
+  // announces a live region whose content changes, and may not announce one
+  // that appears with its content already there (#478's rule, now both
+  // tickets').
+  it('keeps the live region mounted and empty while the trader holds some', async () => {
+    const { rerenderWith } = renderFields({ side: 'sell', outcomeLabel: 'No', heldQuantity: '100.0000' })
+
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
+
+    rerenderWith({ side: 'sell', outcomeLabel: 'No', heldQuantity: '0.0000', holdsNoneToSell: true })
+
+    expect(screen.getByRole('status')).toHaveTextContent("You don't hold any No shares.")
+  })
+
   it('drops the placed line once the trader turns to the other side', async () => {
     // The line names a side and an outcome, so on the other side it would
     // describe an order the ticket is no longer set up for.
@@ -200,11 +234,13 @@ describe('LimitOrderFields', () => {
 
     await fillIn(actor, '0.3', '50')
     await actor.click(screen.getByRole('button', { name: /place buy order/i }))
-    await screen.findByRole('status')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/resting until the price reaches it/i))
 
     rerenderWith({ side: 'sell' })
 
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    // The ticket's one live region stays on the page ([T-6] #496), so it is
+    // asked to be empty rather than to be gone: no placed line of any kind.
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
   })
 
   it('drops a refusal once the trader picks the other outcome', async () => {

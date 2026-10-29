@@ -10,6 +10,7 @@ import { describeSharesToSell } from '../../utils/orderInput'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
 import { selectableClass } from '../ui/selectableClass'
+import HoldsNoneToSell from './HoldsNoneToSell'
 import LimitOrderFields from './LimitOrderFields'
 import TradePreviewSummary from './TradePreviewSummary'
 
@@ -34,10 +35,11 @@ interface TradingPanelProps {
   // where guessing zero here would stop a trader selling shares they own
   // because one request went missing.
   heldByOutcome: Record<string, string> | null
-  // What the trader's own open sell orders on this market hold back of each
-  // outcome; an outcome that is not a key has nothing held back. The ledger
-  // will not sell those shares a second time, so the check below and the
-  // Max button both stop at the rest.
+  // What the trader's own live sell orders on this market hold back of each
+  // outcome, as the portfolio reports it per position (#410); an outcome that
+  // is not a key has nothing held back. The ledger will not sell those shares
+  // a second time, so the check below and the Max button both stop at the
+  // rest.
   reservedSharesByOutcome: Record<string, string>
   // A trade committed, so the holding above is out of date — the page re-reads
   // it. The balance comes back through BalanceContext's own refetch.
@@ -98,11 +100,11 @@ interface TradeToCheck {
   reservedShares: string | undefined
 }
 
-/** What the trader's open sell orders hold back of a holding, never more
- *  than the holding itself. A sell order's fill lowers both, but they arrive
- *  on two reads, and a holdings read that lands before the orders list
- *  catches up would otherwise leave a negative to sell — in the line above
- *  the field and in the refusal under it alike. */
+/** What the trader's own live sell orders hold back of a holding, never more
+ *  than the holding itself. Both come off one portfolio row (#410), so the
+ *  clamp matters only if the ledger ever contradicts itself — and then it
+ *  keeps a negative out of the line above the field and the refusal under
+ *  it. */
 function sharesReservedOf(held: string, reserved: string | undefined): string | undefined {
   if (reserved === undefined) return undefined
   return compareCredits(reserved, held) > 0 ? held : reserved
@@ -217,7 +219,10 @@ export default function TradingPanel({
       setLastTradeFor(`${marketId}:${outcomeId}:${side}:`)
       setLastTrade({ side, quantity: result.quantity, outcomeLabel: selectedOutcome?.label ?? '', total: result.total })
       setQuantity('')
-      refetchBalance()
+      // `void`: BalanceContext's refetch catches its own failure, and the
+      // trade is already committed — the confirmation above does not wait on
+      // the new balance arriving (#551).
+      void refetchBalance()
       onTraded()
     } catch (err) {
       const code = errorCode(err)
@@ -243,7 +248,9 @@ export default function TradingPanel({
   // Keeps the outcome: the offer is to buy the one the trader was looking at.
   // The button that was clicked goes with the notice, so focus moves on to
   // the quantity field rather than dropping to the top of the page; flushSync
-  // renders that field first, so there is something to focus.
+  // renders that field first, so there is something to focus. On the limit
+  // ticket there is no quantity field here, and LimitOrderFields focuses its
+  // own first field once this returns.
   const handleBuyInstead = () => {
     flushSync(() => setSide('buy'))
     quantityInputRef.current?.focus()
@@ -314,6 +321,8 @@ export default function TradingPanel({
           outcomeLabel={selectedOutcome?.label ?? ''}
           heldQuantity={heldQuantity}
           sellableQuantity={sellableQuantity}
+          holdsNoneToSell={holdsNoneToSell}
+          onBuyInstead={handleBuyInstead}
           onPlaced={onOrderPlaced}
         />
       ) : (
@@ -324,21 +333,15 @@ export default function TradingPanel({
         </p>
       )}
 
-      {/* Always on the market ticket and empty until there is something to
-          say: a screen reader announces a live region's content changing,
-          and may not announce one that arrives with its content already in
-          it. */}
-      <div role="status">
-        {holdsNoneToSell && (
-          <p className="mb-3 text-sm text-smu-navy">You don't hold any {selectedOutcome?.label ?? ''} shares.</p>
-        )}
-      </div>
+      {/* Always on the market ticket: its live region is empty until there is
+          something to say. Shared with the limit ticket (#496). */}
+      <HoldsNoneToSell
+        holdsNone={holdsNoneToSell}
+        outcomeLabel={selectedOutcome?.label ?? ''}
+        onBuyInstead={handleBuyInstead}
+      />
 
-      {holdsNoneToSell ? (
-        <Button variant="primary" size="block" onClick={handleBuyInstead}>
-          Buy {selectedOutcome?.label ?? ''} instead
-        </Button>
-      ) : (
+      {holdsNoneToSell ? null : (
         <>
           <div className="mb-1.5 flex items-baseline justify-between">
             <label htmlFor="trade-quantity" className="block text-[13px] font-semibold text-smu-navy">

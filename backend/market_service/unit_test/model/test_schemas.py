@@ -86,6 +86,20 @@ def test_a_timestamp_with_an_offset_is_accepted(raw: str) -> None:
     assert MarketDraftRequest(**_payload(close_time=raw)).close_time is not None
 
 
+@pytest.mark.parametrize(
+    ("field", "raw"),
+    [
+        ("close_time", "9999-12-31T23:00:00-05:00"),
+        ("resolution_time", "0001-01-01T00:30:00+01:00"),
+    ],
+)
+def test_a_timestamp_with_no_instant_in_utc_is_refused(field: str, raw: str) -> None:
+    """asyncpg would overflow converting it to UTC: the 500 in #547."""
+    with pytest.raises(ValidationError) as caught:
+        MarketDraftRequest(**_payload(**{field: raw}))
+    assert [error["loc"] for error in caught.value.errors()] == [(field,)]
+
+
 def test_too_many_outcomes_are_refused() -> None:
     """A shape ceiling, not a business rule: b·ln(n) means a 200-outcome market
     would price fine and be unusable."""

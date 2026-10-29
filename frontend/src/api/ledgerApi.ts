@@ -35,6 +35,57 @@ export async function getMarketSnapshot(marketId: string): Promise<PriceState> {
   return res.data
 }
 
+// One batched item: the single snapshot's body, field for field, plus how much
+// the market has traded. Only the batch carries `credits_traded` — neither the
+// single snapshot nor the `price` frame does (ledger-service.md) — so it is
+// optional on the type a card renders from all three.
+export interface MarketSnapshot extends PriceState {
+  /**
+   * Each outcome's price seven days before the request, in the shape and
+   * order of `prices` ([X-1] #446). A card's change over the week is `price`
+   * minus the entry here with the same `outcome_id`.
+   *
+   * **Null when there is no change to measure**, which is three cases the card
+   * treats alike: the market has no trade that old (never traded, or only
+   * within the week — a book standing at its seed price is not a price anybody
+   * chose), or the ledger could not rebuild it. Equal to `prices` is different
+   * again: a real change of zero, not missing data.
+   */
+  prices_7d_ago: OutcomePrice[] | null
+  credits_traded: string
+}
+
+// The batch route's own limit (`MAX_SNAPSHOT_IDS` in the ledger's schemas.py).
+const MAX_SNAPSHOT_IDS = 200
+
+/**
+ * The current prices of many markets in one request ([X-1] #432).
+ *
+ * At most 200 ids go in one request — market_service's largest page, so one
+ * page of the browse list always fits. A 201st is a 422 naming `market_ids`
+ * rather than a short answer, so a longer list is sent here as several
+ * requests and answered as one: a browse list grows past 200 by Load more.
+ *
+ * A market is absent from the answer rather than erroring when this service
+ * holds no book for it — an unknown id, a draft, and a published market
+ * nobody has previewed or traded all read the same way. **This route opens no
+ * book**, so a cold published market stays absent however often it is asked
+ * for; `getMarketSnapshot` is what opens one, and from then on the batch
+ * answers it. An empty list is a request worth not sending.
+ */
+export async function getMarketSnapshots(marketIds: string[]): Promise<MarketSnapshot[]> {
+  const requests: Promise<MarketSnapshot[]>[] = []
+  for (let start = 0; start < marketIds.length; start += MAX_SNAPSHOT_IDS) {
+    const chunk = marketIds.slice(start, start + MAX_SNAPSHOT_IDS)
+    requests.push(
+      api.post<{ snapshots: MarketSnapshot[] }>(`${LEDGER_BASE}/ledger/markets/snapshots`, { market_ids: chunk })
+        .then(res => res.data.snapshots),
+    )
+  }
+  const answers = await Promise.all(requests)
+  return answers.flat()
+}
+
 export interface Balance {
   user_id: string
   account_id: string
@@ -86,6 +137,18 @@ export interface Position {
   outcome_id: string
   outcome_position: number
   quantity: string
+  /**
+   * The part of `quantity` the trader's own live sell orders of this outcome
+   * hold back, so a sell — instant or a new order — may take
+   * `quantity - reserved_shares` and no more (#410).
+   *
+   * Never null, unlike the same name on an `Order`. The ledger works it out
+   * from the order rows in the same query that reads `quantity`
+   * (ledger_service/service/portfolio.py), so both describe the same moment.
+   * `"0.0000"` where no live sell order holds any, and on a settled row,
+   * since no order on a market with a result is live.
+   */
+  reserved_shares: string
   cost_basis: string
   average_entry_price: string
   // The outcome's marginal price, informational only — not the basis for `value`.

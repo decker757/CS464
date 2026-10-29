@@ -21,7 +21,7 @@ test('an admin settles an approved market once its dispute window has passed, an
   // The window is a hard-coded five minutes past DISPUTE_WINDOW_SECONDS
   // (ADR 0019), too slow to wait out in CI — move the stored column into the
   // past instead of waiting for it.
-  backdateDisputeWindow(market.id)
+  await backdateDisputeWindow(market.id)
 
   await logIn(page, admin)
   await page.goto('/admin/markets')
