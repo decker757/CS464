@@ -23,9 +23,30 @@ export async function logOut(page: Page, session: Session): Promise<void> {
  * The card on a markets list whose question is `question`. Two levels up from
  * the question's text, which is how the admin list and the proposals list
  * both nest it today; a wrapper around the question breaks this.
+ *
+ * The **last** match, because the browse list shows a market twice once it is
+ * in one of the curated bands above the list ([X-1] #448) — once in the band
+ * and once in the full list below, which is the point of a band being a
+ * shortcut into the list rather than a partition of it. The full list is
+ * always the later of the two and always holds every market on the page, so
+ * the last match is the one a test can rely on. Every other list shows a
+ * market once, where last and only are the same card.
  */
 export function marketCard(page: Page, question: string): Locator {
-  return page.getByText(question, { exact: true }).locator('xpath=../..')
+  return page.getByText(question, { exact: true }).locator('xpath=../..').last()
+}
+
+/**
+ * The browse page's full market list, apart from the curated bands above it
+ * ([X-1] #448). Use it to count what the list holds: a market in a band is on
+ * screen twice on purpose, so a count across the page is not the list's.
+ *
+ * Only matches when a band is shown: the list takes its "Browse all" heading
+ * only then, so a page with no band has no region to scope to — and needs
+ * none, because nothing is on screen twice there.
+ */
+export function browseList(page: Page): Locator {
+  return page.getByRole('region', { name: 'Browse all' })
 }
 
 /**
@@ -92,6 +113,15 @@ export interface Screen {
   heading: string
 }
 
+/** How wide the page is drawn (`scrollWidth`) beside how wide the window
+ * shows it (`clientWidth`): any more than that scrolls sideways. */
+export async function documentWidth(page: Page): Promise<{ scrollWidth: number; clientWidth: number }> {
+  return page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }))
+}
+
 /**
  * Opens each screen at one viewport size and returns the ones the page
  * scrolls sideways on, with how wide the document came out, so a failure
@@ -107,10 +137,7 @@ export async function overflowingScreens(page: Page, screens: Screen[], viewport
     // "Loading …" line, before the list or table that might be too wide, so
     // the measurement waits for every such line to go.
     await expect(page.getByText(/^Loading\b/)).toHaveCount(0)
-    const { scrollWidth, clientWidth } = await page.evaluate(() => ({
-      scrollWidth: document.documentElement.scrollWidth,
-      clientWidth: document.documentElement.clientWidth,
-    }))
+    const { scrollWidth, clientWidth } = await documentWidth(page)
     if (scrollWidth > clientWidth) overflowing.push(`${screen.path} at ${viewport.width}px is ${scrollWidth}px wide`)
   }
   return overflowing

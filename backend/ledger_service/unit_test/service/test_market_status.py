@@ -475,30 +475,24 @@ async def test_a_status_that_is_not_a_string_is_unavailable_not_closed(
         await _gate(session, upstream)
 
 
-async def test_a_body_without_settleable_is_unavailable_at_the_gate(
-    session: AsyncSession,
+@pytest.mark.parametrize(
+    "field",
+    [
+        # DECISIONS.md, "parsed strictly on every pull".
+        pytest.param("settleable", id="settleable"),
+        # ADR 0025, ruling D, which is why market_service deploys it first.
+        pytest.param("voidable", id="voidable"),
+    ],
+)
+async def test_a_body_without_a_resolution_flag_is_unavailable_at_the_gate(
+    session: AsyncSession, field: str
 ) -> None:
-    """DECISIONS.md, "parsed strictly on every pull": the trade path reads no
-    settlement field, and still refuses a body missing one. The status is
-    "open", so the missing key is the only thing that can refuse it.
+    """The trade path reads neither flag, and still refuses a body missing
+    one. The status is "open", so the missing key is the only thing that can
+    refuse it.
     """
     upstream = _Upstream()
-    del upstream.body["settleable"]
-
-    with pytest.raises(_errors().MarketTermsUnavailable):
-        await _gate(session, upstream)
-
-
-async def test_a_body_without_voidable_is_unavailable_at_the_gate(
-    session: AsyncSession,
-) -> None:
-    """ADR 0025, ruling D: the trade path reads no void field, and still
-    refuses a body missing `voidable`, which is why market_service deploys it
-    first. The status is "open", so the missing key is the only thing that
-    can refuse it.
-    """
-    upstream = _Upstream()
-    del upstream.body["voidable"]
+    del upstream.body[field]
 
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _gate(session, upstream)

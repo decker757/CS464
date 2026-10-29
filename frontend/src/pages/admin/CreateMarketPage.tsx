@@ -343,7 +343,7 @@ export default function CreateMarketPage() {
       // again; and only once, because `existingMarketId` is a dependency of
       // this callback and is set by the time the next save runs.
       if (!existingMarketId) {
-        navigate(`/admin/markets/${res.market.id}/edit`, { replace: true })
+        await navigate(`/admin/markets/${res.market.id}/edit`, { replace: true })
       }
       return res
     } catch (err) {

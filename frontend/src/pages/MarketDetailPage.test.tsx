@@ -44,15 +44,20 @@ const baseMarket = {
 }
 
 // The trader's own positions, which the page reads for the sell clamp
-// (#357). `position` carries only the three fields the page joins on.
-function portfolio(positions: { market_id: string; outcome_id: string; quantity: string }[] = []) {
+// (#357). `position` carries only the fields the page reads: the three it
+// joins on, and `reserved_shares` where a test holds some back.
+function portfolio(
+  positions: { market_id: string; outcome_id: string; quantity: string; reserved_shares?: string }[] = [],
+) {
   return {
     user_id: '1',
     account_id: 'acct-1',
     balance: '1000.0000',
     positions_value: '0.0000',
     net_worth: '1000.0000',
-    positions: positions.map(p => ({ ...p, outcome_position: 0, cost_basis: '0.0000', average_entry_price: '0.5000', price: '0.5000', value: '0.0000', unrealized_pnl: '0.0000', result: null, payout: null, state_version: 1 })),
+    // `reserved_shares` defaults to nothing held back, and is never null on a
+    // position (ledger-service.md) — unlike the same name on an order.
+    positions: positions.map(p => ({ reserved_shares: '0.0000', ...p, outcome_position: 0, cost_basis: '0.0000', average_entry_price: '0.5000', price: '0.5000', value: '0.0000', unrealized_pnl: '0.0000', result: null, payout: null, state_version: 1 })),
   }
 }
 
@@ -1026,17 +1031,19 @@ describe('MarketDetailPage', () => {
       reReadAfterFill.release()
     })
 
-    it('gives the trading panel what the sell orders on this market reserve, so it offers only the rest', async () => {
-      // The join is the page's: the holdings come from the portfolio, the
-      // reservations from the open-orders list. A buy reserves no shares, and
-      // an order on another market belongs to that market's page.
+    // #410: the panel offers `quantity - reserved_shares`, and both figures
+    // come from the portfolio row. The ledger sums the trader's live sell
+    // orders itself, in the statement that reads the position — so the page no
+    // longer adds up the orders list, and the orders here deliberately say a
+    // different thing from the portfolio to prove which one is read.
+    it('offers only the part of the holding the portfolio says is not reserved', async () => {
       server.use(
-        http.get(PORTFOLIO, () => HttpResponse.json(portfolio([{ market_id: 'mkt-abc', outcome_id: 'o1', quantity: '6.0000' }]))),
+        http.get(PORTFOLIO, () => HttpResponse.json(portfolio([
+          { market_id: 'mkt-abc', outcome_id: 'o1', quantity: '6.0000', reserved_shares: '2.0000' },
+        ]))),
+        // Were the page still summing these, it would offer 4.5000.
         http.get(ORDERS, () => HttpResponse.json({ orders: [
           restingOrder({ id: 'ord-1', side: 'sell', limit_price: '0.7000', quantity: '1.5000', reserved_credits: null, reserved_shares: '1.5000' }),
-          restingOrder({ id: 'ord-2', side: 'sell', limit_price: '0.8000', quantity: '0.5000', reserved_credits: null, reserved_shares: '0.5000' }),
-          restingOrder({ id: 'ord-3', market_id: 'mkt-other', side: 'sell', reserved_credits: null, reserved_shares: '3.0000' }),
-          restingOrder({ id: 'ord-4' }),
         ] })),
       )
       const actor = userEvent.setup()
@@ -1044,6 +1051,23 @@ describe('MarketDetailPage', () => {
       await actor.click(await screen.findByRole('button', { name: /^sell$/i }))
 
       await waitFor(() => expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 4.0000 of your 6.0000 shares'))
+    })
+
+    // #451 / #478: a trader whose shares are all held back still holds them,
+    // so the line says so rather than "You don't hold any", which would offer
+    // to buy shares they already own.
+    it('says a fully reserved holding can sell nothing, not that none is held', async () => {
+      server.use(
+        http.get(PORTFOLIO, () => HttpResponse.json(portfolio([
+          { market_id: 'mkt-abc', outcome_id: 'o1', quantity: '6.0000', reserved_shares: '6.0000' },
+        ]))),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+      await actor.click(await screen.findByRole('button', { name: /^sell$/i }))
+
+      await waitFor(() => expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 0.0000 of your 6.0000 shares'))
+      expect(screen.queryByText(/don't hold any/i)).not.toBeInTheDocument()
     })
 
     it('re-reads the balance and the holdings, not only the orders, after a reconnect', async () => {
@@ -1155,6 +1179,230 @@ describe('MarketDetailPage — price history', () => {
     const legend = screen.getByRole('list', { name: 'Outcomes' })
     expect(within(legend).getByText('Yes')).toBeInTheDocument()
     expect(within(legend).getByText('No')).toBeInTheDocument()
+  })
+
+  // [T-5] #495's first criterion: the chart adds a point for every live price
+  // frame. Before this, Alice's price cards moved on Bob's trade and her chart
+  // did not, with nothing to say it was behind.
+  it('adds a point when another trader moves the price', async () => {
+    let wsClient: { send(data: string): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => HttpResponse.json(priceHistory('mkt-abc', threeTrades))),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    // Somebody else's trade, arriving as a frame on this page's socket.
+    await act(async () => {
+      wsClient?.send(JSON.stringify({
+        type: 'price',
+        market_id: 'mkt-abc',
+        state_version: 3,
+        prices: [
+          { outcome_id: 'o1', position: 0, price: '0.7000' },
+          { outcome_id: 'o2', position: 1, price: '0.3000' },
+        ],
+        occurred_at: '2026-09-16T09:00:00Z',
+      }))
+    })
+
+    expect(await screen.findByText(/showing all 4 price points/i)).toBeInTheDocument()
+  })
+
+  // "A point for every live price frame", not only the newest: the socket
+  // hook keeps one snapshot per market, so a chart that drew only that
+  // snapshot lost the first of two trades the moment the second arrived.
+  it('keeps a point for each of two trades by others', async () => {
+    let wsClient: { send(data: string): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => HttpResponse.json(priceHistory('mkt-abc', threeTrades))),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    act(() => wsClient!.send(JSON.stringify({ type: 'price', ...priceFrame(3, '0.7000', '0.3000') })))
+    expect(await screen.findByText(/showing all 4 price points/i)).toBeInTheDocument()
+
+    act(() => wsClient!.send(JSON.stringify({ type: 'price', ...priceFrame(4, '0.8000', '0.2000') })))
+    expect(await screen.findByText(/showing all 5 price points/i)).toBeInTheDocument()
+  })
+
+  // #495's second, from the other side: "never goes backwards". A read begun
+  // before a trade can land after that trade's frame, and must not take the
+  // trade's point off the chart when it does.
+  it('keeps a frame that arrived while the history was still being read', async () => {
+    let releaseHistory = () => {}
+    const historyHeld = new Promise<void>(resolve => { releaseHistory = resolve })
+    let wsClient: { send(data: string): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, async () => {
+        await historyHeld
+        return HttpResponse.json(priceHistory('mkt-abc', threeTrades))
+      }),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    expect(await screen.findByText(/loading price history/i)).toBeInTheDocument()
+    await waitFor(() => expect(wsClient).not.toBeNull())
+
+    act(() => wsClient!.send(JSON.stringify({ type: 'price', ...priceFrame(3, '0.7000', '0.3000') })))
+    await waitFor(() => expect(screen.getByLabelText('Yes price')).toHaveTextContent('70.0%'))
+
+    // The read answers with what the ledger held before the trade.
+    releaseHistory()
+    expect(await screen.findByText(/showing all 4 price points/i)).toBeInTheDocument()
+  })
+
+  // #495's second: a frame whose state_version the chart already holds is
+  // skipped, so a refetch and the frames around it never draw a trade twice.
+  it('ignores a frame for a trade already on the chart', async () => {
+    let wsClient: { send(data: string): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => HttpResponse.json(priceHistory('mkt-abc', threeTrades))),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    // state_version 2 is the newest point the history already carries. A
+    // later `occurred_at` must not make it look like a new trade: the same
+    // trade carries one time on its point and another on its frame
+    // (ledger-service.md, "Dedupe on state_version, never on time").
+    await act(async () => {
+      wsClient?.send(JSON.stringify({
+        type: 'price',
+        market_id: 'mkt-abc',
+        state_version: 2,
+        prices: [
+          { outcome_id: 'o1', position: 0, price: '0.5744' },
+          { outcome_id: 'o2', position: 1, price: '0.4256' },
+        ],
+        occurred_at: '2026-09-15T09:00:09Z',
+      }))
+    })
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+
+    expect(screen.getByText(/showing all 3 price points/i)).toBeInTheDocument()
+  })
+
+  // #495's third: frames published while a dropped connection was away are
+  // gone (ADR 0010), so a reconnect re-reads the history rather than trusting
+  // the frames it missed.
+  it('re-reads the history after a reconnect', async () => {
+    let reads = 0
+    let dropped = false
+    let wsClient: { close(code?: number): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => {
+        reads += 1
+        // Only a read after the drop sees the trade made while the socket was
+        // away. Keyed on the drop and not on the read count, because the
+        // first ack re-reads too: a count would hand that read the trade, and
+        // the test would pass with no re-read on the reconnect at all.
+        const points = dropped ? [...threeTrades, pricePoint(3, '2026-09-16T09:00:00Z', '0.7000', '0.3000')] : threeTrades
+        return HttpResponse.json(priceHistory('mkt-abc', points))
+      }),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    // The mount's read and the first ack's, both before the drop.
+    await waitFor(() => expect(reads).toBe(2))
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    // An abnormal close, so the hook reconnects and subscribes again.
+    dropped = true
+    act(() => wsClient!.close(1006))
+
+    // The first retry waits one second. Three is room for it and still under
+    // the test's own five, so a missing re-read fails here and not as a timeout.
+    expect(await screen.findByText(/showing all 4 price points/i, undefined, { timeout: 3000 })).toBeInTheDocument()
+  })
+
+  // The re-read on a reconnect is a top-up, not the chart's only source: if it
+  // fails, the history already drawn stays, as the price cards keep their last
+  // price through a drop (#37 AC 7). Swapping it for an error would take the
+  // chart off the page over a request the trader never asked for.
+  it('keeps the chart when the re-read after a reconnect fails', async () => {
+    let reads = 0
+    let dropped = false
+    let wsClient: { close(code?: number): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => {
+        reads += 1
+        if (dropped) {
+          return HttpResponse.json({ error: { code: 'internal_error', message: 'Boom.' } }, { status: 500 })
+        }
+        return HttpResponse.json(priceHistory('mkt-abc', threeTrades))
+      }),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    await waitFor(() => expect(reads).toBe(2))
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    dropped = true
+    act(() => wsClient!.close(1006))
+    await waitFor(() => expect(reads).toBe(3), { timeout: 3000 })
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+
+    expect(screen.getByText(/showing all 3 price points/i)).toBeInTheDocument()
+    expect(screen.queryByText('Failed to load price history.')).not.toBeInTheDocument()
   })
 
   it('charts the history of a market that has stopped trading', async () => {

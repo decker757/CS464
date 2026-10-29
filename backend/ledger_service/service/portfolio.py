@@ -122,6 +122,9 @@ async def _read(
         market_id=MarketOutcome.market_id,
         outcome_id=MarketOutcome.outcome_id,
     ).scalar_subquery()
+    # The caller's own entries, picked out as `_sum_of_user_entries` picks
+    # them, then narrowed to one refund and read as its leg. Its twin: a
+    # change to which entries count as the user's belongs in both.
     void_refund = (
         select(Entry.amount)
         .join(Account, Account.id == Entry.account_id)

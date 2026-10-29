@@ -99,6 +99,9 @@ _SETTLED = "settled"
 # `refund_key_column`, so the portfolio's join and the void build one string.
 _REFUND_KEY_PREFIX = "void-refund"
 
+# The start of the residue's key, which `settlement.residue_of` finishes.
+_RESIDUE_KEY_PREFIX = "void-residue"
+
 
 @dataclass(frozen=True)
 class VoidResult:
@@ -115,26 +118,6 @@ class VoidResult:
     total_refunded: Decimal
     refunds_cut: bool
     residue: Decimal
-
-
-def refund_key(market_id: uuid.UUID, *, user_id: uuid.UUID, outcome_id: uuid.UUID) -> str:
-    """One position's refund's key, which the portfolio joins on (DECISIONS.md,
-    "A voided row's `payout` is its refund")."""
-    return f"{_REFUND_KEY_PREFIX}:{market_id}:{user_id}:{outcome_id}"
-
-
-def refund_key_column(
-    market_id: ColumnElement[uuid.UUID],
-    *,
-    user_id: uuid.UUID,
-    outcome_id: ColumnElement[uuid.UUID],
-) -> ColumnElement[str]:
-    """`refund_key` in SQL, for a statement that joins a held outcome's row to
-    its refund. Postgres writes a uuid as text exactly as `str(uuid)` does,
-    lower case with hyphens, so the two build the same key."""
-    return func.concat(
-        f"{_REFUND_KEY_PREFIX}:", market_id, ":", str(user_id), ":", outcome_id
-    )
 
 
 def _result_of(
@@ -209,7 +192,7 @@ async def _list_trades(
     return [_void_trade_of(row, position_of) for row in rows]
 
 
-async def _positions_of(
+async def _list_positions(
     session: AsyncSession, market_id: uuid.UUID, position_of: Mapping[uuid.UUID, int]
 ) -> dict[HolderOutcome, Decimal]:
     """Every position row in the market, by holder and outcome position."""
@@ -246,7 +229,7 @@ async def _guarded_replay(
     position_of = _position_by_outcome(outcomes)
     try:
         replay, trades = await _replay_lots(session, book, position_of)
-        positions = await _positions_of(session, book.market_id, position_of)
+        positions = await _list_positions(session, book.market_id, position_of)
         refuse_if_replay_disagrees(
             replay,
             trades,
@@ -348,7 +331,7 @@ async def _answer_recorded(
     )
 
 
-async def _holder_accounts(
+async def _list_holder_accounts(
     session: AsyncSession, user_ids: set[uuid.UUID]
 ) -> dict[uuid.UUID, Account]:
     """The USER accounts of these holders, which their trades opened."""
@@ -395,7 +378,9 @@ async def _movements_of(
 ) -> list[Movement]:
     """One refund per position above zero, ordered by holder and outcome,
     then the residue unless it is exactly zero."""
-    holders = await _holder_accounts(session, {user_id for user_id, _ in cut.refunds})
+    holders = await _list_holder_accounts(
+        session, {user_id for user_id, _ in cut.refunds}
+    )
     movements = [
         _refund_of(
             market_id,
@@ -416,10 +401,30 @@ async def _movements_of(
                 pool=pool,
                 platform=platform,
                 kind=TransactionKind.VOID_RESIDUE,
-                key_prefix="void-residue",
+                key_prefix=_RESIDUE_KEY_PREFIX,
             )
         )
     return movements
+
+
+def refund_key(market_id: uuid.UUID, *, user_id: uuid.UUID, outcome_id: uuid.UUID) -> str:
+    """One position's refund's key, which the portfolio joins on (DECISIONS.md,
+    "A voided row's `payout` is its refund")."""
+    return f"{_REFUND_KEY_PREFIX}:{market_id}:{user_id}:{outcome_id}"
+
+
+def refund_key_column(
+    market_id: ColumnElement[uuid.UUID],
+    *,
+    user_id: uuid.UUID,
+    outcome_id: ColumnElement[uuid.UUID],
+) -> ColumnElement[str]:
+    """`refund_key` in SQL, for a statement that joins a held outcome's row to
+    its refund. Postgres writes a uuid as text exactly as `str(uuid)` does,
+    lower case with hyphens, so the two build the same key."""
+    return func.concat(
+        f"{_REFUND_KEY_PREFIX}:", market_id, ":", str(user_id), ":", outcome_id
+    )
 
 
 async def void_market(

@@ -1,35 +1,13 @@
 import { act, configure, renderHook, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { FakeSocket, latestSocket as latest } from '../test/fakeSocket'
 import { server } from '../test/server'
 import { useMarketPrices } from './useMarketPrices'
 
 const LEDGER_BASE = 'http://localhost:8003'
 const SNAPSHOT = `${LEDGER_BASE}/ledger/markets/:id/snapshot`
 
-// A stand-in for the browser WebSocket that the test drives by hand.
-class FakeSocket {
-  static OPEN = 1
-  static instances: FakeSocket[] = []
-  readyState = 0
-  sent: { action: string; market_id: string }[] = []
-  onopen: (() => void) | null = null
-  onmessage: ((e: { data: string }) => void) | null = null
-  onclose: ((e: { code: number }) => void) | null = null
-  constructor() { FakeSocket.instances.push(this) }
-  send(data: string) { this.sent.push(JSON.parse(data)) }
-  // A browser fires `close` asynchronously, for our own close() as well as the server's.
-  close() {
-    if (this.readyState === 3) return
-    this.readyState = 3
-    setTimeout(() => this.onclose?.({ code: 1005 }), 0)
-  }
-  open() { this.readyState = 1; this.onopen?.() }
-  receive(msg: object) { this.onmessage?.({ data: JSON.stringify(msg) }) }
-  serverClose(code: number) { this.readyState = 3; this.onclose?.({ code }) }
-}
-
-const latest = () => FakeSocket.instances[FakeSocket.instances.length - 1]
 
 function priceState(version: number, yes: string, no: string, marketId = 'm1') {
   return {
