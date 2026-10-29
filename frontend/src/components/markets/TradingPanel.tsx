@@ -59,8 +59,7 @@ interface TradingPanelProps {
 // the same — two same-shaped rows a few pixels apart disagreeing about what
 // "on" looks like — and `ToggleRow` answers it by giving each row its own
 // heading, so they read as two questions and not as one control in two
-// halves. (#430 found it beside an outcome row, which is now the page's price
-// blocks, #429.)
+// halves.
 function sideToggleClass(active: boolean, activeColor: 'success' | 'danger'): string {
   // Text reads the `-strong` tone, not the plain one: the plain tone on its
   // own 10% tint is 4.14–4.39:1, short of AA's 4.5:1 for text this size
@@ -184,7 +183,7 @@ export default function TradingPanel({
   const heldQuantity = heldByOutcome === null ? null : (heldByOutcome[outcomeId] ?? '0')
   // Asked of the selected outcome and of a holding that has landed, so the
   // Sell toggle itself never changes: it stays pressable through a load and
-  // through every outcome toggle, and only the space below it says why there
+  // through every change of outcome, and only the space below it says why there
   // is nothing to sell (#451). Null is unknown, not none, so it keeps the
   // quantity field. So does a holding that open sell orders hold back in
   // full: the trader owns those shares, and the line over the field says
