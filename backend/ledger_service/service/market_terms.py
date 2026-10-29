@@ -225,6 +225,52 @@ def _parse(market_id: uuid.UUID, body: object) -> MarketTerms:
         raise MarketTermsUnavailable from exc
 
 
+async def _confirm(
+    market_id: uuid.UUID,
+    step: str,
+    *,
+    body: dict[str, str] | None,
+    access_token: str,
+    terms_client: httpx.AsyncClient,
+    error: type[LedgerError],
+    action: str,
+) -> None:
+    """Send market_service's last step, `POST /markets/{market_id}/{step}`,
+    with `body` as JSON if there is one and the administrator's token.
+
+    Returns `None` on a `200` and raises `error` on anything else, including
+    `httpx.RequestError`. The response body is never read, and the 404 cache
+    is neither consulted nor fed: a 404 here comes from a market whose book
+    exists. Logs the failure at ERROR, naming `action`, the market and what
+    came back, because the money has moved and the market stays unmarked
+    until a person repeats the request. DECISIONS.md,
+    "`market_terms.mark_settled` accepts only a `200`".
+    """
+    try:
+        response = await terms_client.post(
+            f"/markets/{market_id}/{step}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=body,
+        )
+    except httpx.RequestError as exc:
+        _log.error(
+            "%s of market %s was not confirmed: %s",
+            action,
+            market_id,
+            type(exc).__name__,
+        )
+        raise error from exc
+
+    if response.status_code != 200:
+        _log.error(
+            "%s of market %s was not confirmed: market_service answered %s",
+            action,
+            market_id,
+            response.status_code,
+        )
+        raise error
+
+
 def open_client(
     *, transport: httpx.AsyncBaseTransport | None = None
 ) -> httpx.AsyncClient:
@@ -297,52 +343,6 @@ async def fetch(
         raise MarketTermsUnavailable from exc
 
     return _parse(market_id, body)
-
-
-async def _confirm(
-    market_id: uuid.UUID,
-    step: str,
-    *,
-    body: dict[str, str] | None,
-    access_token: str,
-    terms_client: httpx.AsyncClient,
-    error: type[LedgerError],
-    action: str,
-) -> None:
-    """Send market_service's last step, `POST /markets/{market_id}/{step}`,
-    with `body` as JSON if there is one and the administrator's token.
-
-    Returns `None` on a `200` and raises `error` on anything else, including
-    `httpx.RequestError`. The response body is never read, and the 404 cache
-    is neither consulted nor fed: a 404 here comes from a market whose book
-    exists. Logs the failure at ERROR, naming `action`, the market and what
-    came back, because the money has moved and the market stays unmarked
-    until a person repeats the request. DECISIONS.md,
-    "`market_terms.mark_settled` accepts only a `200`".
-    """
-    try:
-        response = await terms_client.post(
-            f"/markets/{market_id}/{step}",
-            headers={"Authorization": f"Bearer {access_token}"},
-            json=body,
-        )
-    except httpx.RequestError as exc:
-        _log.error(
-            "%s of market %s was not confirmed: %s",
-            action,
-            market_id,
-            type(exc).__name__,
-        )
-        raise error from exc
-
-    if response.status_code != 200:
-        _log.error(
-            "%s of market %s was not confirmed: market_service answered %s",
-            action,
-            market_id,
-            response.status_code,
-        )
-        raise error
 
 
 async def mark_settled(

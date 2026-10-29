@@ -60,7 +60,9 @@ export default function ProposalsPage() {
               <Card key={proposal.marketId} className="flex items-center justify-between gap-4 px-6 py-4">
                 <div className="min-w-0">
                   <p className="truncate text-[15px] font-semibold text-smu-navy">{proposal.question}</p>
-                  <p className="mt-1 text-xs text-subtle">
+                  {/* break-words: a username or an outcome label can be one
+                      unbroken word, wider than a phone (#516). */}
+                  <p className="mt-1 text-xs break-words text-subtle">
                     Proposed by {proposal.proposedByUsername} — winner: {proposal.winningOutcome}
                   </p>
                 </div>
