@@ -1,8 +1,8 @@
 # CS464
 
-A prediction market. Users trade shares in binary outcome markets against an
-automated market maker priced by LMSR, using mock credits rather than real
-money. Built for CS464 by Ernest, Ihsan and Michelle.
+A prediction market. Users trade shares in markets with two to ten outcomes
+against an automated market maker priced by LMSR, using mock credits rather
+than real money. Built for CS464 by Ernest, Ihsan and Michelle.
 
 Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6).
 
@@ -11,14 +11,15 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | Area | Issues | State |
 | --- | --- | --- |
 | Authentication | [A-1]–[A-3] #29–#31, UI #46–#48 | shipped, both sides |
-| Market creation | [1.1]–[1.3] #1–#3, UI #45 | shipped; restricting edits to drafts, [1.4] #4, is open |
-| Admin market tools | [2.1]–[2.4] #5–#8, UI #51, #55, #56 | shipped; the trade feed's username lookup is #273 |
-| Resolution | [3.1]–[3.4] #9–#12, UI #52, #87 | shipped through settlement; the dispute countdown UI #59 and the settled-market UI #216 are open |
-| Admin and audit | [4.1]–[4.4] #13–#16, UI #57 | shipped; the suspend control UI is #60 |
+| Market creation | [1.1]–[1.4] #1–#4, UI #45 | shipped, both sides: drafts autosave, and only a draft or a submitted market can be edited |
+| Admin market tools | [2.1]–[2.4] #5–#8, UI #51, #55, #56 | shipped, both sides: overview, early close, exposure, price history, and a trade log that names traders (#273) |
+| Resolution | [3.1]–[3.4] #9–#12, UI #52, #59, #87, #216 | shipped, both sides: propose, a second admin approves, the dispute window and send-back, settlement |
+| Voiding | #221, UI #526 | shipped, both sides: an admin voids a flawed market and every holder is refunded at cost (ADR 0025) |
+| Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60 | shipped, both sides; promoting an admin is an API call and has no screen yet |
 | Credits | [B-1] #32, [B-2] #33, [F-1] #41 | shipped; every balance is derived from append-only entries |
-| Trading | [T-1]–[T-5] #21–#25, UI #49, #50, #53 | shipped; limit orders [T-6]–[T-8] #26–#28 are designed in ADR 0024 and not built |
-| Discovery | [X-1]–[X-4] #34–#37, UI #54, #126, #209 | shipped |
-| Leaderboard | [L-1] #38, [L-3] #40 | shipped; [L-2] #39 has its backend and waits on its UI #58 |
+| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61 | shipped, both sides, including limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024) |
+| Discovery | [X-1]–[X-4] #34–#37, #447, UI #54, #126, #209, #444, #448, #450 | shipped: search, live prices, the trader's own holdings, and bands for closing soon, trending and biggest movers; the seven-day change on each card has its backend (#446) and its UI is #564 |
+| Leaderboard | [L-1]–[L-3] #38–#40, UI #58 | shipped, both sides |
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot and the ledger's price producer |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
@@ -26,7 +27,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 
 ## Running it
 
-You need Docker. Nothing else.
+You need Docker for the backend, and Node 20.19 or later for the frontend.
 
 ```bash
 cp .env.example .env
@@ -62,6 +63,19 @@ its `/docs` describes only `/health`, because OpenAPI has no vocabulary for a
 WebSocket. Its contract is
 [`docs/api/realtime-service.md`](docs/api/realtime-service.md).
 
+Then the frontend, in a second terminal:
+
+```bash
+cd frontend
+npm ci        # once
+npm run dev
+```
+
+Open http://localhost:5173. It talks to the services on the ports above with
+no configuration; `VITE_API_URL` and its siblings override them. The services
+accept browser requests from ports 5173 and 3000 unless `CORS_ORIGINS` says
+otherwise.
+
 Creating a market needs an administrator, and registration never grants one.
 Register normally, then promote by hand and log in again:
 
@@ -71,8 +85,8 @@ docker compose exec db psql -U cs464 -d cs464 \
 ```
 
 Already running Postgres on 5432? Set `POSTGRES_PORT` to something else in
-`.env` and point `TEST_DATABASE_URL` at the same port. Same for Redis on 6379
-and `REDIS_PORT`.
+`.env`, and use the same port in each `<SERVICE>_TEST_DATABASE_URL`. Same for
+Redis on 6379 and `REDIS_PORT`.
 
 ### A demo database
 
@@ -203,10 +217,12 @@ They live in their own file rather than inline so that each exists once.
 ```
 backend/auth_service/     registration, login, logout, sessions
 backend/market_service/   markets from draft to publication, closing them,
-                          and the outcome a second administrator approves
+                          the outcome a second administrator approves, and
+                          sending it back or voiding the market
 backend/audit_service/    reading the shared admin action log
-backend/ledger_service/   credits, trades, positions, settlement and the
-                          leaderboard: append-only entries, derived balances
+backend/ledger_service/   credits, trades, limit orders, positions,
+                          settlement, void refunds and the leaderboard:
+                          append-only entries, derived balances
 backend/realtime_service/ live prices over a websocket; owns no data
 backend/shared/           the only code the services import from each other
 backend/*/migrations/     auth, market, ledger: each schema's Alembic history,
@@ -300,5 +316,6 @@ to make and would be expensive to reverse.
 - [0023](docs/adr/0023-sending-an-approved-outcome-back.md) sending an approved
   outcome back inside its stored dispute window, by any admin
 - [0024](docs/adr/0024-resting-orders-fill-inside-the-trade.md) resting orders
-  fill against the AMM inside the trade that moved the price — Accepted, and
-  not built
+  fill against the AMM inside the trade that moved the price
+- [0025](docs/adr/0025-voiding-a-flawed-market.md) voiding a flawed market, by
+  any admin without a stake, refunded at cost
