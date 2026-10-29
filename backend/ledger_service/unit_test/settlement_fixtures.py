@@ -114,6 +114,7 @@ class SettleUpstream:
             "published_at": "2026-09-01T09:00:00Z",
             "proposed_outcome_id": str(self.outcomes[WINNER]),
             "settleable": settleable,
+            "voidable": False,
             "outcomes": [
                 {"id": str(o), "position": i, "label": f"Outcome {i}"}
                 for i, o in enumerate(self.outcomes)
@@ -265,6 +266,23 @@ async def settled_market(
     upstream.gets = 0
     upstream.posts = 0
     return upstream
+
+
+def voided_row(market_id: uuid.UUID, **overrides: object) -> Any:
+    """The `ledger.market_results` row a void records (ADR 0025), unsaved: no
+    outcome, a reason and the administrator. A settlement test stages it to
+    stand for a void without the void's money. `overrides` replaces one
+    column, so a schema test's refusal names one rule."""
+    columns = {
+        "kind": entities().ResultKind.VOIDED,
+        "outcome_id": None,
+        "reason": "The event was cancelled; there is no result.",
+        "voided_by": uuid.uuid4(),
+    }
+    columns.update(overrides)
+    return entities().MarketResult(
+        market_id=market_id, recorded_at=datetime.now(UTC), **columns
+    )
 
 
 # --- reading back -----------------------------------------------------------
@@ -525,24 +543,48 @@ async def book_lock_waiters(
         await asyncio.sleep(0.01)
 
 
-async def queued_on_the_book_or_finished(party: asyncio.Task) -> None:
-    """Return once a backend waits on a book row lock or `party` has finished,
-    whichever comes first, or fail on the timeout.
+# What a party waits on, as patterns its query text must all match.
+ON_THE_BOOK = ("%market_books%", "%for update%")
+ON_ANY_LOCK: tuple[str, ...] = ()
+
+
+async def queued_or_finished(party: asyncio.Task, *, query_like: Sequence[str]) -> None:
+    """Return once one backend waits on a lock with query text matching every
+    pattern in `query_like`, or `party` has finished, whichever comes first,
+    or fail on the timeout.
 
     For a race test that must fail, not time out, with the lock removed:
-    without it `party` never queues and runs to the end instead. A fresh
-    connection per poll, as `book_lock_waiters` does.
+    without it `party` never queues and runs to the end instead. `ON_THE_BOOK`
+    for a party that queues on a book row lock. `ON_ANY_LOCK` for a party that,
+    without its book lock, still queues, on a lock the book's patterns do not
+    name: a void's record is an INSERT into `market_results`, whose foreign key
+    takes a share lock on the book row another party holds `FOR UPDATE`. Only
+    where every other party is paused in Python rather than in Postgres, so
+    the waiting backend can only be `party`'s. A fresh connection per poll, as
+    `book_lock_waiters` does.
     """
     from core.database import get_engine  # noqa: PLC0415
+
+    sql = (
+        "SELECT count(*) FROM pg_stat_activity "
+        "WHERE datname = current_database() "
+        "AND usename = current_user "
+        "AND wait_event_type = 'Lock' "
+        "AND pid <> pg_backend_pid()"
+    )
+    patterns = {f"like_{index}": pattern for index, pattern in enumerate(query_like)}
+    for name in patterns:
+        sql += f" AND query ILIKE :{name}"
+    waiters = text(sql).bindparams(**patterns)
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + PROBE_TIMEOUT
     while not party.done():
         async with get_engine().connect() as conn:
-            if (await conn.execute(_BOOK_LOCK_WAITERS)).scalar_one() == 1:
+            if (await conn.execute(waiters)).scalar_one() == 1:
                 return
         if loop.time() > deadline:
-            pytest.fail("timed out: the party neither queued on the book nor finished")
+            pytest.fail("timed out: the party neither queued on a lock nor finished")
         await asyncio.sleep(0.01)
 
 

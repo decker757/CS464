@@ -11,9 +11,11 @@ import { useCloseMarket } from '../../hooks/useCloseMarket'
 import { useDisputeMarket } from '../../hooks/useDisputeMarket'
 import { usePublishMarket } from '../../hooks/usePublishMarket'
 import { useSettleMarket } from '../../hooks/useSettleMarket'
+import { useVoidMarket } from '../../hooks/useVoidMarket'
 import { useWindowOpen } from '../../hooks/useWindowOpen'
 import { disputeWindowLine } from '../../utils/formatCountdown'
 import { toApprovedResult } from '../../utils/proposals'
+import PublishConfirmModal from './PublishConfirmModal'
 import StatusBadge from './StatusBadge'
 import { formatCloseTime, tradingStopped } from './marketStatus'
 
@@ -41,17 +43,20 @@ function RowError({ message, onReload }: { message: string; onReload?: () => voi
 }
 
 interface JustNow {
+  voidedJustNow: boolean
   disputedJustNow: boolean
   settledJustNow: boolean
   closedJustNow: boolean
   publishedJustNow: boolean
 }
 
-// A send-back returns the market to closed, which beats everything else; after
-// that settled wins over closed because a market is closed before it is
-// settled, and closed wins over published because a market published from this
-// row can be closed early from it a moment later.
-function statusAfter(market: MarketOverviewRow, { disputedJustNow, settledJustNow, closedJustNow, publishedJustNow }: JustNow) {
+// A void is final, so it beats everything, a send-back from this row a moment
+// earlier included. A send-back returns the market to closed, which beats the
+// rest; after that settled wins over closed because a market is closed before
+// it is settled, and closed wins over published because a market published
+// from this row can be closed early from it a moment later.
+function statusAfter(market: MarketOverviewRow, { voidedJustNow, disputedJustNow, settledJustNow, closedJustNow, publishedJustNow }: JustNow) {
+  if (voidedJustNow) return 'voided'
   if (disputedJustNow) return 'closed'
   if (settledJustNow) return 'settled'
   if (closedJustNow) return 'closed'
@@ -61,9 +66,10 @@ function statusAfter(market: MarketOverviewRow, { disputedJustNow, settledJustNo
 
 // One market on the admin markets list ([2.1] #5). Only its creator can act on
 // it, e.g. propose its outcome, resume its draft or publish it. Closing it
-// early ([2.3] #7) and settling ([3.4] #12) are controls any administrator may
-// use on anybody's market (market-service.md's notes for #56, point 7), so
-// both are driven from this row rather than the creator check.
+// early ([2.3] #7), settling ([3.4] #12) and voiding (#526) are controls any
+// administrator may use on anybody's market (market-service.md's notes for
+// #56, point 7), so they are driven from this row rather than the creator
+// check. The ledger refuses a void from an administrator who traded it.
 export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminMarketRowProps) {
   // Set once the close succeeds, so the row repaints without waiting for the
   // list's next fetch (market-service.md's notes for #56, point 5).
@@ -73,6 +79,8 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
   const [disputedJustNow, setDisputedJustNow] = useState(false)
   // Set once a publish succeeds, same reasoning again.
   const [publishedJustNow, setPublishedJustNow] = useState(false)
+  // Set once a void answers 200, same reasoning again.
+  const [voidedJustNow, setVoidedJustNow] = useState(false)
   const {
     showCloseModal, openCloseModal, closeCloseModal,
     reason, setReason, closing, formError, reasonError, superseded,
@@ -97,7 +105,20 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
     canConfirm: canConfirmDispute, handleDispute,
   } = useDisputeMarket(market.id, approvedResult?.proposalId ?? null, () => setDisputedJustNow(true))
 
-  const status = statusAfter(market, { disputedJustNow, settledJustNow, closedJustNow, publishedJustNow })
+  const {
+    showVoidModal, openVoidModal, closeVoidModal,
+    reason: voidReason, setReason: setVoidReason, submitting: voiding,
+    formError: voidError, reasonError: voidReasonError, superseded: voidSuperseded, withdrawn: voidWithdrawn,
+    awaitingFinish, refundsCut, canConfirm: canConfirmVoid, handleVoid,
+  } = useVoidMarket(market.id, () => setVoidedJustNow(true))
+
+  const status = statusAfter(market, { voidedJustNow, disputedJustNow, settledJustNow, closedJustNow, publishedJustNow })
+  // `voidable` is the server's answer, judged on the stored status, and the
+  // control never works it out (market-service.md's void-screen notes,
+  // point 1). A voided market can read voidable — one marked voided by a
+  // direct call to market_service — and still gets no control here: this
+  // screen builds no repeat but Finish (ADR 0025, "Known edges, accepted").
+  const canVoid = market.voidable && status !== 'voided' && !voidSuperseded && !voidWithdrawn && !awaitingFinish
   // Same derivation as everywhere else on this page: a market whose countdown
   // has hit zero has already closed, and cannot be closed again (market-service.md's
   // notes for #56, point 1).
@@ -148,6 +169,12 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
         {publishError && (
           <RowError message={publishError} onReload={publishSuperseded ? () => window.location.reload() : undefined} />
         )}
+        {voidError && (
+          <RowError message={voidError} onReload={voidSuperseded ? () => window.location.reload() : undefined} />
+        )}
+        {status === 'voided' && refundsCut && (
+          <p className="mt-1 text-xs text-subtle">The pool could not cover every refund, so each was cut by the same share.</p>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-3 md:shrink-0 md:flex-nowrap">
         {/* Both are the creator's: market_service scopes `GET /markets/{id}`
@@ -195,6 +222,16 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
             Dispute result
           </Button>
         )}
+        {canVoid && (
+          <Button variant="outline" size="xs" onClick={openVoidModal}>
+            Void market
+          </Button>
+        )}
+        {awaitingFinish && status !== 'voided' && (
+          <Button variant="outline" size="xs" onClick={handleVoid} disabled={voiding}>
+            {voiding ? 'Finishing…' : 'Finish'}
+          </Button>
+        )}
         <StatusBadge status={status} />
       </div>
 
@@ -218,16 +255,7 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
       )}
 
       {showPublishModal && (
-        <ConfirmModal
-          ariaLabel="Publish market"
-          title="Publish this market?"
-          description="Traders can see it and trade in it immediately. There is no unpublish, and the terms cannot be edited afterwards."
-          isSubmitting={publishing}
-          confirmLabel="Confirm Publish"
-          confirmingLabel="Publishing…"
-          onCancel={closePublishModal}
-          onConfirm={handlePublish}
-        />
+        <PublishConfirmModal isSubmitting={publishing} onCancel={closePublishModal} onConfirm={handlePublish} />
       )}
 
       {showSettleModal && (
@@ -240,6 +268,25 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
           confirmingLabel="Settling…"
           onCancel={closeSettleModal}
           onConfirm={handleSettle}
+        />
+      )}
+
+      {showVoidModal && (
+        <ReasonModal
+          ariaLabel="Void market"
+          title="Void this market?"
+          description="This cannot be undone. The market ends with no winner, and every holder is refunded what their remaining shares cost. The reason is shown to traders and goes into the admin log."
+          fieldId={`void-reason-${market.id}`}
+          reason={voidReason}
+          onReasonChange={setVoidReason}
+          reasonError={voidReasonError}
+          placeholder="Explain why this market has no correct answer."
+          canConfirm={canConfirmVoid}
+          isSubmitting={voiding}
+          confirmLabel="Confirm Void"
+          confirmingLabel="Voiding…"
+          onCancel={closeVoidModal}
+          onConfirm={handleVoid}
         />
       )}
 

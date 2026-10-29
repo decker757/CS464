@@ -8,6 +8,7 @@ prices from `b` and the subsidy here (D-008, D-016).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -18,8 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
 from model.entities import Market, MarketStatus
+from model.schemas import MAX_QUESTION_LENGTH
+from service.audit import Actor
 from unit_test.conftest import (
     SOURCE_URL,
+    VOID_REASON,
     actor,
     approved_market,
     closed_market,
@@ -28,6 +32,7 @@ from unit_test.conftest import (
     published_market,
     settleable_edge,
     settled_market,
+    voided_market,
 )
 from service import market_service
 
@@ -209,6 +214,32 @@ async def test_a_nul_in_the_search_term_is_422_not_500(
         f"q={q!r} came back {response.status_code}; a NUL reaching asyncpg is "
         "an unhandled DBAPIError and a 500"
     )
+
+
+async def test_a_search_term_longer_than_a_question_is_422_on_q(
+    client: AsyncClient, trader_headers: dict[str, str]
+) -> None:
+    """The route's documented `422`: "`q` is too long". It could match no
+    question, which is at most `MAX_QUESTION_LENGTH` characters."""
+    response = await client.get(
+        _LIST,
+        params={"q": "x" * (MAX_QUESTION_LENGTH + 1)},
+        headers=trader_headers,
+    )
+
+    assert response.status_code == 422
+    assert any(error["loc"] == ["query", "q"] for error in response.json()["detail"])
+
+
+async def test_a_search_term_as_long_as_a_question_is_accepted(
+    client: AsyncClient, trader_headers: dict[str, str]
+) -> None:
+    """The other edge of the one above, so a ceiling one short also fails."""
+    response = await client.get(
+        _LIST, params={"q": "x" * MAX_QUESTION_LENGTH}, headers=trader_headers
+    )
+
+    assert response.status_code == 200
 
 
 async def test_an_ordinary_search_term_is_not_caught_by_the_nul_guard(
@@ -468,26 +499,63 @@ async def test_the_browse_list_derived_status_reaches_the_wire_too(
     assert [m["status"] for m in payload["markets"]] == [MarketStatus.OPEN.value]
 
 
-# --- [3.4] #12: settled, and settleable ------------------------------------
-async def test_the_browse_accepts_a_settled_filter(
-    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+# --- [3.4] #12, [BE] #221: settled and voided, and settleable --------------
+@pytest.mark.parametrize(
+    ("build", "status", "build_decoy"),
+    [
+        (settled_market, "settled", approved_market),
+        (voided_market, "voided", settled_market),
+    ],
+    ids=["settled", "voided"],
+)
+async def test_the_browse_accepts_a_finished_status_filter(
+    client: AsyncClient,
+    session: AsyncSession,
+    trader_headers: dict[str, str],
+    build: Callable[[AsyncSession, Actor], Awaitable[Market]],
+    status: str,
+    build_decoy: Callable[[AsyncSession, Actor], Awaitable[Market]],
 ) -> None:
-    """[3.4] #12: `settled` "is an accepted status on the trader browse".
+    """[3.4] #12: `settled` "is an accepted status on the trader browse". ADR
+    0025: `voided` is "an accepted value of the trader browse's `status`
+    filter, as `settled` is".
 
-    The literal string, so it fails while `PublicMarketStatus` lacks it. The
-    approved decoy fails a filter that matches every decided market.
+    The literal string, so a case fails while `PublicMarketStatus` lacks it.
+    The approved decoy fails a settled filter that matches every decided
+    market; the settled decoy, a voided filter that matches every finished
+    one.
     """
     await _published(session)
-    await approved_market(session, actor())
-    settled_id = (await settled_market(session, actor())).id
+    await build_decoy(session, actor())
+    finished_id = (await build(session, actor())).id
 
-    response = await client.get(
-        _LIST, params={"status": "settled"}, headers=trader_headers
-    )
+    response = await client.get(_LIST, params={"status": status}, headers=trader_headers)
 
     assert response.status_code == 200
-    assert [m["id"] for m in response.json()["markets"]] == [str(settled_id)]
-    assert response.json()["markets"][0]["status"] == "settled"
+    assert [m["id"] for m in response.json()["markets"]] == [str(finished_id)]
+    assert response.json()["markets"][0]["status"] == status
+
+
+async def test_the_detail_carries_a_voided_markets_reason_and_time(
+    client: AsyncClient, session: AsyncSession, trader_headers: dict[str, str]
+) -> None:
+    """ADR 0025: "The public detail and `MarketOut` carry `voided_at` and
+    `void_reason`, required keys with nullable values"; traders must see why
+    they were refunded. A closed market beside it reads both null.
+
+    Fails with either field missing from `PublicMarketOut`.
+    """
+    voided = await voided_market(session, actor())
+    voided_id, stored_at = voided.id, voided.voided_at
+    closed_id = (await closed_market(session, actor())).id
+
+    shown = (await client.get(_detail(voided_id), headers=trader_headers)).json()
+    other = (await client.get(_detail(closed_id), headers=trader_headers)).json()
+
+    assert shown["void_reason"] == VOID_REASON
+    assert datetime.fromisoformat(shown["voided_at"]) == stored_at
+    assert other["void_reason"] is None
+    assert other["voided_at"] is None
 
 
 async def test_settleable_on_the_wire_follows_the_routes_clock(

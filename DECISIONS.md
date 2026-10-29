@@ -4854,6 +4854,14 @@ under neither filter. `count_by_status` has a production caller again, so its
 dead-code allowlist entry goes. When #227 lands, `_is_settled` returns
 `Market.status == MarketStatus.SETTLED`.
 
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* The cursor's
+first field, the `settled` flag in market_service's `core/paging.py`
+(`OverviewPosition.settled`), is renamed `finished`, and group 1 becomes a
+settled or a voided market. The encoding does not change, `"1"` or `"0"`, so a
+cursor issued before the change decodes to the same place. A market voided
+between two page reads changes group the way a settled one does, and is
+accepted the same way.
+
 ---
 
 ### D-NEW — Settlement is the ledger's request, and market_service is told after the payout commits
@@ -4996,6 +5004,18 @@ window, since the read is remote, and it would cost a second call.
 
 **Reversal trigger.** Any further transition out of APPROVED, or send-back
 allowed past `window_ends_at`.
+
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* The reversal
+trigger fires: [BE] #221's void moves APPROVED to VOIDED, a further transition
+out of APPROVED. The read is still safe, for a different reason on each side.
+On the ledger, settlement and the void both write the one
+`ledger.market_results` row under the book lock before market_service hears of
+either, so whichever commits its row first wins and the other writes nothing.
+In market_service, the void step accepts APPROVED until the stored end plus
+five minutes and the settle step from that instant, both on
+`clock_timestamp()` after the row lock. What remains is the direct-call gap,
+already accepted. ADR 0025, "Reading APPROVED before the lock is still safe",
+and ADR 0019's 2026-10-20 amendment carry the argument in full.
 
 ---
 
@@ -5236,6 +5256,14 @@ Switched on in #227: `_is_settled` is now
 
 **Reversal trigger.** A second terminal status.
 
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* The reversal
+trigger fires: VOIDED is a second terminal status. Voided markets sink with
+settled ones, in one finished group, and the order within it is unchanged. The
+counts gain a zero-filled `voided` key and still sum to what the caller can
+see. `_is_settled` becomes a test for either status, and the cursor's flag is
+renamed `finished` (see "The admin overview pages by keyset, settled markets
+last…", amended).
+
 ---
 
 ### D-NEW — SETTLED joins the frozen, resolution and decided status tables
@@ -5258,6 +5286,15 @@ requires the two enums to change in one commit.
 comment refuses it, because each status owes its own error.
 
 **Reversal trigger.** None. These are the fixes the new member needs.
+
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* VOIDED joins
+`PublicMarketStatus`, `MarketStatus`, `_FROZEN_STATUS_ERRORS`,
+`_RESOLUTION_STATUS_ERRORS` and `_proposal_to_decide`'s state check, each
+answering `409 market_already_voided`, after the refactor that composes the
+tables. It does not join `DECIDED_STATUSES`: a voided market has no winner to
+show, even when its approval columns are kept. `PublicMarketStatus` is an
+allowlist, so without VOIDED a voided market would vanish from every trader
+read.
 
 ---
 
@@ -5485,6 +5522,14 @@ holds without an exception. The settle step is the one write that answers a
 SETTLED market `200` rather than `409 market_already_settled`, as ADR 0019's
 step 5 requires. See "The settle step checks in a fixed order, and SETTLED
 answers before the clock is read" below. Every other write path is unchanged.*
+
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* This entry's
+reversal trigger fires: VOIDED is a second terminal status. A refactor PR
+composes or derives `_FROZEN_STATUS_ERRORS`, `_RESOLUTION_STATUS_ERRORS` and
+the decision state check, with no behaviour change, and VOIDED is then added
+once, refused `409 market_already_voided` after the locked read on every write
+but a repeated void. See "The market_service status tables are composed in a
+refactor PR before VOIDED is added" below.
 
 ---
 
@@ -5801,6 +5846,13 @@ market already settled an end in the future. Answering SETTLED first means
 such a market is still `200`. See "`dispute_window_ends_at` is
 stored at approval, and market revision 0002 backfills 24 hours" below.*
 
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* One step joins
+the order, between 3 and 4: VOIDED is `409 market_already_voided`, before the
+clock is read. The reversal trigger does not fire. VOIDED is never settleable,
+and the route keeps its one caller. The ledger accepts only a `200` from this
+step, so a VOIDED answer reaches a client as `503 settlement_unconfirmed`, and
+only a direct call to market_service's void step can bring that about.
+
 ---
 
 ### D-NEW — The settle step's window check reads `clock_timestamp()` after the row lock, on the APPROVED branch only, against the stored status
@@ -5884,6 +5936,14 @@ test can exercise the plain foreign key or the CHECK's non-settled half;
 `kind` has no CHECK on its values, like every non-native enum here; the paired
 CHECK is what constrains it. `recorded_at` has no default, like
 `market_books.opened_at`: the settlement supplies it.
+
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* What the Notes
+left to #221 is decided, for ledger revision `0007`: `ResultKind.VOIDED`, and
+`reason` (text) and `voided_by` (uuid), both nullable, each set exactly when
+`kind = 'voided'` by a hand-written CHECK. The existing CHECK already admits a
+voided row with no outcome. Readers still never filter on `kind`, with one
+exception: settlement's own lookups, which must refuse a voided row with `409
+market_already_voided` rather than replay it as a settlement.
 
 ---
 
@@ -6512,6 +6572,11 @@ both fields fresh.
 - The trade route's `503` row in `docs/api/ledger-service.md` needs no edit.
   A malformed body was already a 503 there, and still is.
 
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* `voidable:
+bool` joins them, required with no default and parsed the same way. See
+"`MarketTerms` carries `voidable`, required, and market_service deploys it
+first" below.
+
 ---
 
 ### D-NEW — `market_terms.mark_settled` accepts only a `200`, and every other answer is `503 settlement_unconfirmed`, logged at ERROR
@@ -6580,6 +6645,15 @@ logged above WARNING.
 **Reversal trigger.** market_service learns of settlement some other way, and
 step 5 goes. The function and the error go with it ("A settlement whose last
 step fails answers `503 settlement_unconfirmed`").
+
+*Amended 2026-10-25.* [BE] #221 adds `mark_voided`, the void's last step
+(ADR 0025, step 8), and both now call one private `_confirm`, so everything
+above but the path and the body holds for it too: only a `200` confirms, the
+body is never read, the 404 cache is neither consulted nor fed, and every
+failure is logged at ERROR, as `503 void_unconfirmed`. So "the only 503 in
+the service logged above WARNING" now names two, `settlement_unconfirmed`
+and `void_unconfirmed`, for the same reason: money has moved and the market
+stays unmarked until a person repeats the request.
 
 ---
 
@@ -6657,6 +6731,16 @@ A repeat always calls `/settle`.
 
 **Notes.** This amends ADR 0019's steps 1 and 3 (amendment of 2026-10-10).
 
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* Both lookups,
+step 2's and step 4's, branch on the row's `kind`. A `settled` row is a
+replay, as above. A `voided` row is `409 market_already_voided`, and nothing
+is written. Step 3 answers a `voided` status with the same code, ahead of
+`market_not_approved`. Without the branch, `_replay`'s assertion that the row
+names a winner (`service/settlement.py:136`) turns a settlement on a voided
+market into a bare 500. The void itself follows this entry's order, read, then
+lookup, then status, rather than #221 revision 2's lookup first, for the
+reasons this entry gives.
+
 ---
 
 ### D-NEW — The winner is checked under the book lock, after the latch, and a replay never checks it
@@ -6695,6 +6779,10 @@ the record.
 
 **Reversal trigger.** A settlement that pays something other than
 market_service's winner, such as [BE] #221's void.
+
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* The reversal
+trigger does not fire. The void is not a settlement and pays no winner: it is
+its own route, writes its own record kind, and never reaches this check.
 
 ---
 
@@ -7175,6 +7263,11 @@ settlement (ADR 0010).
 status. The frontend already hides the trade control on any market that is
 not open, and a trade on a settled market is `409 market_closed`.
 
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* A void
+publishes none either, for the same reasons: it writes neither `q` nor any
+position, and its consumer has not asked for one. It releases a market's
+resting orders without an `order` frame, as settlement does.
+
 ---
 
 ### D-NEW — A settled row's payout is its quantity, and its result comes from `ledger.market_results`, joined in the portfolio's one statement
@@ -7239,6 +7332,15 @@ here. A settled row keeps `state_version`, the frozen book's last version. A
 position sold to zero is still left out, settled or not. A holder of both
 outcomes sees two rows, one `paid_out` and one `worthless`.
 
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* A voided
+market's rows are not settled rows. Their `result` is `refunded`, and their
+`payout` is what the position's `void_refund` transaction paid, read through a
+left join on its derived key and coalesced to `0.0000`. This entry's reason
+for not reading from the entry, a join for a figure already on the row, does
+not hold for a refund, which is on no row. A settled row's payout is still its
+quantity, and a voided market's book is still not valued. See "A voided row's
+`payout` is its refund, joined in the portfolio's statement only" below.
+
 ---
 
 ### D-NEW — `result` and `payout` are on every portfolio row, null until the market is settled
@@ -7274,6 +7376,11 @@ calls `null.startsWith` and takes the page down for anyone holding a settled
 position. The page needs that guard, and the type its nullable fields, before
 this stack merges into `dev`, whether or not [FE][3.4] #216's settled
 rendering is ready by then.
+
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* `result` gains
+`refunded`, on a voided market's rows, with the refund as `payout`. "Null
+until the market is settled" now reads: null until the ledger records a result
+for the market, settled or voided.
 
 ---
 
@@ -7949,6 +8056,11 @@ check is owed by whichever of #6 and #258 lands second".
 **Reversal trigger.** Settlement resetting `q`, or leaving the pool funded.
 Then the figures mean something again after settlement.
 
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* The Notes' owed
+line is written: `docs/api/ledger-service.md` says a voided market reads
+`result: "voided"`, a null `winning_outcome_id` and the null figures. No code
+changes.
+
 ---
 
 ### D-NEW — Suspending the last administrator reuses `last_administrator`
@@ -8552,6 +8664,10 @@ contract change, which "A settlement publishes no realtime frame" leaves to its
 consumer. Once a client can receive the result live, a point for it no longer
 disagrees with what a live chart shows.
 
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* A void adds no
+point either: it moves no price. It arrives here as `result: "voided"`, a null
+`winning_outcome_id` and the void's `recorded_at`, with no code change.
+
 ---
 
 ### D-NEW — Price history returns raw points, one per trade, filtered by `from` and `to` with a carry-in point; nothing is bucketed
@@ -8766,6 +8882,15 @@ one it got.
 **Reversal trigger.** Any event other than a trade starts bumping
 `state_version`, for example a void ([BE] #221). Then the run has legitimate
 gaps, and the replay has to be told which events move `q` and which do not.
+
+*Amended 2026-10-20. Decided by ADR 0025, and not built yet.* The reversal
+trigger has not fired. A void writes no trade and does not raise
+`state_version`. A limit-order fill raises it, but a fill is a `trade_buy` or
+`trade_sell` on the pool's feed, so the run still has no legitimate gap. The
+void's refund replay needs the same guarantee, so this check moves into one
+pure function in `core/` that both replays call; see "The void's refund replay
+reads `pool_trade_query`, and shares the price history's 1..N check" below.
+The price history keeps its own error code.
 
 ---
 
@@ -10473,6 +10598,245 @@ live, which would put it on the frame, and then on the single snapshot with it.
 
 ---
 
+### D-NEW — A voided row's `payout` is its refund, joined in the portfolio's statement only
+
+**Date:** 2026-10-20 · **Ticket:** #221 · **Status:** active
+
+**Decision.** On a voided market, a portfolio row's `result` is `refunded`, a
+new `PositionResult` member, and its `payout` is the refund that position
+received. It is read through a left join from the portfolio's one statement
+to `ledger.transactions`, on the derived key
+`void-refund:{market_id}:{user_id}:{outcome_id}`, which the unique index on
+`idempotency_key` serves. A refund that rounded down to zero wrote no
+transaction, and the join coalesces it to `0.0000`. The join is not in
+`held_outcomes_query`. `price`, `value` and `unrealized_pnl` are `null`, and
+the row adds nothing to `positions_value`, as on a settled row.
+
+**Why.** A refund follows the lots, newest sold first, so it is neither the
+quantity nor the cost basis, and no column holds it. The transaction is the
+only record, and its key is derivable from the row. Ernest's note on #221
+(from #369's review, re-raised in #387's) said a voided row reading `worthless`
+with payout `0.0000` would look odd; showing the refund answers it. Keeping
+the join out of `held_outcomes_query` keeps the leaderboard's refresh to the
+reads it has: net worth never reads `payout`, and the refund is already in
+the balance.
+
+**Rejected.**
+- *`payout: "0.0000"` and `result: "worthless"`*: what the code would do
+  today. It says the holder got nothing, and they were refunded.
+- *`payout` null on a voided row*: the portfolio would hide the one figure a
+  holder of a voided market wants.
+- *Storing the refund on the position or the result row*: a stored copy of a
+  ledger sum, which ADR 0009 refuses.
+- *The join in `held_outcomes_query`*: the leaderboard would read every
+  holder's refunds on every refresh, for nothing it shows.
+
+**Notes.** Decided by Ihsan on 2026-10-20 (ruling A of ADR 0025). P&L needs
+no change: a voided row's basis is closed like a settled one's, and the
+refund is in the balance. The portfolio reads the row's `kind` only to choose
+`refunded`: a refund that rounded to zero has no transaction, so the join
+alone cannot tell a voided row from a settled one. The refund reaches
+`_settled_positions_of` as a keyword-only mapping on `valuation_of`, from
+`(market_id, outcome_id)` to the refund, empty by default. The portfolio
+builds it from its join column. The leaderboard passes nothing, so its rows
+never need the column, its voided rows carry `0.0000`, and it reads only
+`net_worth`. An optional attribute on the row was rejected: a SQLAlchemy `Row`
+has no defaults, so the leaderboard's rows would raise on it.
+
+---
+
+### D-NEW — The void's refund replay reads `pool_trade_query`, and shares the price history's 1..N check
+
+**Date:** 2026-10-20 · **Ticket:** #221 · **Status:** active
+
+**Decision.** The void reads the market's trades through
+`ledger_service.pool_trade_query`, ordered by `(created_at, id)` as the price
+history orders them. The check that their `state_version`s run 1, 2, 3, … in
+order from the start moves out of `core/price_history.py` into one pure
+function in `core/` that both replays call. The void alone also checks that
+the run ends at the book's `state_version`; the price history does not, and
+this does not change that. The replay reads each trade's
+`context.state_version`, never `book_state_version`. The price history maps a
+failure to `500 price_history_inconsistent`, and the void to
+`500 void_replay_mismatch`.
+
+**Why.** #221 revision 2 ordered by `context.state_version` in SQL because
+entry stamps could disagree with lock order (#187). #187 is fixed: `post_all`
+stamps under the account locks, so the pool's feed is in lock order. One
+query and one check, shared, rather than a second ordering of the same rows
+and a second copy of the guard.
+
+**Rejected.**
+- *Ordering by `(context->>'state_version')::int`*: a sort no index serves,
+  for an order the feed already has.
+- *A second copy of the 1..N check in the void's core module*: two copies of
+  a rule whose divergence would be a bug.
+
+**Notes.** Decided by Ihsan on 2026-10-20 (ruling B of ADR 0025). The
+function's name is the core PR's. The extraction is behaviour-free for the
+price history, so it can sit in the void's core PR with the price history's
+tests unchanged and green. Since #446, `list_prices_at` reaches the check
+through `price_history_of` too, and it logs a failure and leaves out only that
+card's `prices_7d_ago` rather than answering `500`. The extraction keeps that
+mapping, as it keeps the price history's.
+
+---
+
+### D-NEW — The market_service status tables are composed in a refactor PR before VOIDED is added
+
+**Date:** 2026-10-20 · **Ticket:** #221 · **Status:** active
+
+**Decision.** A refactor PR, first in the void's market_service stack,
+composes or derives `_FROZEN_STATUS_ERRORS` and `_RESOLUTION_STATUS_ERRORS`
+(market_service's `service/market_service.py:73-87`) and the decision state
+check in `_proposal_to_decide` (`:525-555`, the state checks at `:543-548`),
+with no behaviour change and no test assertion changed. VOIDED is then added
+in its own PR, to the enum and every table at once.
+
+**Why.** "A settled market is refused after the locked read and before any
+write, and the status tables stay separate" named this trigger: a second
+terminal status. Root CLAUDE.md keeps a refactor out of a behaviour PR. And
+the bug #220 found for SETTLED, a final status missing from the frozen table
+so that an autosave turned it back into a draft, is the one a composed table
+makes hard to repeat.
+
+**Rejected.** *Adding VOIDED to each table by hand*: the repetition that
+entry deferred until now, done twice over.
+
+**Notes.** Decided by Ihsan on 2026-10-20 (ruling C of ADR 0025).
+
+---
+
+### D-NEW — `MarketTerms` carries `voidable`, required, and market_service deploys it first
+
+**Date:** 2026-10-20 · **Ticket:** #221 · **Status:** active
+
+**Decision.** `MarketTerms` gains `voidable: bool` with no default. `_parse`
+reads it by index and refuses anything but a JSON boolean, as it does
+`settleable`. A failure is `503 market_terms_unavailable`, on every pull.
+market_service's `voidable` lands and deploys before the ledger's parse.
+
+**Why.** A missing flag read as true would refund a market whose result is
+final. A missing flag read as false hides a broken deploy as a market that
+can never be voided. The client already parses strictly, so a lenient field
+would be a second style in one parser. "`MarketTerms` carries
+`proposed_outcome_id` and `settleable`, parsed strictly on every pull" gives
+the rest.
+
+**Rejected.** *An optional field the void alone checks*: one client parsing
+two ways.
+
+**Notes.** Decided by Ihsan on 2026-10-20 (ruling D of ADR 0025). Every
+trade pulls the terms, so a ledger with this parse against a market_service
+without `voidable` answers `503` to every trade. The stack's order prevents
+that: market_service's `voidable` PR sits below the ledger client's.
+
+---
+
+### D-NEW — A void's reason is at most 5,000 characters and at least 10 once trimmed, and a short one is `void_incomplete`
+
+**Date:** 2026-10-20 · **Ticket:** #221 · **Status:** active
+
+**Decision.** The ledger's void route takes `reason`, at most 5,000
+characters in the schema (`422 invalid_request`) and at least 10 once trimmed
+in the service (`422 void_incomplete`), checked before any read. It stores the
+trimmed reason on the result row and forwards it to market_service, which
+stores it as sent and checks only the same 5,000 ceiling, which a forwarded
+reason always meets.
+
+**Why.** The reason lands in `market.void_reason`, so its ceiling is
+market_service's for every reason it stores, not the 500 the administrator's
+order cancel copies from auth. The floor is close-early's and rejection's.
+`*_incomplete` is the name every reason refusal in this repository has.
+market_service checks only the ceiling, as the owner of the column, and not
+the floor, because a stricter check there would fail every retry after the
+money moved.
+
+**Rejected.** *500 characters, as the administrator's cancel*: that cancel
+acts on one trader's account, and its reason is logged only. A void's reason
+is shown to every trader in the market.
+
+**Notes.** A ruling of the PR that wrote ADR 0025, not of #221's thread. The
+5,000 ceiling was confirmed by Ihsan on 2026-10-25 (ADR 0025, question 3).
+
+---
+
+### D-NEW — The void's response reports `total_owed` and `refunds_cut`, and a repeat recomputes them from the trades
+
+**Date:** 2026-10-20 · **Ticket:** #221 · **Status:** active
+
+**Decision.** The void's `200` carries `positions_refunded`, `total_owed`,
+`total_refunded`, `refunds_cut` and `residue`. A repeat sums
+`positions_refunded`, `total_refunded` and `residue` from the void's own
+transactions, found by their derived keys, and recomputes `total_owed` by
+re-running only the lot replay over the market's trades: without the guard
+and without the stake check, so a repeat always answers the first request's
+`200` body, and can fail after the lookup only at market_service's `/void`
+step.
+
+**Why.** #221 revision 2 asks that whether refunds were cut be in the
+response, and that a repeat answer the same. The result row stores no totals
+(ADR 0019), and no transaction records what a cut refund was owed. The trades
+cannot change after the row exists, because the latch refuses every later
+one, so a replay gives the same figure.
+
+**Rejected.**
+- *Storing the owed total or the fraction on the result row*: a stored figure
+  derived from ledger rows.
+- *Reading it from the `market.voided` entry*: the ledger cannot read the
+  audit log.
+- *A fraction rather than `total_owed`*: a ratio needs a scale, and two
+  amounts at scale 4 need none.
+
+**Notes.** A ruling of the PR that wrote ADR 0025. A repeat pays for the
+replay again, which only the speed test will price. Accepted by Ihsan on
+2026-10-25 (ADR 0025, "Decisions on the open questions", question 2): a repeat
+happens only after a `503`, and the record stays free of derived totals.
+
+---
+
+### D-NEW — `voided_at` and `void_reason` are on the public detail and `MarketOut`; `voidable` is on the public detail and the overview rows
+
+**Date:** 2026-10-20 · **Ticket:** #221 · **Status:** active
+
+**Decision.** The public detail and `MarketOut` carry `voided_at` and
+`void_reason`, required keys with nullable values. The public detail and every
+overview row carry `voidable`. None of the three is on the trader browse cards,
+and `voidable` is not on `MarketOut`.
+
+**Why.** Each field goes where a screen reads it. The trader's market page
+shows the void banner from the public detail, and the admin market page reads
+`MarketOut`. The void control is offered from the overview and the public
+detail, as the settle control reads `settleable` there. A browse card shows no
+reason, as it shows no countdown. "`dispute_window_ends_at` is on the public
+detail and on every overview row, as the raw column" placed its field by the
+same rule.
+
+**Rejected.** *Every field everywhere*: fields with no reader.
+
+**Notes.** A ruling of the PR that wrote ADR 0025, not of #221's thread.
+
+---
+
+### D-NEW — The void checks a stake after the replay's guard, not before
+
+**Date:** 2026-10-20 · **Ticket:** #221 · **Status:** active
+
+**Decision.** Under the book lock the void replays the trades, applies the
+guard (`500 void_replay_mismatch`), and only then refuses an administrator who
+appears in a trade (`403 admin_has_a_stake`).
+
+**Why.** The stake check reads the replay's list of traders. If the replay
+disagrees with the positions or the book, that list is not trusted either, and
+the honest answer is the fault, not a `403` built on it.
+
+**Rejected.** *The stake check first*: it could tell an administrator they
+have a stake on the strength of a replay the next line refuses.
+
+**Notes.** A ruling of the PR that wrote ADR 0025. A repeat runs neither.
+
+---
+
 ### D-NEW — A card's price change is measured over seven days
 
 **Date:** 2026-10-21 · **Ticket:** #446 · **Status:** active
@@ -10712,3 +11076,124 @@ index: the browse already reads every visible market to order it, and
 `ix_markets_due_close` is partial on `status = 'open'` for the sweep. An
 index on the stopped-at expression earns its place when the browse is
 measured slow, and it would serve the order before it served this filter.
+
+---
+
+### D-NEW — The engine's precision context is public in `core/lmsr.py`, and the void's cut calls it rather than a copy
+
+**Date:** 2026-10-25 · **Ticket:** #221 · **Status:** active
+
+**Decision.** The void's core PR makes the context `core/lmsr.py`'s
+`_engine_context` builds public, by renaming it or by adding a public wrapper,
+and the void's cut runs inside it. The void's module holds no copy of the
+precision or of the context.
+
+**Why.** ADR 0025 specifies the cut, `r × (P + S) / R`, multiplied first and
+then divided, at the pricing engine's precision, so that two builders cut the
+same refund to the same tick. Two copies of that precision that drifted apart
+would cut refunds differently from the engine that priced the trades, which is
+a money bug. That passes the bar ADR 0012 sets for sharing code: every caller
+needs identical behaviour, and a divergence would be a bug rather than a
+design choice.
+
+**Rejected.** *A copy of the context in the void's module*: the divergence
+above, for a saving of one import.
+
+**Notes.** Decided by Ihsan on 2026-10-25 (ADR 0025, "Decisions on the open
+questions", question 7). `core/pricing.py`, `core/limit_orders.py` and
+`core/price_history.py` already import the private name, so a rename touches
+all three. Under "A refactor never shares a PR with a behaviour change" a
+rename lands as its own refactor PR below the core PR; a public wrapper does
+not need one. The core PR chooses.
+
+---
+
+### D-NEW — A voided market's `credits_traded` is left as it is
+
+**Date:** 2026-10-25 · **Ticket:** #221 · **Status:** active
+
+**Decision.** A void does not change the book's `credits_traded`. The batch
+snapshot answers a voided market with its last `prices`, its `prices_7d_ago`
+and its `credits_traded`, as it answers a settled one. No backend code changes
+for it.
+
+**Why.**
+- *It records trades that happened.* A void refunds what the shares still held
+  cost; it does not undo the trades, and every sale stands.
+- *"Only ever rises" is documented.* `docs/api/ledger-service.md` promises it,
+  and "`credits_traded` is a counter on the book, raised in `write_trade` under
+  the book lock" makes it true by construction. A void writes no trade, so
+  nothing touches it.
+- *A settlement payout does not count either* ("A market's activity is the
+  credits it has traded, buys and sells alike"). A refund is the same kind of
+  movement: money that is not a trade.
+
+**Rejected.** *Unwinding it by the refunds*: it would fall, against the
+contract, and the void would have to write the book row it otherwise leaves
+alone.
+
+**Notes.** Decided by Ihsan on 2026-10-25 (ADR 0025, "Decisions on the open
+questions"). Found when #474 merged, after ADR 0025 was written.
+
+---
+
+### D-NEW — A voided card shows "Voided", with no probability and no price change
+
+**Date:** 2026-10-25 · **Ticket:** #221 · **Status:** active
+
+**Decision.** On the browse list, a card for a `voided` market shows
+"Voided" where a trading market shows its probability, and shows no price
+change, though the batch snapshot still carries `prices` and `prices_7d_ago`
+for it.
+
+**Why.** A voided market has no answer, so its last probability and its
+change describe nothing a trader can act on. #429 (open) asks the same of
+a resolved market's detail page: "A market past PENDING_RESOLUTION does not
+present a tradeable-looking probability." This entry decides the voided card
+only; a settled card still shows its probability today.
+
+**Rejected.** *Leaving out a voided market's prices from the batch*: a
+backend change for what is a display rule, and the single snapshot and the
+price history would still answer them.
+
+**Notes.** Decided by Ihsan on 2026-10-25 (ADR 0025, "Decisions on the open
+questions"). For the [FE] sub-issue of #221; listed in the void screen's notes
+in `docs/api/market-service.md`.
+
+---
+
+### D-NEW — The browse list keeps soonest-close first; the bands above it are the answer to "what is worth trading"
+
+**Date:** 2026-10-29 · **Ticket:** #433 · **Status:** active
+
+**Decision.** The full browse list keeps its order: still trading first,
+soonest close first, then most recently stopped (`_browse_order`, and
+"Stopped markets sort by when trading stopped"). No sort parameter is added.
+What a new trader sees first is decided by what [X-1] #448 put above the list
+instead: the busiest market as the featured one, then the bands Closing soon
+(inside 24 hours), Trending (most credits traded) and Biggest movers (largest
+change over the week), each stating its rule.
+
+**Why.** #433 found the top of the list taken by markets with minutes left
+and no trades, because nothing carried an activity signal. #447 added
+`credits_traded` and #448 used it, which is #433's option 2 (keep the order,
+change the framing) with the volume ranking of option 4 placed above the
+list rather than replacing its order. The list stays a complete, stable,
+pageable index, the bands give the first screen an entry point, and every
+banded market is still in the list where the order puts it.
+
+**Rejected.** *A sort parameter defaulting to volume* (#433's option 3): the
+browse query is market_service's, and `credits_traded` is the ledger's
+("`credits_traded` is a counter on the book, raised in `write_trade` under the
+book lock"), so market_service cannot `ORDER BY` it without a cross-service
+read or a copied column, which ADR 0003's boundary rules out as a convenience.
+It would buy what the featured market and Trending already show, and a volume
+order would reshuffle the keyset pages between refreshes as trades land. *Leaving #433 open*: the first screen it described no longer
+renders that way.
+
+**Notes.** The bands rank only the markets the page has loaded, not every
+market on the server. On a database with more open markets than one page,
+a busy market that closes far in the future can miss Trending. That is
+acceptable at this project's scale. If it stops being, a server-side ranking
+is a cross-service design decision, not a change to `_browse_order`, for the
+reason under Rejected.

@@ -93,14 +93,17 @@ class BalanceOut(BaseModel):
 
 
 class PositionResult(StrEnum):
-    """What a settled market did to one held outcome. [3.4] #12.
+    """What a settled or voided market did to one held outcome. [3.4] #12,
+    [BE] #221.
 
-    The wire's own values. A row the ledger has not settled has no result,
-    which is `None` and not a third member.
+    The wire's own values. A row whose market the ledger has not ended has no
+    result, which is `None` and not another member. REFUNDED is every row of
+    a voided market (ADR 0025, ruling A).
     """
 
     PAID_OUT = "paid_out"
     WORTHLESS = "worthless"
+    REFUNDED = "refunded"
 
 
 class PortfolioPositionOut(BaseModel):
@@ -108,9 +111,10 @@ class PortfolioPositionOut(BaseModel):
 
     On a market the ledger has not settled, `value` is what selling the whole
     position now would credit — never `quantity * price` (ADR 0018) — and
-    `result` and `payout` are null. On a settled market it is the other way
-    round: `result` and `payout` are set, and `price`, `value` and
-    `unrealized_pnl` are null, because the payout is already in the balance.
+    `result` and `payout` are null. On a settled or voided market it is the
+    other way round: `result` and `payout` are set, and `price`, `value` and
+    `unrealized_pnl` are null, because the payout or the refund is already in
+    the balance.
     Every key is always present. See `GET /ledger/portfolio/me` in
     `docs/api/ledger-service.md`.
     """
@@ -157,13 +161,18 @@ class PortfolioPositionOut(BaseModel):
     result: PositionResult | None = Field(
         description=(
             "`paid_out` for the winning outcome of a settled market, "
-            "`worthless` for any other. Null until the market is settled."
+            "`worthless` for any other, and `refunded` for every outcome of a "
+            "voided market. Null until the market is settled or voided."
         )
     )
     payout: Decimal | None = Field(
         description=(
             "What this row was paid: its quantity on a `paid_out` row, "
-            "`0.0000` on a `worthless` one. Null until the market is settled."
+            "`0.0000` on a `worthless` one, and on a `refunded` one what the "
+            "void refunded this position, `0.0000` if that rounded down to "
+            "nothing. A refund follows what each share still held cost, so it "
+            "can differ from `cost_basis`. Null until the market is settled or "
+            "voided."
         )
     )
     state_version: int = Field(
@@ -311,8 +320,9 @@ class LedgerEntryOut(BaseModel):
     market_id: uuid.UUID | None = Field(
         default=None,
         description=(
-            "Set on a `trade_buy`, `trade_sell` or `settlement` row; `null` "
-            "on every other kind, the grant included. [T-5] #25, [3.4] #12."
+            "Set on a `trade_buy`, `trade_sell`, `settlement` or `void_refund` "
+            "row; `null` on every other kind, the grant included. [T-5] #25, "
+            "[3.4] #12, [BE] #221."
         ),
     )
     outcome_id: uuid.UUID | None = Field(
@@ -329,9 +339,9 @@ class LedgerEntryOut(BaseModel):
     quantity: Decimal | None = Field(
         default=None,
         description=(
-            "The trade's quantity, or on a `settlement` row the winning "
-            "shares paid out, at scale 4 whatever the trader sent. Null on "
-            "every other row."
+            "The trade's quantity, on a `settlement` row the winning shares "
+            "paid out, or on a `void_refund` row the shares refunded, at "
+            "scale 4 whatever the trader sent. Null on every other row."
         ),
     )
     average_price: Decimal | None = Field(
@@ -852,6 +862,81 @@ class SettlementOut(BaseModel):
     )
 
 
+class VoidIn(BaseModel):
+    """The body of a void: why, and nothing else. [BE] #221, ADR 0025.
+
+    Split as `AdminCancelIn` splits its reason: the key and the 5,000-character
+    ceiling, market_service's for every reason it stores, are shape, checked
+    here as `422 invalid_request`; the floor of ten characters once trimmed is
+    content, so a short reason parses and `service/voiding.py` refuses it as
+    `void_incomplete`. `extra="forbid"`, `SettlementIn`'s reason: a body
+    naming an outcome, a holder or an amount is refused, not dropped.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(
+        max_length=5000,
+        description=(
+            "Why the market is voided. At least 10 characters once trimmed. "
+            "Stored trimmed, on this service's record and on the market, "
+            "where traders read it, and in the audit log."
+        ),
+        examples=["The match was abandoned after ten overs; there is no result."],
+    )
+
+
+class VoidOut(BaseModel):
+    """What one void refunded. [BE] #221, ADR 0025.
+
+    Built from `service/voiding.py::VoidResult`, which is the same on the
+    request that refunds and on every repeat, so a repeat returns this
+    byte for byte.
+    """
+
+    market_id: uuid.UUID
+    reason: str = Field(
+        description=(
+            "The reason recorded by the void that refunded, trimmed. On a "
+            "repeat, that one, not the repeating administrator's."
+        )
+    )
+    voided_by: uuid.UUID = Field(
+        description="The administrator whose request refunded. On a repeat, the same."
+    )
+    recorded_at: datetime = Field(
+        description=(
+            "When the void was recorded, with its UTC offset: read after the "
+            "book lock, the same instant as the audit entry's."
+        )
+    )
+    positions_refunded: int = Field(
+        description=(
+            "The positions refunded more than zero. One holder of two "
+            "outcomes counts twice."
+        )
+    )
+    total_owed: Decimal = Field(
+        description="What the refunds add up to before any cut."
+    )
+    total_refunded: Decimal = Field(
+        description="What was refunded. Equal to `total_owed` unless refunds were cut."
+    )
+    refunds_cut: bool = Field(
+        description=(
+            "True when the pool plus one seed could not cover `total_owed`, so "
+            "every refund was cut by the same fraction."
+        )
+    )
+    residue: Decimal = Field(
+        description=(
+            "What moved between the pool and the platform after the refunds, "
+            "signed. Positive went to the platform, negative came from it, and "
+            "the pool ends at exactly 0.0000 either way."
+        )
+    )
+
+
 # One model, two names. `OutcomePriceOut` and `OutcomePrice` were declared
 # separately and field for field the same — same three fields, same bounds,
 # same `str(value)` serializer — with only `OutcomePrice` pinned against
@@ -1062,14 +1147,17 @@ class PriceHistoryOut(BaseModel):
     result: ResultKind | None = Field(
         description=(
             "Null until the ledger records how the market ended; then that "
-            "record's kind, today always `settled`. The exposure read's values."
+            "record's kind, `settled` or `voided`. The exposure read's values."
         )
     )
     winning_outcome_id: uuid.UUID | None = Field(
         description="Null until the market is settled; then the outcome that paid."
     )
     result_recorded_at: datetime | None = Field(
-        description="Null until the market is settled; then the settlement's `recorded_at`."
+        description=(
+            "Null until the market is settled or voided; then that record's "
+            "`recorded_at`, the instant its own route reports."
+        )
     )
 
     @field_serializer("result_recorded_at")
@@ -1139,7 +1227,7 @@ class ExposureOut(BaseModel):
     result: ResultKind | None = Field(
         description=(
             "Null until the ledger records how the market ended; then that "
-            "record's kind, today always `settled`."
+            "record's kind, `settled` or `voided`."
         )
     )
     winning_outcome_id: uuid.UUID | None = Field(

@@ -123,6 +123,7 @@ class _Market:
                     "published_at": "2026-09-01T09:00:00Z",
                     "proposed_outcome_id": None,
                     "settleable": False,
+                    "voidable": False,
                     "outcomes": [
                         {"id": str(o), "position": i, "label": f"Outcome {i}"}
                         for i, o in enumerate(self.outcomes)
@@ -190,6 +191,7 @@ class _Terms:
                 status=self.status,
                 proposed_outcome_id=None,
                 settleable=False,
+                voidable=False,
             )
 
         monkeypatch.setattr(market_terms, "fetch", fake)
@@ -694,9 +696,10 @@ async def test_market_terms_unavailable_is_logged_at_warning_not_error(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """DECISIONS.md: `settlement_unconfirmed` is the only 503 logged above
-    WARNING. A market_service restart answers every trade with this one, and
-    at ERROR it would bury the 5xx that mean our own data is wrong.
+    """DECISIONS.md: `settlement_unconfirmed` and `void_unconfirmed` are the
+    only 503s logged above WARNING. A market_service restart answers every
+    trade with this one, and at ERROR it would bury the 5xx that mean our own
+    data is wrong.
     """
     client, _ = trade_client
     market = _Market()

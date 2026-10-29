@@ -5,12 +5,14 @@ import { formatAveragePrice, isZeroCredits } from '../../utils/formatCredits'
 import { formatLimitPrice } from '../../utils/formatPrice'
 import { describeSharesToSell, limitPriceError, quantityError } from '../../utils/orderInput'
 import Button from '../ui/Button'
+import HoldsNoneToSell from './HoldsNoneToSell'
 import { controlClass } from '../ui/controlClass'
 
 interface LimitOrderFieldsProps {
   marketId: string
-  // Chosen above, in the panel the two order types share, so a trader picks
-  // a side and an outcome once rather than twice.
+  // The side is chosen in the panel the two order types share, and the
+  // outcome on the market page's price blocks (#429), so a trader picks each
+  // once rather than once per order type.
   side: TradeSide
   outcomeId: string
   outcomeLabel: string
@@ -20,6 +22,11 @@ interface LimitOrderFieldsProps {
   // The part of that no open sell order holds back, which is all a new sell
   // order can offer; null exactly when `heldQuantity` is.
   sellableQuantity: string | null
+  // True once the trader has chosen Sell on an outcome they hold none of.
+  // Computed in the panel above, so both tickets answer it the same way.
+  holdsNoneToSell: boolean
+  // Switches the panel to a buy of this outcome, behind the offer below.
+  onBuyInstead: () => void
   // An order was placed, or may have been, so the open-orders list, the
   // balance and the holdings are all stale. The page re-reads all three.
   onPlaced: () => void
@@ -64,15 +71,15 @@ function mayHavePlaced(err: unknown): boolean {
  * implementation of that rounding could only disagree with it.
  */
 export default function LimitOrderFields({
-  marketId, side, outcomeId, outcomeLabel, heldQuantity, sellableQuantity, onPlaced,
+  marketId, side, outcomeId, outcomeLabel, heldQuantity, sellableQuantity, holdsNoneToSell, onBuyInstead, onPlaced,
 }: LimitOrderFieldsProps) {
   const [limitPrice, setLimitPrice] = useState('')
   const [quantity, setQuantity] = useState('')
   const [submitting, setSubmitting] = useState(false)
   // Each message is kept with the input it was written for, and shown only
   // while that input is still what the ticket holds — TradingPanel's
-  // `inputKey`, for the same reason. The side and the outcome are chosen in
-  // the panel above and arrive as props, so without this a refusal or a
+  // `inputKey`, for the same reason. The side and the outcome are chosen
+  // outside this ticket and arrive as props, so without this a refusal or a
   // "placed" line about a buy of Yes would sit under a sell of No.
   const inputKey = `${side}:${outcomeId}:${limitPrice}:${quantity}`
   const [submitErrorFor, setSubmitErrorFor] = useState('')
@@ -84,6 +91,7 @@ export default function LimitOrderFields({
   // order, and the only safe retry reuses the key so the ledger's own replay
   // recognises it rather than resting a second order (ledger-service.md).
   const idempotencyKeyRef = useRef(crypto.randomUUID())
+  const limitPriceInputRef = useRef<HTMLInputElement>(null)
 
   const priceError = limitPriceError(limitPrice)
   const sizeError = quantityError(quantity)
@@ -123,18 +131,41 @@ export default function LimitOrderFields({
     }
   }
 
+  // The button that was clicked goes with the notice, so focus moves on to
+  // this ticket's first field rather than dropping to the top of the page.
+  // The panel renders the buy side under flushSync before onBuyInstead
+  // returns, so the field is there to take it.
+  const handleBuyInstead = () => {
+    onBuyInstead()
+    limitPriceInputRef.current?.focus()
+  }
+
   return (
     <div>
-      {visiblePlaced && (
-        <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success-strong">
-          {visiblePlaced}
-        </p>
-      )}
+      {/* The same offer the market ticket makes, in place of the form: a
+          limit price and a quantity for shares the trader does not hold lead
+          only to the ledger's refusal ([T-6] #496). Rendered on both sides,
+          so its live region is on the page before Sell is pressed, and the
+          placed line shares that region rather than being a second one. */}
+      <HoldsNoneToSell
+        holdsNone={holdsNoneToSell}
+        outcomeLabel={outcomeLabel}
+        onBuyInstead={handleBuyInstead}
+      >
+        {visiblePlaced && (
+          <p className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success-strong">
+            {visiblePlaced}
+          </p>
+        )}
+      </HoldsNoneToSell>
 
+      {holdsNoneToSell ? null : (
+      <>
       <label htmlFor="limit-price" className="mb-1.5 block text-[13px] font-semibold text-smu-navy">
         Limit price
       </label>
       <input
+        ref={limitPriceInputRef}
         id="limit-price"
         type="number"
         min="0.0001"
@@ -180,6 +211,8 @@ export default function LimitOrderFields({
       <Button variant="primary" size="block" onClick={submit} disabled={!canSubmit} className="mt-2">
         {submitting ? 'Placing…' : `Place ${side} order`}
       </Button>
+      </>
+      )}
     </div>
   )
 }

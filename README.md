@@ -1,8 +1,8 @@
 # CS464
 
-A prediction market. Users trade shares in binary outcome markets against an
-automated market maker priced by LMSR, using mock credits rather than real
-money. Built for CS464 by Ernest, Ihsan and Michelle.
+A prediction market. Users trade shares in markets with two to ten outcomes
+against an automated market maker priced by LMSR, using mock credits rather
+than real money. Built for CS464 by Ernest, Ihsan and Michelle.
 
 Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6).
 
@@ -11,15 +11,15 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | Area | Issues | State |
 | --- | --- | --- |
 | Authentication | [A-1]–[A-3] #29–#31, UI #46–#48 | shipped, both sides |
-| Market creation | [1.1]–[1.3] #1–#3, [1.4] #4, UI #45, #354 | shipped |
-| Admin market tools | [2.1]–[2.4] #5–#8, UI #51, #55, #56, #418, #434 | shipped; the trade log and a user's history name people rather than ids |
-| Resolution | [3.1]–[3.4] #9–#12, UI #52, #87, #216, #59 | shipped through settlement, with the settled-market payout screen and the dispute-window countdown |
-| Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60, #479 | shipped, including the suspend/unsuspend control and a users list that filters by role and by status |
-| Credits | [B-1] #32, [B-2] #33, [F-1] #41, UI #376, #443, #410 | shipped; every balance is derived from append-only entries, the portfolio shows profit and loss in one money vocabulary, and each position says how many of its shares a live sell order holds back (the trading panel reading that figure, #494, is open) |
-| Trading | [T-1]–[T-5] #21–#25, UI #49, #50, #53, #430, #451, #453 | shipped, including the price chart on the market page and a sell with nothing held that offers the buy instead |
-| Limit orders | [T-6]–[T-8] #26–#28, UI #61 | shipped, both sides: place, cancel, the cascade that fills resting orders inside a trade, order frames on the socket, an administrator's cancel, and the order form with the open-orders list |
-| Discovery | [X-1]–[X-4] #34–#37, UI #54, #126, #209, #431, #442, #445 | shipped, with status and closing-time filters and a scroll position that survives Back. The ledger also serves a batch snapshot with each market's seven-day price change and activity (#432, #446, #447); the browse list does not use it yet |
-| Leaderboard | [L-1] #38, [L-2] #39, [L-3] #40, UI #58 | shipped, the table and the caller's own ranking |
+| Market creation | [1.1]–[1.4] #1–#4, UI #45, #354 | shipped, both sides: drafts autosave, and only a draft or a submitted market can be edited |
+| Admin market tools | [2.1]–[2.4] #5–#8, UI #51, #55, #56, #418, #434 | shipped, both sides: overview, early close, exposure, price history, and a trade log and user history that name people rather than ids (#273) |
+| Resolution | [3.1]–[3.4] #9–#12, UI #52, #59, #87, #216 | shipped, both sides: propose, a second admin approves, the dispute window and send-back, settlement |
+| Voiding | #221, UI #526 | shipped, both sides: an admin voids a flawed market and every holder is refunded at cost (ADR 0025) |
+| Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60, #479 | shipped, both sides, including the suspend control and a users list that filters by role and by status; promoting an admin is an API call and has no screen yet |
+| Credits | [B-1] #32, [B-2] #33, [F-1] #41, UI #376, #443, #410 | shipped; every balance is derived from append-only entries, and the portfolio shows profit and loss and how many shares a live sell order holds back |
+| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61, #429, #495 | shipped, both sides: the price is the control that picks an outcome, a live price chart, and limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024) |
+| Discovery | [X-1]–[X-4] #34–#37, #446, #447, UI #54, #126, #209, #441, #444, #448, #450, #564 | shipped: search and filters, live prices, the trader's own holdings, bands for closing soon, trending and biggest movers, and cards that show the odds as a split bar and each outcome's change over the week |
+| Leaderboard | [L-1]–[L-3] #38–#40, UI #58 | shipped, both sides |
 | Layout and accessibility | #380, #437, #438, #452 | every signed-in page fits a phone, with the navigation behind a menu button, and every text colour pair passes WCAG AA |
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot, the ledger's price producer and its order frames |
@@ -28,7 +28,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 
 ## Running it
 
-You need Docker. Nothing else.
+You need Docker for the backend, and Node 20.19 or later for the frontend.
 
 ```bash
 cp .env.example .env
@@ -64,6 +64,19 @@ its `/docs` describes only `/health`, because OpenAPI has no vocabulary for a
 WebSocket. Its contract is
 [`docs/api/realtime-service.md`](docs/api/realtime-service.md).
 
+Then the frontend, in a second terminal:
+
+```bash
+cd frontend
+npm ci        # once
+npm run dev
+```
+
+Open http://localhost:5173. It talks to the services on the ports above with
+no configuration; `VITE_API_URL` and its siblings override them. The services
+accept browser requests from ports 5173 and 3000 unless `CORS_ORIGINS` says
+otherwise.
+
 Creating a market needs an administrator, and registration never grants one.
 The first administrator is made by hand: register normally, promote, and log
 in again:
@@ -78,8 +91,96 @@ Every administrator after that is promoted by an existing one through
 to log in again: authority rides in the access token (ADR 0003, ADR 0007).
 
 Already running Postgres on 5432? Set `POSTGRES_PORT` to something else in
-`.env` and point every `<SERVICE>_TEST_DATABASE_URL` at the same port. Same for Redis on 6379
-and `REDIS_PORT`.
+`.env`, and use the same port in each `<SERVICE>_TEST_DATABASE_URL`. Same for
+Redis on 6379 and `REDIS_PORT`.
+
+### A demo database
+
+For a showcase, seed a database of its own with markets worth looking at
+(#454). Give the demo its own compose project, so it gets its own empty
+volume and your dev data is left alone:
+
+```bash
+docker compose stop                                              # your dev stack; keeps its data
+COMPOSE_PROJECT_NAME=cs464-demo docker compose up -d --build --wait
+cd frontend && npm ci                                            # once
+COMPOSE_PROJECT_NAME=cs464-demo npm run seed:demo                # about three minutes
+```
+
+The seed needs the same `COMPOSE_PROJECT_NAME` as the `up`, or its SQL steps
+reach another project's database; it checks, and stops if they did. It also
+refuses to start when that project is `cs464`, your dev stack, which is what
+compose picks when the variable is unset: nothing it writes there could be
+taken out again without wiping your dev data.
+
+It makes two administrators, `admin_rachel` and `admin_kumar`, nine traders
+(`wei_ling`, `arjun_k`, `marcus_tan`, `priya_s`, `jun_hao`, `sarah_lim`,
+`daniel_ng`, `aisyah_r`, `nur_h`) and fourteen SMU markets. Every account's
+password is `PASSWORD` in `frontend/e2e/support/backend.ts`. Nine markets stay
+open: seven traded until their prices sit well apart (the six Yes/No ones
+between about 13% and 90% Yes, and a five-way one), and two left untraded. The
+other five are traded and then taken one stage further each: closed, pending
+resolution, approved, settled with its winners paid, and voided with every
+holder refunded (#570). The seed prints every market's final prices when it
+finishes.
+
+Three things are there to show live (#570):
+
+- **A limit order filling.** `nur_h` has three resting limit buys, each a few
+  points under its market's price: Yes at 55% on the CS464 showcase market
+  (61% now), No at 20% on the IS111 bidding market (25% now) and Yes at 85% on
+  the library market (90% now). Log in as another trader and buy the other
+  side: about 35 shares on the showcase market, 40 on IS111 or 60 on the
+  library. The trade pulls the price past the limit, fills part of `nur_h`'s
+  order inside that same trade, and leaves the price sitting at the limit
+  (ADR 0024). Buy more and the order fills further. A trade that only just
+  reaches the limit fills nothing: the sliver it could fill costs a tick more
+  than the limit once the cost is rounded, so the order waits.
+- **A voided market.** The campus café market was closed early and voided.
+  Its page and card say so, and `marcus_tan`, `jun_hao` and `priya_s` see the
+  refund in their history (ADR 0025).
+- **A suspended trader.** `aisyah_r` is suspended, with a reason, once the
+  trading is done. Admin → Users shows it, and the account cannot log in
+  until an administrator lifts it.
+
+The four liveliest open markets, the Yes/No ones that end furthest from 50/50
+and the five-way one, close soonest, so the full browse list, which shows the
+soonest-closing market first, opens on them below the featured market and the
+bands.
+
+The trades go in eight rounds, twenty seconds apart, so each market's price
+history has a shape. That is why it takes minutes: a trade's time is the
+ledger's own clock, and no API backdates one. The open markets close three
+weeks or more after seeding; if you seeded long before the showcase, seed
+again.
+
+The browse list's "Biggest movers" band measures from the last trade at least
+seven days old, so a database seeded on the day shows none. Seed one to two
+weeks before the showcase, then trade during it, and it appears. #564 adds the
+same change to each card, measured the same way.
+
+It goes through the services' own APIs, using the end-to-end helpers in
+`frontend/e2e/support/backend.ts`, and takes the same two SQL steps they do,
+through `docker compose exec db`: promoting the first administrator,
+`admin_rachel`, and moving the settled market's dispute window into the past.
+`admin_rachel` then promotes `admin_kumar` through the role-change endpoint,
+as every administrator after the first is made, so the audit log shows it as
+`user.role_changed`.
+
+**It is one-shot.** Its accounts have fixed names, so a second run stops at
+the first registration and changes nothing. A run that fails partway also
+needs a fresh database. Seeding again means
+`COMPOSE_PROJECT_NAME=cs464-demo docker compose down -v`, which destroys that
+project's data and only that project's.
+
+**Don't run `npm run e2e` against the demo stack afterwards.** Its tests add
+their own markets and users, which then sit beside the demo's.
+
+**It only runs against this machine.** It refuses to start unless every
+service URL (`VITE_API_URL`, `VITE_MARKET_API_URL`, `VITE_LEDGER_API_URL`,
+defaulting to the ports above) is `localhost`, `127.0.0.1` or `[::1]`, and the
+Docker engine its SQL steps reach is a local socket or pipe. There is no
+override.
 
 ### Two of everything, behind a load balancer
 
@@ -158,11 +259,12 @@ They live in their own file rather than inline so that each exists once.
 ```
 backend/auth_service/     registration, login, logout, sessions
 backend/market_service/   markets from draft to publication, closing them,
-                          and the outcome a second administrator approves
+                          the outcome a second administrator approves, and
+                          sending it back or voiding the market
 backend/audit_service/    reading the shared admin action log
 backend/ledger_service/   credits, trades, limit orders, positions,
-                          settlement and the leaderboard: append-only
-                          entries, derived balances
+                          settlement, void refunds and the leaderboard:
+                          append-only entries, derived balances
 backend/realtime_service/ live prices over a websocket; owns no data
 backend/shared/           the only code the services import from each other
 backend/*/migrations/     auth, market, ledger: each schema's Alembic history,
@@ -257,3 +359,5 @@ to make and would be expensive to reverse.
   outcome back inside its stored dispute window, by any admin
 - [0024](docs/adr/0024-resting-orders-fill-inside-the-trade.md) resting orders
   fill against the AMM inside the trade that moved the price
+- [0025](docs/adr/0025-voiding-a-flawed-market.md) voiding a flawed market, by
+  any admin without a stake, refunded at cost

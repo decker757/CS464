@@ -310,6 +310,10 @@ def _closed(upstream: SettleUpstream) -> None:
     upstream.body["status"] = "closed"
 
 
+def _voided(upstream: SettleUpstream) -> None:
+    upstream.body["status"] = "voided"
+
+
 def _inside_the_window(upstream: SettleUpstream) -> None:
     upstream.body["settleable"] = False
 
@@ -332,14 +336,15 @@ def _settle_step_fails(upstream: SettleUpstream) -> None:
 # controller cannot answer. Each row says which step of `pay_out` does:
 # - unknown: the read, with no book, since a 404 for a market with a book is
 #   503 (ADR 0017);
-# - closed, inside the window: the status check, as the read succeeds and a
-#   fresh database holds no record;
+# - closed, voided, inside the window: the status check, as the read succeeds
+#   and a fresh database holds no record;
 # - read 503, read 401: the read, proven by one GET; nothing written rules
 #   out the later 503s;
 # - settle step: the last step, proven by the committed result row.
 _REFUSALS = [
     pytest.param(_unknown, False, 404, "market_not_found", 1, 0, 0, id="unknown-market"),
     pytest.param(_closed, True, 409, "market_not_approved", 1, 0, 0, id="closed"),
+    pytest.param(_voided, True, 409, "market_already_voided", 1, 0, 0, id="voided"),
     pytest.param(
         _inside_the_window, True, 409, "dispute_window_open", 1, 0, 0, id="dispute-window"
     ),

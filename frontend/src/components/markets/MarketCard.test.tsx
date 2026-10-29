@@ -2,7 +2,7 @@ import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { PriceState } from '../../api/ledgerApi'
+import type { OutcomePrice, PriceState } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
 import MarketCard from './MarketCard'
 
@@ -26,14 +26,39 @@ interface PriceProps {
   snapshot?: PriceState
   priceReadFailed?: boolean
   onRetryPrice?: () => void
+  pricesWeekAgo?: OutcomePrice[] | null
 }
 
 function renderCard(market: PublicMarketSummary, prices: PriceProps = {}) {
-  render(
+  const view = render(
     <MemoryRouter>
       <MarketCard market={market} {...prices} />
     </MemoryRouter>,
   )
+  // Re-renders with a new snapshot, the way the list does when a price frame
+  // arrives on the socket ([X-1] #444).
+  return {
+    repriceWith(next: PriceState) {
+      view.rerender(
+        <MemoryRouter>
+          <MarketCard market={market} {...prices} snapshot={next} />
+        </MemoryRouter>,
+      )
+    },
+  }
+}
+
+// A snapshot pricing this market's two outcomes, at a given book version.
+function pricedAt(version: number, yes: string, no: string): PriceState {
+  return {
+    market_id: 'm1',
+    state_version: version,
+    prices: [
+      { outcome_id: 'm1-0', position: 0, price: yes },
+      { outcome_id: 'm1-1', position: 1, price: no },
+    ],
+    occurred_at: '2026-10-18T11:59:00Z',
+  }
 }
 
 describe('MarketCard', () => {
@@ -123,4 +148,225 @@ it("names a market being resolved in the trader's words", () => {
 
   expect(screen.getByText('Resolving')).toBeInTheDocument()
   expect(screen.queryByText('Pending')).not.toBeInTheDocument()
+})
+
+// #526, and market-service.md's void-screen notes (7): a voided market has no
+// result, so a probability on its card would read as a market still priced.
+// The batch snapshot goes on carrying its last prices, so the card must
+// ignore them rather than wait for them to stop arriving.
+it('shows a voided market as Voided, with no price even though its snapshot carries prices', () => {
+  const snapshot: PriceState = {
+    market_id: 'm1',
+    state_version: 7,
+    prices: [
+      { outcome_id: 'm1-0', position: 0, price: '0.6200' },
+      { outcome_id: 'm1-1', position: 1, price: '0.3800' },
+    ],
+    occurred_at: '2026-10-18T11:00:00Z',
+  }
+  renderCard({ ...MARKET, status: 'voided', close_time: '2026-10-10T00:00:00Z' }, { snapshot })
+
+  expect(screen.getByText('Voided')).toBeInTheDocument()
+  expect(screen.queryByLabelText('Yes price')).not.toBeInTheDocument()
+  expect(screen.queryByText('62.0%')).not.toBeInTheDocument()
+  expect(screen.queryByText(/last trade/i)).not.toBeInTheDocument()
+})
+
+// A voided card shows no prices at all, so a failed read of them is nothing
+// to retry: offering Retry for a price the card will never draw would send
+// the trader after a number that does not exist.
+it('offers no Retry and no price error on a voided card whose price read failed', () => {
+  renderCard({ ...MARKET, status: 'voided', close_time: '2026-10-10T00:00:00Z' }, { priceReadFailed: true, onRetryPrice: () => {} })
+
+  expect(screen.getByText('Voided')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  expect(screen.queryByText(/loading prices/i)).not.toBeInTheDocument()
+})
+
+// [X-1] #444 AC 3: a price that changes is visibly marked as having changed,
+// and the cue is not colour alone. The arrow is the half that survives a
+// trader who cannot tell the two tints apart, and the accessible name is the
+// half that survives not seeing the card at all.
+describe('a price that has just moved', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('marks the outcome that rose, in words and not only in colour', () => {
+    const { repriceWith } = renderCard(MARKET, { snapshot: pricedAt(1, '0.5000', '0.5000') })
+
+    act(() => repriceWith(pricedAt(2, '0.6200', '0.3800')))
+
+    // Said in words, for a screen reader and for the colour-blind case.
+    expect(screen.getByLabelText('Yes price rose')).toHaveTextContent('62.0%')
+    expect(screen.getByLabelText('No price fell')).toHaveTextContent('38.0%')
+    // And drawn as a shape, not only as a tint.
+    expect(screen.getByLabelText('Yes price rose')).toHaveTextContent('▲')
+    expect(screen.getByLabelText('No price fell')).toHaveTextContent('▼')
+  })
+
+  // Every card would flash on load otherwise, which says "everything just
+  // changed" on a page where nothing has.
+  it('does not mark the first price it is given', () => {
+    renderCard(MARKET, { snapshot: pricedAt(1, '0.5000', '0.5000') })
+
+    expect(screen.getByLabelText('Yes price')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Yes price rose')).not.toBeInTheDocument()
+  })
+
+  // A repaint that does not move the number is not an event. The list re-reads
+  // every still-trading market twice a minute, so most repaints are this.
+  it('does not mark a price that was re-read unchanged', () => {
+    const { repriceWith } = renderCard(MARKET, { snapshot: pricedAt(1, '0.5000', '0.5000') })
+
+    act(() => repriceWith(pricedAt(2, '0.5000', '0.5000')))
+
+    expect(screen.getByLabelText('Yes price')).toBeInTheDocument()
+    expect(screen.queryByLabelText(/rose|fell/)).not.toBeInTheDocument()
+  })
+
+  // The cue is temporary: two trades in quick succession have to read as two
+  // events, not as one that never ends.
+  it('stops marking the price after a moment', () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { repriceWith } = renderCard(MARKET, { snapshot: pricedAt(1, '0.5000', '0.5000') })
+
+    act(() => repriceWith(pricedAt(2, '0.6200', '0.3800')))
+    expect(screen.getByLabelText('Yes price rose')).toBeInTheDocument()
+
+    act(() => { vi.advanceTimersByTime(2_000) })
+
+    expect(screen.getByLabelText('Yes price')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Yes price rose')).not.toBeInTheDocument()
+  })
+})
+
+// [X-1] #441. The sides used to be two equal chips at 50/50 and at 89/11
+// alike, so the one fact a card exists to say — which way the crowd leans,
+// and how far — had to be read rather than seen. A priced card now draws a
+// bar split at the prices, named for what it shows.
+describe('the split bar on a priced card', () => {
+  // The bar's segments, in outcome order. jsdom lays nothing out, so the
+  // share each segment is given is the only place its width exists here;
+  // e2e/browse-prices measures the widths a browser actually draws from it.
+  function segmentsOf(bar: HTMLElement): Element[] {
+    return Array.from(bar.children)
+  }
+
+  it('splits at the prices, and says so', () => {
+    const { repriceWith } = renderCard(MARKET, { snapshot: pricedAt(3, '0.8900', '0.1100') })
+
+    const bar = screen.getByRole('img', { name: 'Yes 89.0%, No 11.0%' })
+    expect(segmentsOf(bar)[0]).toHaveStyle({ flexGrow: '0.89' })
+    expect(segmentsOf(bar)[1]).toHaveStyle({ flexGrow: '0.11' })
+
+    // And the other way round once the crowd turns: the first side is not
+    // simply the wider one.
+    act(() => repriceWith(pricedAt(4, '0.3000', '0.7000')))
+
+    const turned = screen.getByRole('img', { name: 'Yes 30.0%, No 70.0%' })
+    expect(segmentsOf(turned)[0]).toHaveStyle({ flexGrow: '0.3' })
+    expect(segmentsOf(turned)[1]).toHaveStyle({ flexGrow: '0.7' })
+  })
+
+  // AC 5 and #431: a card with no price must not draw a split at all. The
+  // traps are the two cards whose snapshot *does* carry prices — an untraded
+  // book quotes its 50/50 seed, which is nobody's opinion (#445), and a voided
+  // market's last prices answer a question with no answer (#526) — and a card
+  // still waiting, which has nothing to divide by.
+  it.each([
+    { state: 'untraded', market: MARKET, prices: { snapshot: pricedAt(0, '0.5000', '0.5000') } },
+    { state: 'voided', market: { ...MARKET, status: 'voided' as const }, prices: { snapshot: pricedAt(7, '0.6200', '0.3800') } },
+    { state: 'still loading', market: MARKET, prices: {} },
+  ])('draws no split for a market that is $state', ({ market, prices }) => {
+    renderCard(market, prices)
+
+    expect(screen.getByText('Yes')).toBeInTheDocument()
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+  })
+
+  // AC 4: five sides in one row would be five slivers of truncated text. A
+  // market with more outcomes keeps one readable chip each, under one bar.
+  it('draws a market with more than two outcomes as one bar, each outcome still named and priced', () => {
+    const fiveWay: PublicMarketSummary = {
+      ...MARKET,
+      outcomes: ['Red', 'Blue', 'Green', 'Gold', 'Grey'].map((label, position) => ({ id: `m1-${position}`, position, label })),
+    }
+    const prices = ['0.4000', '0.3000', '0.1500', '0.1000', '0.0500']
+    renderCard(fiveWay, {
+      snapshot: {
+        market_id: 'm1',
+        state_version: 9,
+        prices: prices.map((price, position) => ({ outcome_id: `m1-${position}`, position, price })),
+        occurred_at: '2026-10-18T11:59:00Z',
+      },
+    })
+
+    expect(screen.getByLabelText('Red price')).toHaveTextContent('40.0%')
+    expect(screen.getByLabelText('Grey price')).toHaveTextContent('5.0%')
+    const bar = screen.getByRole('img', { name: 'Red 40.0%, Blue 30.0%, Green 15.0%, Gold 10.0%, Grey 5.0%' })
+    expect(segmentsOf(bar)[0]).toHaveStyle({ flexGrow: '0.4' })
+    expect(segmentsOf(bar)[4]).toHaveStyle({ flexGrow: '0.05' })
+  })
+})
+
+// [X-1] #564: a card says where each outcome is going, not only where it is.
+// The figure is the batch snapshot's `prices_7d_ago` (#446), which the page
+// reads once for every card.
+describe("a card's change over the week", () => {
+  // The two prices a week ago, in the snapshot's own shape.
+  function weekAgo(yes: string, no: string): OutcomePrice[] {
+    return pricedAt(1, yes, no).prices
+  }
+
+  // AC 1: direction and size, and the direction as a symbol rather than a
+  // colour; the label says it in words for a trader who hears the card.
+  it('shows each outcome\'s change in points, up or down', () => {
+    renderCard(MARKET, { snapshot: pricedAt(5, '0.6200', '0.3800'), pricesWeekAgo: weekAgo('0.5000', '0.5000') })
+
+    expect(screen.getByLabelText('Yes up 12.0 points over the last 7 days')).toHaveTextContent('▲ +12.0 pts')
+    expect(screen.getByLabelText('No down 12.0 points over the last 7 days')).toHaveTextContent('▼ -12.0 pts')
+  })
+
+  // The chips of a market with more outcomes are drawn apart from the split,
+  // so they are asked separately.
+  it('shows the change on a market with more than two outcomes too', () => {
+    const threeWay: PublicMarketSummary = {
+      ...MARKET,
+      outcomes: [...MARKET.outcomes, { id: 'm1-2', position: 2, label: 'Draw' }],
+    }
+    const pricesOf = (yes: string, no: string, draw: string): OutcomePrice[] => [
+      ...pricedAt(1, yes, no).prices,
+      { outcome_id: 'm1-2', position: 2, price: draw },
+    ]
+    renderCard(threeWay, {
+      snapshot: { ...pricedAt(5, '0.5000', '0.2000'), prices: pricesOf('0.5000', '0.2000', '0.3000') },
+      pricesWeekAgo: pricesOf('0.3500', '0.3500', '0.3000'),
+    })
+
+    expect(screen.getByLabelText('Yes up 15.0 points over the last 7 days')).toHaveTextContent('▲ +15.0 pts')
+    expect(screen.getByLabelText('No down 15.0 points over the last 7 days')).toHaveTextContent('▼ -15.0 pts')
+    expect(screen.getByLabelText('Draw unchanged over the last 7 days')).toHaveTextContent('No change')
+  })
+
+  // AC 2 and the first Definition of Done item. Null is a market with no
+  // trade a week old — never traded, or only within the week — and a book
+  // that was open then stood at its seed price, which nobody chose. A zero
+  // would claim the crowd held still, and a change from the seed would claim
+  // it moved from an opinion nobody held (ledger-service.md).
+  it('draws no change at all when there is no price a week ago', () => {
+    renderCard(MARKET, { snapshot: pricedAt(5, '0.6200', '0.3800'), pricesWeekAgo: null })
+
+    expect(screen.getByLabelText('Yes price')).toHaveTextContent('62.0%')
+    expect(screen.queryByLabelText(/over the last 7 days/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/pts|No change/)).not.toBeInTheDocument()
+  })
+
+  // ledger-service.md: equal to `prices` is a real change of zero over the
+  // window, not missing data, so it is said rather than left out.
+  it('says a price that has not moved all week is unchanged', () => {
+    renderCard(MARKET, { snapshot: pricedAt(5, '0.6200', '0.3800'), pricesWeekAgo: weekAgo('0.6200', '0.3800') })
+
+    expect(screen.getByLabelText('Yes unchanged over the last 7 days')).toHaveTextContent('No change')
+    expect(screen.queryByText(/pts/)).not.toBeInTheDocument()
+  })
 })

@@ -16,6 +16,7 @@ const CODE_MESSAGES: Record<string, string> = {
   market_pending_resolution: 'This market already has an outcome waiting for a second administrator. Reload to see its current state.',
   market_already_approved: 'This market already has an approved outcome. Reload to see its current state.',
   market_already_settled: 'This market has already been settled. Reload to see its current state.',
+  market_already_voided: 'This market has been voided. Reload to see its current state.',
   // Publishing re-runs every submission rule against the clock now (ADR
   // 0008), so a market submitted last week fails on a close time that has
   // since passed. Neither a retry nor a reload is the advice: market_service
@@ -40,6 +41,7 @@ const SUPERSEDING_CODES = new Set([
   'market_pending_resolution',
   'market_already_approved',
   'market_already_settled',
+  'market_already_voided',
 ])
 
 /** Publishing a submitted market ([1.3] #3, #348): the confirm popup's state,
@@ -56,7 +58,7 @@ const SUPERSEDING_CODES = new Set([
  * because it can reopen those fields for a resubmission (#381).
  * `marketId` may be null while a caller has not got one yet; publishing is
  * then refused here rather than guarded at each call site. Publication is one
- * way (ADR 0008), which is why the row confirms it first. */
+ * way (ADR 0008), which is why both screens confirm it first (#512). */
 export function usePublishMarket(
   marketId: string | null,
   onPublished: () => void,

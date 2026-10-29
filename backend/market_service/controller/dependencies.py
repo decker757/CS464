@@ -1,5 +1,5 @@
 """FastAPI dependencies shared across routes: the session, who the caller is,
-and the paging parameters.
+and the paging and search parameters.
 
 Authentication is a dependency, not middleware: it is opt-in per route, shows
 in /docs, and hands routes typed claims. This service never reads auth.users,
@@ -18,6 +18,7 @@ from core import security
 from core.database import get_session
 from core.errors import NotAnAdministrator, NotAuthenticated
 from core.security import TokenClaims
+from model.schemas import MAX_QUESTION_LENGTH
 from service.audit import Actor, actor_of
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
@@ -79,4 +80,21 @@ PageLimit = Annotated[
 PageCursor = Annotated[
     str | None,
     Query(description="The `next_cursor` from the previous page, unmodified."),
+]
+
+# The question search of every market list that takes one. [X-2] #35.
+QuestionSearch = Annotated[
+    str | None,
+    Query(
+        max_length=MAX_QUESTION_LENGTH,
+        # No NUL: Postgres text cannot hold one, and asyncpg's error would be
+        # a 500. Refused as a 422 rather than stripped, which would answer a
+        # question the caller did not ask.
+        pattern=r"^[^\x00]*$",
+        description=(
+            "Case-insensitive containment search over the question. "
+            "Surrounding whitespace is ignored, and a blank search is the "
+            "same as omitting it."
+        ),
+    ),
 ]

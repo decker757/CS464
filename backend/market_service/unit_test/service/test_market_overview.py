@@ -5,9 +5,10 @@ per-status counts beside the list. Status, filter and counts all derive from
 the clock (ADR 0011, as amended by #5). #210 pages the list by keyset, settled
 markets last, and reads its counts in the same REPEATABLE READ snapshot
 ("The admin overview pages by keyset, settled markets last, and reads its
-counts in the same REPEATABLE READ snapshot"). The clock is always injected:
-`now` sits ten days ahead of the real clock, so any half that reads its own
-clock disagrees with it.
+counts in the same REPEATABLE READ snapshot"). #555 searches the list by
+question, as the trader browse does, and leaves the counts alone. The clock
+is always injected: `now` sits ten days ahead of the real clock, so any half
+that reads its own clock disagrees with it.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from unit_test.conftest import (
     proposed_market,
     published_market_closing_at,
     settled_market,
+    voided_market,
 )
 
 # More than any test here creates, so a test about order or counts reads one page.
@@ -44,6 +46,11 @@ _ONE_PAGE = 1000
 # A walk longer than this means a cursor that never advances.
 _MOST_PAGES = 50
 
+# Two questions for the search, #555. Only the first contains "inflation",
+# and only the first contains "2%", though both contain a 2.
+_INFLATION = "Will Singapore core inflation be below 2% in December 2026?"
+_MRT = "Will the MRT Cross Island Line open before June 2027?"
+
 
 # --- the one place the assumed signature is written ------------------------
 async def _page(
@@ -51,6 +58,7 @@ async def _page(
     caller: Actor,
     *,
     limit: int = _ONE_PAGE,
+    query: str | None = None,
     status: MarketStatus | None = None,
     now: datetime,
     cursor: str | None = None,
@@ -66,6 +74,7 @@ async def _page(
         session,
         caller_id=caller.id,
         limit=limit,
+        query=query,
         status=status,
         now=now,
         cursor=cursor,
@@ -76,11 +85,12 @@ async def _overview(
     session: AsyncSession,
     caller: Actor,
     *,
+    query: str | None = None,
     status: MarketStatus | None = None,
     now: datetime,
 ) -> tuple[list, dict[MarketStatus, int]]:
     """The overview's rows and counts on one page, as `caller` sees them at `now`."""
-    page = await _page(session, caller, status=status, now=now)
+    page = await _page(session, caller, query=query, status=status, now=now)
     return page.markets, page.counts
 
 
@@ -90,17 +100,25 @@ async def _walk(
     *,
     limit: int,
     now: datetime,
+    query: str | None = None,
     status: MarketStatus | None = None,
     cursor: str | None = None,
 ) -> list:
-    """Every row from `cursor` on, following `next_cursor` to the end.
+    """Every row from `cursor` on, following `next_cursor` to the end, sending
+    the same `query` and `status` with every page.
 
     Bounded, so a cursor that never advances fails the test instead of hanging it.
     """
     rows: list = []
     for _ in range(_MOST_PAGES):
         page = await _page(
-            session, caller, limit=limit, status=status, now=now, cursor=cursor
+            session,
+            caller,
+            limit=limit,
+            query=query,
+            status=status,
+            now=now,
+            cursor=cursor,
         )
         rows.extend(page.markets)
         cursor = page.next_cursor
@@ -116,9 +134,11 @@ def _injected_now() -> datetime:
 
 
 async def _open_until(
-    session: AsyncSession, creator: Actor, closes: datetime
+    session: AsyncSession, creator: Actor, closes: datetime, **overrides: object
 ) -> uuid.UUID:
-    return (await published_market_closing_at(session, creator, closes)).id
+    return (
+        await published_market_closing_at(session, creator, closes, **overrides)
+    ).id
 
 
 async def _draft(
@@ -175,6 +195,7 @@ async def population(session: AsyncSession, hour_long_window: None) -> _Populati
         "pending": (await proposed_market(session, caller)).id,
         "approved": (await approved_market(session, caller)).id,
         "settled": (await settled_market(session, caller)).id,
+        "voided": (await voided_market(session, caller)).id,
     }
     return _Population(caller=caller, now=now, ids=ids)
 
@@ -568,6 +589,39 @@ async def test_settled_markets_sort_last_and_a_cursor_crosses_into_their_group(
     assert _ids(walked) == [approved, still_open, first_settled, second_settled]
 
 
+# --- [BE] #221: voided markets sink with the settled ones --------------------
+async def test_voided_markets_sort_last_among_the_settled_ones_by_close_time(
+    session: AsyncSession,
+) -> None:
+    """ADR 0025: the overview "sinks voided markets with settled ones to the
+    end of its unfiltered view", "in the same order among themselves".
+
+    The finished markets are made first, so their close times precede the
+    rest and, without the group, they would lead. The voided one is made
+    between the two settled ones, so it sorts between them by close time.
+    One market a page, so the cursor is cut between the groups and inside the
+    finished one. Fails with VOIDED left out of the finished group (it leads),
+    or put in a group of its own after the settled one (it trails).
+    """
+    caller = actor()
+    now = _injected_now()
+    first_settled = (await settled_market(session, caller)).id
+    voided = (await voided_market(session, caller)).id
+    second_settled = (await settled_market(session, caller)).id
+    approved = (await approved_market(session, caller)).id
+    still_open = await _open_until(session, caller, now + timedelta(days=1))
+
+    walked = await _walk(session, caller, limit=1, now=now)
+
+    assert _ids(walked) == [
+        approved,
+        still_open,
+        first_settled,
+        voided,
+        second_settled,
+    ]
+
+
 # --- #210: the page and the counts read one snapshot ----------------------
 async def test_the_page_and_the_counts_read_one_snapshot(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
@@ -656,6 +710,28 @@ async def test_each_rows_settleable_follows_the_public_details_rule(
         assert row.settleable is (row.id in decided), row
 
 
+async def test_each_rows_voidable_follows_the_public_details_rule(
+    session: AsyncSession, population: _Population
+) -> None:
+    """ADR 0025: "The public detail and every overview row carry `voidable`",
+    judged on the stored status against the page's clock.
+
+    Through `MarketOverviewRowOut`, so it fails with the flag missing from the
+    card or the schema. The injected clock is past the approved row's window
+    (`hour_long_window`), so it fails if the window is not read; `past_close`
+    reads `closed` and is stored OPEN, so it fails if the derived status is.
+    """
+    ids = population.ids
+    voidable = {ids["swept_closed"], ids["pending"], ids["voided"]}
+
+    rows, _ = await _overview(session, population.caller, now=population.now)
+
+    shown = [MarketOverviewRowOut.model_validate(row) for row in rows]
+    assert shown, "the population must be listed for this to mean anything"
+    for row in shown:
+        assert row.voidable is (row.id in voidable), row
+
+
 async def test_a_settled_rows_settleable_stays_true_even_with_no_window_end(
     session: AsyncSession,
 ) -> None:
@@ -698,3 +774,160 @@ async def test_an_approved_rows_window_end_is_the_stored_one(
     assert [(row.id, row.dispute_window_ends_at) for row in shown] == [
         (market_id, stored)
     ]
+
+
+# --- #555: the question search ---------------------------------------------
+async def test_the_search_narrows_the_overview_to_questions_containing_it(
+    session: AsyncSession,
+) -> None:
+    """#555: `q` is "a case-insensitive containment search over the question",
+    and "surrounding whitespace is ignored". Sent in capitals and padded, so
+    a case-sensitive or an unstripped search finds nothing."""
+    caller = actor()
+    now = _injected_now()
+    inflation = await _open_until(
+        session, caller, now + timedelta(days=1), question=_INFLATION
+    )
+    await _open_until(session, caller, now + timedelta(days=2), question=_MRT)
+
+    rows, _ = await _overview(session, caller, query="  INFLATION  ", now=now)
+
+    assert _ids(rows) == [inflation]
+
+
+async def test_the_search_treats_like_wildcards_and_the_escape_as_text(
+    session: AsyncSession,
+) -> None:
+    """#555: "`%`, `_` and `\\` match as text", as on `/public/markets`. The
+    overview's own wiring: a bare `ilike` passes the test above and fails
+    here. Unescaped, `2%` and `_` match every question below, and `\\T`
+    matches a bare `T`, so the backslashed question is missed."""
+    caller = actor()
+    now = _injected_now()
+    percent = await _open_until(
+        session, caller, now + timedelta(days=1), question=_INFLATION
+    )
+    await _open_until(session, caller, now + timedelta(days=2), question=_MRT)
+    underscored = await _open_until(
+        session,
+        caller,
+        now + timedelta(days=3),
+        question="Will the CPI_SG series be published before March 2027?",
+    )
+    backslashed = await _open_until(
+        session,
+        caller,
+        now + timedelta(days=4),
+        question="Will the C:\\Temp retention policy be published in 2027?",
+    )
+
+    by_percent, _ = await _overview(session, caller, query="2%", now=now)
+    by_underscore, _ = await _overview(session, caller, query="_", now=now)
+    by_backslash, _ = await _overview(session, caller, query="C:\\Temp", now=now)
+
+    assert _ids(by_percent) == [percent]
+    assert _ids(by_underscore) == [underscored]
+    assert _ids(by_backslash) == [backslashed]
+
+
+@pytest.mark.parametrize("blank", ["", "   "], ids=["empty", "spaces"])
+async def test_a_blank_search_is_the_same_as_none_even_for_a_draft_with_no_question(
+    session: AsyncSession, blank: str
+) -> None:
+    """#555: "a blank `q` is the same as none". Only the overview can show
+    it: it lists the caller's drafts, and a draft may have no question yet,
+    which a search for `%%` or `%   %` would drop."""
+    caller = actor()
+    now = _injected_now()
+    untitled = await _draft(session, caller, question=None)
+    await _open_until(session, caller, now + timedelta(days=1), question=_INFLATION)
+
+    unsearched, _ = await _overview(session, caller, now=now)
+    searched, _ = await _overview(session, caller, query=blank, now=now)
+
+    assert untitled in _ids(unsearched)
+    assert _ids(searched) == _ids(unsearched)
+
+
+async def test_the_search_composes_with_the_status_filter(
+    session: AsyncSession,
+) -> None:
+    """#555: "`q` composes with `status`". Each decoy matches one half only,
+    so dropping either half fails."""
+    caller = actor()
+    now = _injected_now()
+    wanted = await _open_until(
+        session, caller, now - timedelta(hours=1), question=_INFLATION
+    )
+    await _open_until(session, caller, now + timedelta(days=1), question=_INFLATION)
+    await _open_until(session, caller, now - timedelta(hours=2), question=_MRT)
+
+    rows, _ = await _overview(
+        session, caller, query="inflation", status=MarketStatus.CLOSED, now=now
+    )
+
+    assert _ids(rows) == [wanted]
+
+
+async def test_a_searched_pages_cursor_continues_the_searched_list(
+    session: AsyncSession,
+) -> None:
+    """#555: "the `next_cursor` of a searched page, sent back with the same
+    `q`, continues the searched list". One market a page, with a market the
+    search does not match between each pair, so the walk repeats, skips or
+    takes in a decoy if the search and the keyset do not compose."""
+    caller = actor()
+    now = _injected_now()
+    first = await _open_until(
+        session, caller, now + timedelta(days=1), question=_INFLATION
+    )
+    await _open_until(session, caller, now + timedelta(days=2), question=_MRT)
+    second = await _open_until(
+        session, caller, now + timedelta(days=3), question=_INFLATION
+    )
+    await _open_until(session, caller, now + timedelta(days=4), question=_MRT)
+    third = await _open_until(
+        session, caller, now + timedelta(days=5), question=_INFLATION
+    )
+
+    rows = await _walk(session, caller, limit=1, query="inflation", now=now)
+
+    assert _ids(rows) == [first, second, third]
+
+
+async def test_the_counts_are_the_same_with_and_without_a_search(
+    session: AsyncSession, population: _Population
+) -> None:
+    """#555: "The counts are unaffected by `q`, as they already are by
+    `status`: they cover every market the administrator can see". A search
+    that matches nothing, so counts narrowed by it would all read zero."""
+    unsearched = await _page(session, population.caller, now=population.now)
+    searched = await _page(
+        session, population.caller, query="no market asks this", now=population.now
+    )
+
+    assert searched.markets == []
+    assert searched.counts == unsearched.counts
+
+
+async def test_the_search_finds_my_drafts_and_submissions_and_not_another_administrators(
+    session: AsyncSession,
+) -> None:
+    """#555: "`q` searches the caller's own drafts and submissions too,
+    because the overview lists them", and another administrator's stay
+    hidden (ADR 0003). The caller's own draft about something else is the
+    decoy for a search that is not applied."""
+    caller = actor()
+    other = actor(username="michelle_t")
+    my_draft = await _draft(session, caller, question=_INFLATION)
+    my_submitted = await _draft(
+        session, caller, question=_INFLATION, status="submitted"
+    )
+    await _draft(session, caller, question=_MRT)
+    await _draft(session, other, question=_INFLATION)
+    await _draft(session, other, question=_INFLATION, status="submitted")
+
+    rows, _ = await _overview(session, caller, query="inflation", now=_injected_now())
+
+    # Sorted, not a set, so a row listed twice still fails.
+    assert sorted(_ids(rows)) == sorted([my_draft, my_submitted])

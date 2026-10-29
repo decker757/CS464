@@ -129,6 +129,34 @@ describe('MarketExposurePage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('shows a market whose book is open but untraded as no trades yet, like one with no book', async () => {
+    // #517. A book opens on the market's first preview or snapshot, before
+    // anyone trades (ledger-service.md). From then on its exposure reads
+    // state_version 0 with every outcome at zero, and nobody has traded in it
+    // any more than before. Naming a worst case here would pick an outcome
+    // nobody holds.
+    mockMarket('mkt-1', market())
+    mockExposure('mkt-1', {
+      opened_at: '2026-01-01T00:00:00Z',
+      state_version: 0,
+      seed_subsidy: '250.0000',
+      pool: '250.0000',
+      payout_exceeds_pool: false,
+      result: null,
+      winning_outcome_id: null,
+      outcomes: [
+        { outcome_id: 'o-yes', position: 0, shares_outstanding: '0.0000', payout_if_wins: '0.0000', residue_if_wins: '250.0000' },
+        { outcome_id: 'o-no', position: 1, shares_outstanding: '0.0000', payout_if_wins: '0.0000', residue_if_wins: '250.0000' },
+      ],
+    })
+
+    renderPage()
+
+    expect(await screen.findByText(/no trades yet/i)).toBeInTheDocument()
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.queryByText(/if yes wins/i)).not.toBeInTheDocument()
+  })
+
   it('passes over a residue it cannot read, rather than naming it the worst case', async () => {
     // A figure that does not parse shows as "—", so calling it the worst
     // case would hide a real shortfall behind a dash.
@@ -165,6 +193,28 @@ describe('MarketExposurePage', () => {
 
     expect(await screen.findByText('This market has settled; Yes won and the pool has been paid out.')).toBeInTheDocument()
     expect(screen.queryByText('Pool')).not.toBeInTheDocument()
+  })
+
+  it('says a voided market has no winner and an emptied pool, instead of drawing a live pool', async () => {
+    // #526: a void empties the pool as settlement does, so pool and every
+    // payout are null and the flag is false (ledger-service.md).
+    mockMarket('mkt-1', market({ status: 'voided' }))
+    mockExposure('mkt-1', {
+      pool: null,
+      payout_exceeds_pool: false,
+      result: 'voided',
+      winning_outcome_id: null,
+      outcomes: [
+        { outcome_id: 'o-yes', position: 0, shares_outstanding: '500.0000', payout_if_wins: null, residue_if_wins: null },
+      ],
+    })
+
+    renderPage()
+
+    expect(await screen.findByText('This market was voided, so it has no winner, and its pool has been emptied. What it refunded is in the audit entry for the void.')).toBeInTheDocument()
+    expect(screen.queryByText('Pool')).not.toBeInTheDocument()
+    expect(screen.queryByText(/won/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/settled/i)).not.toBeInTheDocument()
   })
 
   it('says when the figures were read, which trade they reflect, and reads them again on Refresh', async () => {

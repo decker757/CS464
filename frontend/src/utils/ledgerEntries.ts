@@ -10,6 +10,9 @@ export interface EntryRow extends LedgerEntry {
   // same way as a trade row, but it is a payout, not a trade: its side and
   // average_price stay null and are never shown as one ([3.4] #12).
   isSettlement: boolean
+  // A void refund names its market and outcome the same way, and is not a
+  // trade either: what it pays back is what the shares cost (#526).
+  isRefund: boolean
   question: string
   outcomeLabel: string
 }
@@ -22,10 +25,11 @@ export interface EntryPage {
 function toRow(entry: LedgerEntry, markets: Map<string, PublicMarketDetail>): EntryRow {
   const isTrade = entry.kind === 'trade_buy' || entry.kind === 'trade_sell'
   const isSettlement = entry.kind === 'settlement'
-  if ((!isTrade && !isSettlement) || !entry.market_id || !entry.outcome_id) {
-    return { ...entry, isTrade: false, isSettlement: false, question: '', outcomeLabel: '' }
+  const isRefund = entry.kind === 'void_refund'
+  if ((!isTrade && !isSettlement && !isRefund) || !entry.market_id || !entry.outcome_id) {
+    return { ...entry, isTrade: false, isSettlement: false, isRefund: false, question: '', outcomeLabel: '' }
   }
-  return { ...entry, isTrade, isSettlement, ...labelsFor(entry.market_id, entry.outcome_id, markets) }
+  return { ...entry, isTrade, isSettlement, isRefund, ...labelsFor(entry.market_id, entry.outcome_id, markets) }
 }
 
 /**
@@ -57,5 +61,6 @@ export function kindLabel(kind: string): string {
   if (kind === 'trade_buy') return 'Buy'
   if (kind === 'trade_sell') return 'Sell'
   if (kind === 'settlement') return 'Payout'
+  if (kind === 'void_refund') return 'Refund'
   return kind
 }

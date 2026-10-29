@@ -10,6 +10,7 @@ import { describeSharesToSell } from '../../utils/orderInput'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
 import { selectableClass } from '../ui/selectableClass'
+import HoldsNoneToSell from './HoldsNoneToSell'
 import LimitOrderFields from './LimitOrderFields'
 import TradePreviewSummary from './TradePreviewSummary'
 
@@ -18,6 +19,9 @@ type OrderType = 'market' | 'limit'
 interface TradingPanelProps {
   marketId: string
   outcomes: PublicOutcome[]
+  // The outcome to trade. It is chosen on the page's price blocks, where its
+  // price is shown, so the panel offers no choice of its own (#429).
+  outcomeId: string
   // Whether this market takes limit orders at all: they are binary-markets
   // only, and anything else is refused market_not_binary, so the choice is
   // hidden rather than offered and refused (ledger-service.md, ADR 0024).
@@ -34,10 +38,11 @@ interface TradingPanelProps {
   // where guessing zero here would stop a trader selling shares they own
   // because one request went missing.
   heldByOutcome: Record<string, string> | null
-  // What the trader's own open sell orders on this market hold back of each
-  // outcome; an outcome that is not a key has nothing held back. The ledger
-  // will not sell those shares a second time, so the check below and the
-  // Max button both stop at the rest.
+  // What the trader's own live sell orders on this market hold back of each
+  // outcome, as the portfolio reports it per position (#410); an outcome that
+  // is not a key has nothing held back. The ledger will not sell those shares
+  // a second time, so the check below and the Max button both stop at the
+  // rest.
   reservedSharesByOutcome: Record<string, string>
   // A trade committed, so the holding above is out of date — the page re-reads
   // it. The balance comes back through BalanceContext's own refetch.
@@ -50,10 +55,11 @@ interface TradingPanelProps {
 // use, and here it is also the colour the rest of the panel speaks: the
 // confirmation banner is `success`, a refusal is `danger`, a profit figure is
 // whichever its sign makes it. So this row keeps its tint rather than taking
-// the navy fill the outcome row below it uses. What #430 found is real all the
-// same — two same-shaped rows a few pixels apart disagreeing about what "on"
-// looks like — and `ToggleRow` answers it by giving each row its own heading,
-// so they read as two questions and not as one control in two halves.
+// the navy fill the order type row above it uses. What #430 found is real all
+// the same — two same-shaped rows a few pixels apart disagreeing about what
+// "on" looks like — and `ToggleRow` answers it by giving each row its own
+// heading, so they read as two questions and not as one control in two
+// halves.
 function sideToggleClass(active: boolean, activeColor: 'success' | 'danger'): string {
   // Text reads the `-strong` tone, not the plain one: the plain tone on its
   // own 10% tint is 4.14–4.39:1, short of AA's 4.5:1 for text this size
@@ -98,11 +104,11 @@ interface TradeToCheck {
   reservedShares: string | undefined
 }
 
-/** What the trader's open sell orders hold back of a holding, never more
- *  than the holding itself. A sell order's fill lowers both, but they arrive
- *  on two reads, and a holdings read that lands before the orders list
- *  catches up would otherwise leave a negative to sell — in the line above
- *  the field and in the refusal under it alike. */
+/** What the trader's own live sell orders hold back of a holding, never more
+ *  than the holding itself. Both come off one portfolio row (#410), so the
+ *  clamp matters only if the ledger ever contradicts itself — and then it
+ *  keeps a negative out of the line above the field and the refusal under
+ *  it. */
 function sharesReservedOf(held: string, reserved: string | undefined): string | undefined {
   if (reserved === undefined) return undefined
   return compareCredits(reserved, held) > 0 ? held : reserved
@@ -144,13 +150,12 @@ function refusalBeforeSending({
 }
 
 export default function TradingPanel({
-  marketId, outcomes, limitOrdersAllowed, heldByOutcome, reservedSharesByOutcome, onTraded, onOrderPlaced,
+  marketId, outcomes, outcomeId, limitOrdersAllowed, heldByOutcome, reservedSharesByOutcome, onTraded, onOrderPlaced,
 }: TradingPanelProps) {
   const { available, refetch: refetchBalance } = useBalance()
 
   const [orderType, setOrderType] = useState<OrderType>('market')
   const [side, setSide] = useState<TradeSide>('buy')
-  const [outcomeId, setOutcomeId] = useState(outcomes[0]?.id ?? '')
   const [quantity, setQuantity] = useState('')
   const inputKey = `${marketId}:${outcomeId}:${side}:${quantity}`
 
@@ -178,7 +183,7 @@ export default function TradingPanel({
   const heldQuantity = heldByOutcome === null ? null : (heldByOutcome[outcomeId] ?? '0')
   // Asked of the selected outcome and of a holding that has landed, so the
   // Sell toggle itself never changes: it stays pressable through a load and
-  // through every outcome toggle, and only the space below it says why there
+  // through every change of outcome, and only the space below it says why there
   // is nothing to sell (#451). Null is unknown, not none, so it keeps the
   // quantity field. So does a holding that open sell orders hold back in
   // full: the trader owns those shares, and the line over the field says
@@ -217,7 +222,10 @@ export default function TradingPanel({
       setLastTradeFor(`${marketId}:${outcomeId}:${side}:`)
       setLastTrade({ side, quantity: result.quantity, outcomeLabel: selectedOutcome?.label ?? '', total: result.total })
       setQuantity('')
-      refetchBalance()
+      // `void`: BalanceContext's refetch catches its own failure, and the
+      // trade is already committed — the confirmation above does not wait on
+      // the new balance arriving (#551).
+      void refetchBalance()
       onTraded()
     } catch (err) {
       const code = errorCode(err)
@@ -243,7 +251,9 @@ export default function TradingPanel({
   // Keeps the outcome: the offer is to buy the one the trader was looking at.
   // The button that was clicked goes with the notice, so focus moves on to
   // the quantity field rather than dropping to the top of the page; flushSync
-  // renders that field first, so there is something to focus.
+  // renders that field first, so there is something to focus. On the limit
+  // ticket there is no quantity field here, and LimitOrderFields focuses its
+  // own first field once this returns.
   const handleBuyInstead = () => {
     flushSync(() => setSide('buy'))
     quantityInputRef.current?.focus()
@@ -253,9 +263,16 @@ export default function TradingPanel({
 
   return (
     <div>
+      {/* Which outcome this trades, in words: the choice itself is the price
+          blocks above the panel (#429), and the limit ticket's button never
+          names it. */}
+      <p className="mb-4 text-[13px] break-words text-muted">
+        Trading <strong className="font-semibold text-smu-navy">{selectedOutcome?.label}</strong>. Pick another outcome by its price above.
+      </p>
+
       {/* Market or limit first, since it decides which fields follow. Each
           toggle row carries its own heading (#430's ToggleRow), so a screen
-          reader meets three labelled questions rather than six loose
+          reader meets two labelled questions rather than four loose
           buttons. */}
       {limitOrdersAllowed && (
         <ToggleRow id="order-type-label" label="Order type">
@@ -292,20 +309,6 @@ export default function TradingPanel({
         </button>
       </ToggleRow>
 
-      <ToggleRow id="trade-outcome-label" label="Outcome">
-        {outcomes.map(outcome => (
-          <button
-            key={outcome.id}
-            type="button"
-            onClick={() => setOutcomeId(outcome.id)}
-            aria-pressed={outcomeId === outcome.id}
-            className={`flex-1 cursor-pointer rounded-control border px-3 py-2.5 text-sm font-medium transition ${selectableClass(outcomeId === outcome.id)}`}
-          >
-            {outcome.label}
-          </button>
-        ))}
-      </ToggleRow>
-
       {orderType === 'limit' ? (
         <LimitOrderFields
           marketId={marketId}
@@ -314,31 +317,27 @@ export default function TradingPanel({
           outcomeLabel={selectedOutcome?.label ?? ''}
           heldQuantity={heldQuantity}
           sellableQuantity={sellableQuantity}
+          holdsNoneToSell={holdsNoneToSell}
+          onBuyInstead={handleBuyInstead}
           onPlaced={onOrderPlaced}
         />
       ) : (
       <>
       {visibleLastTrade && (
-        <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] text-success-strong">
+        <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] break-words text-success-strong">
           {visibleLastTrade.side === 'buy' ? 'Bought' : 'Sold'} {visibleLastTrade.quantity} {visibleLastTrade.outcomeLabel} for {formatCreditsPrecise(unsignedCredits(visibleLastTrade.total))} credits.
         </p>
       )}
 
-      {/* Always on the market ticket and empty until there is something to
-          say: a screen reader announces a live region's content changing,
-          and may not announce one that arrives with its content already in
-          it. */}
-      <div role="status">
-        {holdsNoneToSell && (
-          <p className="mb-3 text-sm text-smu-navy">You don't hold any {selectedOutcome?.label ?? ''} shares.</p>
-        )}
-      </div>
+      {/* Always on the market ticket: its live region is empty until there is
+          something to say. Shared with the limit ticket (#496). */}
+      <HoldsNoneToSell
+        holdsNone={holdsNoneToSell}
+        outcomeLabel={selectedOutcome?.label ?? ''}
+        onBuyInstead={handleBuyInstead}
+      />
 
-      {holdsNoneToSell ? (
-        <Button variant="primary" size="block" onClick={handleBuyInstead}>
-          Buy {selectedOutcome?.label ?? ''} instead
-        </Button>
-      ) : (
+      {holdsNoneToSell ? null : (
         <>
           <div className="mb-1.5 flex items-baseline justify-between">
             <label htmlFor="trade-quantity" className="block text-[13px] font-semibold text-smu-navy">
@@ -386,9 +385,14 @@ export default function TradingPanel({
           {visibleSubmitError && <p role="alert" className="mb-3 text-xs text-danger">{visibleSubmitError}</p>}
 
           <Button variant="primary" size="block" onClick={submit} disabled={!canSubmit}>
-            {submitting
-              ? 'Submitting…'
-              : `${side === 'buy' ? 'Buy' : 'Sell'} ${selectedOutcome?.label ?? ''}`}
+            {/* Cut short rather than wrapped: the button is one line high, a
+                label can be 120 unbroken characters, and the line at the top
+                of the panel names the outcome in full (#429). */}
+            <span className="min-w-0 truncate px-4">
+              {submitting
+                ? 'Submitting…'
+                : `${side === 'buy' ? 'Buy' : 'Sell'} ${selectedOutcome?.label ?? ''}`}
+            </span>
           </Button>
         </>
       )}

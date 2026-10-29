@@ -10,12 +10,16 @@ one-statement read".
 A market this ledger has settled is not valued at all: its rows carry what
 they were paid, and the payout is already in the balance. DECISIONS.md, "A
 settled row's payout is its quantity, and its result comes from
-`ledger.market_results`, joined in the portfolio's one statement".
+`ledger.market_results`, joined in the portfolio's one statement". A voided
+market is read the same way, its rows `refunded` with what the void paid
+each: DECISIONS.md, "A voided row's `payout` is its refund, joined in the
+portfolio's statement only" ([BE] #221, ADR 0025).
 """
 
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from itertools import groupby
@@ -26,21 +30,25 @@ from sqlalchemy.engine import Row
 from core.errors import InsufficientSharesOutstanding, MarketBookIncomplete
 from core.lmsr import prices as lmsr_prices
 from core.pricing import liquidation_values_of, per_share, quantize_price
-from model.entities import MarketBook, MarketOutcome, MarketResult, Position
+from model.entities import MarketBook, MarketOutcome, MarketResult, Position, ResultKind
 from model.schemas import PositionResult
 from service import book_prices
 
 ZERO = Decimal(0)
 _ZERO_AMOUNT = Decimal("0.0000")
 
+# A voided market's refunds, by `(market_id, outcome_id)`, as the portfolio
+# reads them for its own holder.
+Refunds = Mapping[tuple[uuid.UUID, uuid.UUID], Decimal]
+
 
 @dataclass(frozen=True)
 class PortfolioPosition:
     """One outcome the caller still holds.
 
-    Valued at liquidation (ADR 0018) when its market is not settled, and then
-    `result` and `payout` are None. On a settled market it is the other way
-    round: `price`, `value` and `unrealized_pnl` are None.
+    Valued at liquidation (ADR 0018) when its market is not settled or voided,
+    and then `result` and `payout` are None. On a settled or voided market it
+    is the other way round: `price`, `value` and `unrealized_pnl` are None.
     """
 
     market_id: uuid.UUID
@@ -107,19 +115,27 @@ def _position_of(
     )
 
 
-def _settled_positions_of(outcomes: list[Row]) -> list[PortfolioPosition]:
-    """The held outcomes of one settled market: what each was paid, and no value.
+def _settled_positions_of(outcomes: list[Row], refunds: Refunds) -> list[PortfolioPosition]:
+    """The held outcomes of one settled or voided market: what each was paid,
+    and no value.
 
-    The payout is the quantity on the winning outcome and nothing on any
-    other. The book is not read, so a damaged one cannot fail the portfolio
-    over figures that never reach it.
+    Settled, the payout is the quantity on the winning outcome and nothing on
+    any other. Voided, every row is `refunded`, paid its entry in `refunds`,
+    or `0.0000` where it has none: a refund that rounded down to nothing
+    wrote no transaction. The record's `kind` decides which, since a missing
+    refund cannot. The book is not read, so a damaged one cannot fail the
+    portfolio over figures that never reach it.
     """
+    voided = outcomes[0].settled_kind == ResultKind.VOIDED
     positions: list[PortfolioPosition] = []
     for outcome in outcomes:
         held = outcome.quantity if outcome.quantity is not None else ZERO
         if held == 0:
             continue
-        if outcome.outcome_id == outcome.winning_outcome_id:
+        if voided:
+            key = (outcome.market_id, outcome.outcome_id)
+            result, payout = PositionResult.REFUNDED, refunds.get(key, _ZERO_AMOUNT)
+        elif outcome.outcome_id == outcome.winning_outcome_id:
             result, payout = PositionResult.PAID_OUT, held
         else:
             result, payout = PositionResult.WORTHLESS, _ZERO_AMOUNT
@@ -169,18 +185,19 @@ def _valued_positions_of(outcomes: list[Row]) -> list[PortfolioPosition]:
     return positions
 
 
-def _positions_of(rows: list[Row]) -> list[PortfolioPosition]:
+def _positions_of(rows: list[Row], refunds: Refunds) -> list[PortfolioPosition]:
     """Every held market's outcomes as rows with `quantity > 0`: a market with
     a `market_results` record is read as paid, any other is valued.
 
-    Whether a market is settled is the record's presence, never its `kind`
-    (DECISIONS.md, "A settled row's payout is its quantity").
+    Whether a market has ended is the record's presence, never its `kind`
+    (DECISIONS.md, "A settled row's payout is its quantity"); the `kind`
+    chooses only between paid and refunded.
     """
     positions: list[PortfolioPosition] = []
     for _, group in groupby(rows, key=lambda row: row.market_id):
         outcomes = list(group)
         if outcomes[0].settled_kind is not None:
-            positions.extend(_settled_positions_of(outcomes))
+            positions.extend(_settled_positions_of(outcomes, refunds))
         else:
             positions.extend(_valued_positions_of(outcomes))
     return positions
@@ -228,9 +245,16 @@ def held_outcomes_query(
     )
 
 
-def valuation_of(balance: Decimal, rows: list[Row]) -> Valuation:
+def valuation_of(
+    balance: Decimal, rows: list[Row], *, refunds: Refunds | None = None
+) -> Valuation:
     """One user's positions and totals, from their balance and their rows of
     `held_outcomes_query`, ordered by `(market_id, position)`.
+
+    `refunds` is what a voided market refunded each of this user's rows, which
+    only the portfolio reads (ruling A). The leaderboard passes none: it reads
+    only `net_worth`, which a payout never reaches, so its voided rows carry
+    `0.0000`.
 
     A user who holds nothing still has one row, joined to no market; it is
     skipped here, so every caller gets the same answer for them: their
@@ -242,7 +266,7 @@ def valuation_of(balance: Decimal, rows: list[Row]) -> Valuation:
     `positions_value`.
     """
     held = [row for row in rows if row.market_id is not None]
-    positions = _positions_of(held)
+    positions = _positions_of(held, refunds if refunds is not None else {})
     positions_value = sum(
         (position.value for position in positions if position.value is not None),
         _ZERO_AMOUNT,
@@ -279,7 +303,8 @@ def profit_and_loss_of(
     open_cost_basis = _ZERO_AMOUNT
     unrealized_pnl = _ZERO_AMOUNT
     for position in positions:
-        # A settled row: both its basis and its payout are already realised.
+        # A settled or voided row: its basis and its payout or refund are
+        # already realised.
         if position.unrealized_pnl is None:
             continue
         open_cost_basis += position.cost_basis

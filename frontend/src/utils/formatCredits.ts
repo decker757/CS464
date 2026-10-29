@@ -92,9 +92,8 @@ export function compareCredits(left: string, right: string): number {
 }
 
 /**
- * `left` minus `right`, as a decimal string — the one piece of arithmetic in
- * this file (`addCredits` below is this, with the sign of `right` turned),
- * and exact.
+ * `left` minus `right`, as a decimal string — the only arithmetic in this
+ * file, and exact.
  *
  * A buy's profit is what it pays if it wins minus what the server charged
  * for it (#357), and both arrive as decimal strings. BigInt subtracts the
@@ -122,22 +121,14 @@ export function subtractCredits(left: string, right: string): string | null {
   return `${sign}${whole}.${padded.slice(padded.length - scaled.fractionDigits)}`
 }
 
-/**
- * `left` plus `right`, exactly: `left` less the negative of `right`, so the
- * digits are worked the one way `subtractCredits` works them. For a total of
- * several orders' reservations. Null on the same terms.
- */
-export function addCredits(left: string, right: string): string | null {
-  const { digits, isNegative } = splitSign(right)
-  return subtractCredits(left, isNegative ? digits : `-${digits}`)
-}
-
 // A fresh position's unrealized P&L is zero, not a gain — ADR 0018/[T-4] #24
 // say it is never a gain on a book nobody else has traded, and the same is
 // true of a signed amount that happens to land on exactly zero. Only colour
-// an actual loss or an actual gain; zero stays neutral.
+// an actual loss or an actual gain; zero stays neutral. So does a value that
+// is not a plain decimal, which this file's formatters show as "—": colouring
+// it would mean reading its sign, and that throws on undefined (#436).
 export function signedAmountColor(value: string): string {
-  if (isZeroCredits(value)) return 'text-muted'
+  if (!isPlainCredits(value) || isZeroCredits(value)) return 'text-muted'
   if (isNegativeCredits(value)) return 'text-danger'
   return 'text-success'
 }

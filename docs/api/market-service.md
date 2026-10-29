@@ -8,6 +8,8 @@ Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [2.3] #7, [3.1] #9, [3.2] #10,
 [3.3] #11 (send-back and `dispute_window_ends_at`),
 [3.4] #12 (the `settled` status, `settleable` and the ledger's settle step), [BE][X] #62 and the backend half of [FE][1.1] #45, [FE][2.3] #56 and
 [FE][3.1] #52.
+[BE] #221's void (the `voided` status, `voidable` and the ledger's void step)
+is decided by ADR 0025.
 
 A successful submission, publication, early close, outcome proposal, approval,
 rejection, send-back or settle also appends an entry to the shared audit log, in the same database
@@ -34,6 +36,9 @@ status of its own, and why the proposer is refused a `403` on both decisions:
 sent back by any administrator inside its dispute window, and why the window's
 end is stored at approval:
 [ADR 0023](../adr/0023-sending-an-approved-outcome-back.md).
+Why a flawed market is voided by the ledger first, by any administrator who
+has not traded it, and why the reason is kept on the market:
+[ADR 0025](../adr/0025-voiding-a-flawed-market.md).
 
 ## Endpoints
 
@@ -47,8 +52,9 @@ end is stored at approval:
 | POST | `/markets/{id}/reject-outcome` | Reject another administrator's proposal, with a reason |
 | POST | `/markets/{id}/send-back-outcome` | Send an approved result back to `closed` during its dispute window, with a reason |
 | POST | `/markets/{id}/settle` | Mark an approved market settled — **the ledger's call only** |
+| POST | `/markets/{id}/void` | Mark a market voided — **the ledger's call only** (ADR 0025) |
 | GET | `/markets` | List my own markets |
-| GET | `/markets/overview` | Every market I can see, a page at a time, by status, with counts |
+| GET | `/markets/overview` | Every market I can see, a page at a time, by status or question, with counts |
 | GET | `/markets/{id}` | Read one of my own markets |
 | GET | `/health` | Liveness and readiness probe |
 
@@ -71,7 +77,12 @@ audit entry names who acted. Those five answer another administrator's draft or
 submitted market with a `409`, not a `404`: the id is confirmed to exist, and
 nothing in it is shown. ADR 0016.
 
-## The seven statuses
+**ADR 0025.** `POST /markets/{id}/void` is a sixth
+exception: the ledger calls it with any administrator's token, and it answers
+another administrator's draft or submitted market with
+`409 market_not_voidable`.
+
+## The eight statuses
 
 | Status | Set by | Traders see it |
 | --- | --- | --- |
@@ -82,9 +93,11 @@ nothing in it is shown. ADR 0016.
 | `pending_resolution` | `POST /markets/{id}/propose-outcome` | yes, with the proposal |
 | `approved` | `POST /markets/{id}/approve-outcome` | yes, with the proposal and its approver |
 | `settled` | `POST /markets/{id}/settle`, which the ledger calls after its payouts commit ([3.4] #12); the status alone does not prove the ledger paid ([ADR 0019](../adr/0019-settlement-across-services.md)) | yes, with the winning outcome |
+| `voided` | (ADR 0025) `POST /markets/{id}/void`, which the ledger calls after its refunds commit ([BE] #221) | yes, with the reason and no winning outcome |
 
 The path is `draft → submitted → open → closed → pending_resolution →
-approved → settled` and nothing skips a step. Every save on a market past `submitted` is
+approved → settled` and nothing skips a step; a void is the one other way
+out, below. Every save on a market past `submitted` is
 a `409`, whatever the request asks for — the terms are final from `open`
 onwards.
 
@@ -94,6 +107,16 @@ reason. [3.2] #10's rejection sends a market from `pending_resolution` back.
 dispute window. There is no unpublish and no reopen. `settled` is final: every write on a settled market but
 the settle itself is a `409 market_already_settled`, and the message says the
 market is settled and nothing about payouts. A repeated settle answers `200`.
+
+**ADR 0025. An eighth status, `voided`.** Set by
+`POST /markets/{id}/void`, which the ledger calls after its refunds commit
+([BE] #221). Traders see it, with the reason and no winning outcome. It is
+reached from `closed`, `pending_resolution`, or `approved` while the dispute
+window is open, so it is a second way out of the path above, and like
+`settled` it is final: every write on a voided market but a repeated void is
+`409 market_already_voided`, the settle step included. A repeated void
+answers `200`. As with `settled`, the status alone does not prove the ledger
+refunded anybody.
 
 `closed` is the only one two different things produce. A market reaches it on
 its own when `close_time` passes, and an administrator can reach it early with
@@ -225,7 +248,9 @@ request can change a market and expose it to traders at the same time.
 
 **Timestamps must carry an offset.** `2027-01-05T12:00:00Z` or
 `2027-01-05T20:00:00+08:00`. A value without one is a 422 rather than a guess,
-because guessing UTC would put a Singapore close time eight hours out.
+because guessing UTC would put a Singapore close time eight hours out. So is
+one with no instant between year 1 and 9999 in UTC, such as
+`9999-12-31T23:00:00-05:00`: it cannot be stored, and every real time can.
 
 **`creator_id` in the body is ignored.** The creator is taken from the token.
 
@@ -1002,7 +1027,8 @@ Checked in this order, and the first that applies answers.
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed | log in again |
 | 403 | `not_an_administrator` | a trader | nothing; only an administrator can settle |
 | 404 | `market_not_found` | no such market | nothing; it is not there |
-| 409 | `market_not_approved` | its outcome has not been approved — any status short of `approved`, including another administrator's draft or submitted market | nothing to settle yet |
+| 409 | `market_already_voided` | the market has been voided; checked after a `settled` market's `200` and before the clock is read (ADR 0025) | nothing; a voided market is final |
+| 409 | `market_not_approved` | its outcome has not been approved — any status short of `approved` other than `voided`, including another administrator's draft or submitted market | nothing to settle yet |
 | 409 | `dispute_window_open` | approved, but not yet `settleable`: settlement opens five minutes after the dispute window ends | retry once it is `settleable` |
 
 `settled` is answered before the clock is read, so a market already settled is
@@ -1039,6 +1065,78 @@ entry, written with the payouts, comes before it in a normal settlement; a
 `market.marked_settled` with no `market.settled` before it for the same market
 is the trace of a direct call.
 
+## POST /markets/{id}/void — [BE] #221
+
+**ADR 0025. Only the ledger calls this.** Clients
+void a market with `POST /ledger/markets/{id}/void`, which refunds every
+holder, commits, and then calls this route with the administrator's token and
+the recorded reason as its last step. A direct call marks the market `voided`
+and **refunds nobody**. The frontend must never call it.
+
+### Request
+
+```json
+{ "reason": "The match was abandoned after ten overs; there is no result." }
+```
+
+| Field | Rule |
+| --- | --- |
+| `reason` | required, at most 5,000 characters (`MAX_PROSE_LENGTH`, as every reason this service stores). Stored as sent. **Otherwise not re-checked here**, and no 10-character floor: the ledger has already checked it, and a stricter check here would refuse every retry after the refunds committed. The ceiling never refuses a forwarded reason, because the ledger refuses one over 5,000 first. |
+
+### Response
+
+`200`, and the whole `market` object exactly as `GET /markets/{id}` returns
+it, with `status` `voided`, `voided_at` and `void_reason` set.
+
+- From `pending_resolution`, the seven proposal fields are cleared, as a
+  rejection clears them.
+- From `approved`, the proposal and approval fields and the stored
+  `dispute_window_ends_at` are kept, as settle keeps them. The public detail
+  shows no winner, because `voided` is not a decided status.
+- `closed_at` is never rewritten.
+
+A market that is **already `voided`** is answered the same way: `200` and the
+same market, with nothing written and no audit entry. That is what makes the
+ledger's request safe to repeat.
+
+### When it is refused
+
+Checked in this order, and the first that applies answers.
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 401 | `invalid_token` | no token, or it is expired, forged or malformed |
+| 403 | `not_an_administrator` | a trader |
+| 422 | — | FastAPI's own body-validation error, a different shape: `reason` missing or over 5,000 characters, or a malformed id. A reason the ledger forwards is never over |
+| 404 | `market_not_found` | no such market |
+| 409 | `market_already_settled` | it has been settled |
+| 409 | `market_not_voidable` | `draft`, `submitted` or `open` by its stored status, including one past its `close_time` that the sweep has not yet closed; or `approved` from five minutes after its dispute window ended, or with no `dispute_window_ends_at` |
+
+`voided` answers `200` before the clock is read. `closed` and
+`pending_resolution` are accepted. An `approved` market is accepted while
+`now < dispute_window_ends_at + 5 minutes`, where `now` is **the database's
+clock**, read after the market row is locked. That is five minutes longer
+than `voidable` allows, so the ledger's last step can land just after the
+window ends, and it is exactly when the settle step starts accepting, so the
+two never both accept.
+
+**A refused void writes nothing.**
+
+### Who may call it
+
+Any administrator's token. The route cannot tell the ledger's forwarded token
+from an administrator calling it directly, which is why the flip is logged.
+
+### The audit entry
+
+The flip appends `market.marked_voided` in the same transaction: the acting
+administrator (always the token's user, never anything in the body), the
+market, the reason, the status it left, and any proposal it cleared,
+snapshotted before the clear. A repeat appends nothing. The ledger's own
+`market.voided`, written with the refunds, comes before it in a normal void.
+A `market.marked_voided` with no `market.voided` before it, for the same
+market, is the trace of a direct call.
+
 ## GET /markets
 
 Every market belonging to the calling administrator, most recently updated
@@ -1059,15 +1157,15 @@ first. A summary, not the whole market:
 }
 ```
 
-## GET /markets/overview — [2.1] #5, #210
+## GET /markets/overview — [2.1] #5, #210, #555
 
-One page of the markets the calling administrator can see, filtered by status,
-with a count for every status over all of them. Declared before
-`GET /markets/{id}`, so `overview` is never parsed as an id. A trader is
-refused with `403 not_an_administrator`.
+One page of the markets the calling administrator can see, filtered by status
+or searched by question, with a count for every status over all of them.
+Declared before `GET /markets/{id}`, so `overview` is never parsed as an id. A
+trader is refused with `403 not_an_administrator`.
 
 ```
-GET /markets/overview?status=closed&limit=50
+GET /markets/overview?status=closed&q=inflation&limit=50
 ```
 
 ```json
@@ -1106,9 +1204,16 @@ GET /markets/overview?status=closed&limit=50
   status field. Proposing gates on the stored column (ADR 0013), so for up to
   one sweep interval a market shown here as `closed` refuses a proposal with
   `409 market_not_closed`; handle that 409.
-- **`?status=`** accepts any of the seven statuses, including `draft` and
+- **`?status=`** accepts any of the eight statuses above, including `draft` and
   `submitted`, which the trader filter refuses, and `settled`. Anything else is
   a `422`.
+- **`?q=`** (#555) is the same question search as
+  [`GET /public/markets`](#get-publicmarkets)'s `q`: case-insensitive
+  containment, `%`, `_` and `\` matched as text, surrounding whitespace
+  ignored, and a blank `q` the same as none. It searches everything the
+  caller can see, so the caller's own drafts and submitted markets too, and
+  composes with `?status=`. A `q` that holds a NUL or is longer than a
+  question may be (500 characters) is a `422`, on both routes.
 - **`settleable`** ([3.4] #12) is a boolean on every row, so the settle control
   can be hidden until a click could succeed. It is `true` on an `approved`
   market from five minutes after the dispute window ends, and always `true` on
@@ -1127,30 +1232,43 @@ GET /markets/overview?status=closed&limit=50
   settle control reads `settleable`, never this.
 - **`counts`** is an object of integers keyed by every status, `0` when there
   are none, over **every market the caller can see — every page, not just this
-  one**. It ignores `?status=` and `cursor`, so each count equals the length of
-  that status's whole filtered list and the counts sum to the length of the
-  whole unfiltered list. An "All" total is the sum of the counts, not the
-  length of `markets`. The page and the counts are two reads in one
+  one**. It ignores `?status=`, `?q=` and `cursor`, so each count equals the
+  length of that status's whole filtered list and the counts sum to the length
+  of the whole unfiltered list. A search changes the list and never the tabs'
+  numbers. An "All" total is the sum of the counts, not the length of
+  `markets`. The page and the counts are two reads in one
   transaction at `REPEATABLE READ`, so they describe the same snapshot of the
   data, and both judge `status` by the same instant.
 - **Order** is soonest `close_time` first, markets with no `close_time` last,
   then by `id`, with or without a filter. So the `closed` tab reads oldest
   close first: the one waiting longest for an administrator. This differs from
-  `GET /public/markets` on purpose. Settled markets sort last, after all of
-  those, in the unfiltered view.
+  `GET /public/markets` on purpose. Settled and voided markets sort last, after
+  all of those, in the unfiltered view.
 - **`creator_id`** is on every row, so the caller can tell their own by
   comparing it with their own id.
 
+**ADR 0025. What a void adds here.**
+
+- `counts` gains a `voided` key, `0` when there are none.
+- **`voidable`** is a boolean on every row, the same flag as on the public
+  detail below, derived against the same instant as the rest of the page.
+- Voided markets sort last with settled ones in the unfiltered view, after
+  every other market, in the same order among themselves. A market voided
+  while you page moves to the end and can appear twice, as a settled one can.
+  The cursor's format does not change, so a cursor issued before the change
+  still continues from the same place.
+
 | Query parameter | Rule |
 | --- | --- |
-| `status` | one of the seven statuses above; anything else is a `422` |
+| `status` | one of the eight statuses above; anything else is a `422` |
+| `q` | case-insensitive containment search over the question, as on `GET /public/markets`; a NUL or more than 500 characters is a `422` |
 | `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
 | `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
 
 ### Paging
 
 Paged by keyset (#210). Send the previous response's `next_cursor` back as
-`cursor`, with the same `status` and `limit`, for the next page.
+`cursor`, with the same `q`, `status` and `limit`, for the next page.
 `next_cursor: null` means there is nothing after this page, including when the
 page is empty. The cursor is opaque: do not build or edit one.
 
@@ -1169,9 +1287,9 @@ Pages read in turn do not repeat or skip a market that kept its place:
   end and can appear twice. Show each `id` once, and start again without a
   cursor for an exact list.
 
-The cursor does not record `status`. Changing the filter and sending an old
-cursor is not an error, but it continues from a position in the old list;
-start again without a cursor instead.
+The cursor does not record `q` or `status`. Changing either and sending an
+old cursor is not an error, but it continues from a position in the old
+list; start again without a cursor instead.
 
 ### When it is refused
 
@@ -1180,7 +1298,7 @@ start again without a cursor instead.
 | 400 | `malformed_cursor` | `cursor` is not a `next_cursor` this service issued |
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed |
 | 403 | `not_an_administrator` | a trader |
-| 422 | — | `status` is not one of the seven, or `limit` is below 1 |
+| 422 | — | `status` is not one of the eight statuses, `q` is too long or holds a NUL, or `limit` is below 1 |
 
 ## GET /markets/{id}
 
@@ -1297,12 +1415,18 @@ the first group explicitly.
 
 | Query parameter | Rule |
 | --- | --- |
-| `status` | one of `open`, `closed`, `pending_resolution`, `approved`, `settled`; anything else is a `422` |
+| `status` | one of `open`, `closed`, `pending_resolution`, `approved`, `settled`, `voided`; anything else is a `422` |
 | `q` | case-insensitive containment search over the question |
 | `closes_from` | a time with an offset (`Z` or `+08:00`): markets that stopped trading, or will stop, at or after it. No offset is a `422`, and so is a time with no instant between year 1 and 9999 in UTC |
 | `closes_before` | a time with an offset: markets that stopped trading, or will stop, strictly before it. No offset is a `422`, and so is a time with no instant between year 1 and 9999 in UTC, or a value at or before `closes_from` |
 | `limit` | markets per page: default 50, at most 200. A larger value is clamped, not refused; below 1 is a `422` |
 | `cursor` | the previous page's `next_cursor`, sent back unmodified; anything else is `400 malformed_cursor` |
+
+**ADR 0025.** `status` accepts `voided` too, and a
+voided market is in the second group of the order above, by when it stopped
+trading, like any other market that has stopped. The closing window below
+finds it by that same moment: a void starts from CLOSED or later and leaves
+`closed_at` alone.
 
 #### The closing window — #442
 
@@ -1483,6 +1607,39 @@ browser's clock can be wrong. Hiding a control once the time has passed is
 fine, but the server still decides send-back on its own clock, and
 settlement is `settleable`'s job.
 
+**ADR 0025. Three more keys, always present.**
+
+```json
+{
+  "status": "voided",
+  "voidable": true,
+  "voided_at": "2026-10-20T09:41:02.411000Z",
+  "void_reason": "The match was abandoned after ten overs; there is no result."
+}
+```
+
+- **`voidable`**, a boolean, is `true` on a `closed` or `pending_resolution`
+  market, on an `approved` market while `now < dispute_window_ends_at`, and on
+  a `voided` one. That last is for a market an administrator marked voided
+  by calling `POST /markets/{id}/void` directly, which refunds nobody: the
+  ledger can still refund it. (A void the ledger recorded never reads this
+  flag on a retry; it finishes from its own record.) It is
+  `false` for every other status, and for an `approved` market from the
+  window's end or with no `dispute_window_ends_at`. **It is judged on the
+  stored status**, not the derived `status` above: a market past its
+  `close_time` that the sweep has not yet closed reads `"closed"` here and
+  `voidable: false` for those few seconds. The ledger reads it before
+  refunding and does not recompute it; a client should not either.
+- **`voided_at`** is when market_service marked the market voided, and
+  **`void_reason`** is the reason the administrator gave. Both are `null`
+  on every market that is not `voided`. Show the reason to traders: it is the
+  only explanation of their refund.
+
+A voided market's `proposed_outcome_id` is `null`, even one voided while
+approved: `voided` is not a decided status. `settleable` is `false`.
+`MarketOut` (`GET /markets/{id}`) carries `voided_at` and `void_reason` too.
+`voidable` is not on `MarketOut` or on the browse cards.
+
 `proposed_outcome_id` is [X-3] #36's "settled markets display the winning
 outcome". When it is set it names a member of this same response's `outcomes`
 array — look the label up there, the same rule `MarketOut` follows for the
@@ -1558,6 +1715,8 @@ it still reads `code` and `message`:
 | 409 | `dispute_window_open` | a settle arrived for an approved market that is not yet `settleable` |
 | 409 | `dispute_window_closed` | a send-back arrived for an approved market whose dispute window has ended |
 | 409 | `proposal_superseded` | an approval, rejection or send-back quoted a `proposal_id` that is no longer the proposal on the market |
+| 409 | `market_already_voided` | (ADR 0025) anything but a read or a repeated void arrived for a voided market, the settle step included |
+| 409 | `market_not_voidable` | (ADR 0025) the ledger's void step arrived for a market that cannot be voided |
 | 422 | `draft_incomplete` | submission or publication refused; see `details` |
 | 422 | `proposal_incomplete` | outcome proposal refused; see `details` |
 | 422 | `close_incomplete` | early close refused; see `details` |
@@ -1775,3 +1934,59 @@ reject control on the approval screen.
 8. The countdown is display only. The server decides on its own clock, so the
    button can still get `dispute_window_closed` in the last seconds, even
    while the countdown shows a little time left.
+
+## Notes for the void screen — [BE] #221
+
+**ADR 0025.** For the [FE] sub-issue of #221. The
+backend routes are `POST /ledger/markets/{id}/void` (the only one to call)
+and this page's reads.
+
+1. **Offer "Void market"** on the admin market page while the market's
+   `voidable` is `true` and its `status` is not `voided`. Read `voidable`
+   from the overview row or the public detail; do not work it out from the
+   status or the countdown.
+2. **The modal** has one required input, the reason. Enable its confirm
+   button at 10 trimmed characters and you will never see a
+   `422 void_incomplete`. Say plainly that a void **cannot be undone**, that
+   every holder is refunded what their remaining shares cost, and that the
+   reason is shown to traders.
+3. Repaint from the ledger's `200`. If `refunds_cut` is `true`, say so: "The
+   pool could not cover every refund, so each was cut by the same share."
+4. Handle the refusals:
+   - `403 admin_has_a_stake`: "You traded in this market, so another admin
+     has to void it."
+   - `409 market_not_voidable`: "This market can no longer be voided." Then
+     reload.
+   - `409 market_already_settled`: someone settled it first. Reload.
+   - `503 void_unconfirmed`: the refunds went through. Offer "Finish" which
+     repeats the same request; never say the void failed.
+   - `503 market_terms_unavailable`: "The market service could not be
+     reached; try again." Make no claim about refunds: on a "Finish" repeat
+     after `void_unconfirmed`, the refunds have already gone through.
+   - `500 void_replay_mismatch`: "This market's records do not add up, so it
+     cannot be voided. Nothing was refunded." Retrying will not help; it needs
+     a developer.
+5. **"Finish" lives only in the session that got the `503`.** Build no other
+   repeat. A market voided by a direct call to `POST /markets/{id}/void`, and
+   a refunded but unconfirmed `approved` market past its window, have no
+   control on this screen: each is finished by a direct API call, named in
+   ADR 0025's "Known edges, accepted", the second only until five minutes
+   after its window's end, and by hand after that. Before the window's end,
+   or on a `closed` or `pending_resolution` market, a refunded but
+   unconfirmed void still reads `voidable: true`, so after a reload the
+   ordinary "Void market" control acts as the repeat. That is harmless: a
+   repeat answers `200`.
+6. **The market page** shows a "Voided" banner with `void_reason` and
+   `voided_at`, and no winning outcome, for `status: "voided"`.
+7. **A browse card** for a `voided` market shows "Voided" with no probability
+   and no price change, though the ledger's batch snapshot still carries its
+   `prices` and `prices_7d_ago`. It applies to the card what #429 (open)
+   asks of a resolved market's detail page; a settled card is not changed by
+   this note.
+8. **The portfolio** shows `result: "refunded"` rows as "Refunded", with
+   `payout` as the amount. **The history** shows `void_refund` rows as
+   "Refund", with `amount`, `quantity` and the outcome.
+9. Open limit orders on a voided market are released: they leave the orders
+   list, and the reservation goes.
+10. One Playwright test: an administrator voids a market, and a trader sees
+    the refund in their portfolio and history.

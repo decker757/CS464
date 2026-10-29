@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import type { PriceState } from '../../api/ledgerApi'
+import type { OutcomePrice, Position, PriceState } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
+import { useMarketClock } from '../../hooks/useMarketClock'
 import { formatTimeAgo } from '../../utils/formatDateTime'
-import { formatPrice } from '../../utils/formatPrice'
+import Badge from '../ui/Badge'
 import Button from '../ui/Button'
 import Card from '../ui/Card'
+import { heldOutcomesOf } from './holdings'
 import { formatCloseCountdown, tradingStopped } from './marketStatus'
+import MarketCardOutcomes from './MarketCardOutcomes'
 import StatusBadge from './StatusBadge'
 
 interface MarketCardProps {
@@ -17,12 +19,19 @@ interface MarketCardProps {
   priceReadFailed?: boolean
   /** Reads this market's snapshot again, behind the Retry control. */
   onRetryPrice?: () => void
+  /**
+   * The trader's own positions in this market, from the page's one portfolio
+   * read ([X-1] #450). Undefined for a market they hold nothing in, which is
+   * most of them, and for a portfolio read that failed.
+   */
+  positions?: Position[]
+  /**
+   * Each outcome's price a week ago, from the page's one batch snapshot read
+   * ([X-1] #564). Null when the ledger has none to give, which shows no
+   * change; undefined until the batch has answered.
+   */
+  pricesWeekAgo?: OutcomePrice[] | null
 }
-
-// How often the card re-reads the clock. The countdown's smallest unit is a
-// minute, so ten seconds keeps it honest to within a tick without re-rendering
-// the grid every second.
-const COUNTDOWN_TICK_MS = 10_000
 
 // What a market nobody has traded says instead of a price. An untouched LMSR
 // book sits at its seed — a uniform 50.0% on a binary market — so a grid of
@@ -46,22 +55,28 @@ const UNTRADED_AND_STOPPED = 'This market closed without a single trade.'
 // one comes with a way back.
 const PRICES_LOADING = 'Loading prices…'
 const PRICES_FAILED = 'Prices could not be loaded.'
+// A voided market has no result, so it has no price either: its last prices
+// are what the crowd thought of a question that turned out to have no answer
+// (ADR 0025). The batch snapshot goes on carrying them, so the card is what
+// drops them. It claims nothing about refunds: a market marked voided by a
+// direct call to market_service reads the same and has refunded nobody yet
+// (ADR 0025, "Known edges, accepted"), and refunds can be cut.
+const VOIDED_NOTE = 'Voided with no result.'
 
-export default function MarketCard({ market, snapshot, priceReadFailed = false, onRetryPrice }: MarketCardProps) {
-  // A countdown computed once at render freezes, and a frozen one says a market
-  // is still trading after it has closed. Trading stops on the clock, not when
-  // the sweep writes CLOSED (ADR 0011), so the card keeps its own clock.
-  const [now, setNow] = useState(() => new Date())
-  // A market that has already stopped reads "Closed" for as long as the tab is
-  // open, so there is nothing for a clock to change. The last tick before this
-  // turns true is the one that writes "Closed", and it stops the clock itself.
+export default function MarketCard({ market, snapshot, priceReadFailed = false, onRetryPrice, positions, pricesWeekAgo }: MarketCardProps) {
+  // The card keeps a clock for its countdown, and stops it once the market
+  // has stopped trading (useMarketClock).
+  const now = useMarketClock(market)
   const hasStopped = tradingStopped(market.status, market.close_time, now)
+  // Every price-shaped thing below asks this first: the prices, the untraded
+  // invitation, the last trade, and the loading and failed lines (#526).
+  const showsPrices = market.status !== 'voided'
   // Zero is the book's own statement that it has never been traded, and the
   // only thing that distinguishes that from a market the crowd has priced at
   // the same number (ledgerApi.ts). A market with no snapshot yet is a
   // different state again — see the dash below — so this asks for the value
   // and not merely for a falsy one.
-  const hasNeverTraded = snapshot?.state_version === 0
+  const hasNeverTraded = showsPrices && snapshot?.state_version === 0
   // Only a traded book has a last trade: on an untraded one `occurred_at` is
   // when the book was opened, which is not a price anybody moved. Read off the
   // clock the card already keeps, so it ages with the countdown beside it
@@ -69,20 +84,17 @@ export default function MarketCard({ market, snapshot, priceReadFailed = false, 
   // once the market stops trading, with the ticker — but a market that can no
   // longer trade can no longer move its book either, and the whole card is a
   // frozen read at that point (the list's own "Prices updated" line says when).
-  const lastTradeAgo = snapshot && !hasNeverTraded ? formatTimeAgo(snapshot.occurred_at, now) : null
+  const lastTradeAgo = showsPrices && snapshot && !hasNeverTraded ? formatTimeAgo(snapshot.occurred_at, now) : null
+  // What the trader holds here. The join is a lookup, not a fetch: the card
+  // already has its outcomes.
+  const heldOutcomes = heldOutcomesOf(positions, market.outcomes)
   // A card with no snapshot is waiting for one or has been refused one, and
   // those are different things to a trader: one is worth waiting out, the
   // other is worth a retry (#431). A failed refresh of a market that already
   // has a price is not either — the card keeps the price it had, and the
   // list's "Prices updated" line is what goes stale.
-  const isLoadingPrices = !snapshot && !priceReadFailed
-  const hasFailedPrices = !snapshot && priceReadFailed
-
-  useEffect(() => {
-    if (hasStopped) return
-    const ticker = setInterval(() => setNow(new Date()), COUNTDOWN_TICK_MS)
-    return () => clearInterval(ticker)
-  }, [hasStopped])
+  const isLoadingPrices = showsPrices && !snapshot && !priceReadFailed
+  const hasFailedPrices = showsPrices && !snapshot && priceReadFailed
 
   return (
     <Card interactive className="h-full">
@@ -96,33 +108,31 @@ export default function MarketCard({ market, snapshot, priceReadFailed = false, 
           <StatusBadge status={market.status} audience="trader" />
           <span className="text-right text-xs text-subtle">{formatCloseCountdown(market.status, market.close_time, now)}</span>
         </div>
-        <p className="text-[15px] leading-normal font-semibold text-smu-navy">{market.question}</p>
-        {/* Wraps onto more rows for a market with many outcomes (up to ten). */}
-        <div className="mt-4 flex flex-wrap gap-2">
-          {market.outcomes.map(outcome => {
-            const outcomePrice = snapshot?.prices.find(price => price.outcome_id === outcome.id)
-            return (
-              <div key={outcome.id} className="flex min-w-[120px] flex-1 items-center justify-between gap-2 rounded-control bg-smu-cream px-3 py-2">
-                <span title={outcome.label} className="truncate text-xs font-semibold tracking-[0.5px] text-muted uppercase">
-                  {outcome.label}
-                </span>
-                {/* An untraded market keeps its outcome names (#214) and shows
-                    no number at all. A dash would say the wrong thing: that is
-                    what a price still on its way, or one that could not be
-                    read, reads as — and the line below the chips says which
-                    of those two it is (#431). */}
-                {!hasNeverTraded && (
-                  <span aria-label={`${outcome.label} price`} className="shrink-0 text-sm font-bold text-smu-navy">
-                    {outcomePrice ? formatPrice(outcomePrice.price) : '—'}
-                  </span>
-                )}
-              </div>
-            )
-          })}
-        </div>
+        {/* break-words: a question can be one unbroken word, wider than the page (#516). */}
+        <p className="text-[15px] leading-normal font-semibold break-words text-smu-navy">{market.question}</p>
+        <MarketCardOutcomes
+          outcomes={market.outcomes}
+          snapshot={snapshot}
+          showsPrices={showsPrices}
+          hasNeverTraded={hasNeverTraded}
+          pricesWeekAgo={pricesWeekAgo}
+        />
+        {/* What the trader holds here, which turns a catalogue into their own
+            markets ([X-1] #450). Nothing renders for a market they hold
+            nothing in: an empty slot or a dash would make fifty untouched
+            cards noisier rather than more personal (AC 2). */}
+        {heldOutcomes.length > 0 && (
+          <p className="mt-3 flex flex-wrap items-center gap-1.5 text-xs text-secondary">
+            <span>You hold</span>
+            {heldOutcomes.map(held => (
+              <Badge key={held.outcomeId} tone="info" wraps>{held.quantity} {held.label}</Badge>
+            ))}
+          </p>
+        )}
         {hasNeverTraded && (
           <p className="mt-3 text-xs text-secondary">{hasStopped ? UNTRADED_AND_STOPPED : UNTRADED_INVITATION}</p>
         )}
+        {!showsPrices && <p className="mt-3 text-xs text-secondary">{VOIDED_NOTE}</p>}
         {isLoadingPrices && <p className="mt-3 text-xs text-subtle">{PRICES_LOADING}</p>}
         {lastTradeAgo && <p className="mt-3 text-xs text-subtle">Last trade {lastTradeAgo}</p>}
       </Link>

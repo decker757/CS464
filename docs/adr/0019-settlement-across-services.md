@@ -189,6 +189,18 @@ would then be unable to start, test or fail without the other.
 > paid. In this order it replays and retries step 5. The rest of the
 > amendment above is unchanged.
 
+> **Amended 2026-10-20. Decided by [ADR 0025](0025-voiding-a-flawed-market.md),
+> and not built yet. A recorded result replays only if it is a settlement.**
+> Steps 2 and 4 of the 2026-10-10 amendment look for any
+> `ledger.market_results` row and replay it. Once a void can write one, a
+> settlement on a voided market would reach `_replay`'s assertion that the row
+> names a winner, and answer a bare 500. So both lookups branch on the row's
+> `kind`: a `settled` row is a replay, as above, and a `voided` row is
+> `409 market_already_voided`, with nothing written. Step 3's status check
+> answers `voided` from market_service with the same code, ahead of
+> `market_not_approved`. The order of the steps is unchanged, and ADR 0025's
+> void follows it: the read, then the unlocked lookup, then the status checks.
+
 ### Who may settle: any administrator
 
 Any administrator may settle, including the market's creator, proposer or
@@ -341,6 +353,33 @@ for good, for a result that was sent back.
 > run past the window's end, so reading the status before the lock stays safe.
 > ADR 0023.
 
+> **Amended 2026-10-20. Decided by [ADR 0025](0025-voiding-a-flawed-market.md),
+> and not built yet. The trigger is tripped by the void, and the read is still
+> safe.** [BE] #221's void moves APPROVED to VOIDED, a further transition out
+> of APPROVED. The argument changes shape; the conclusion does not.
+>
+> - **On the ledger, the latch serialises settlement and the void.** Both are
+>   ledger first, and both write the one `market_results` row under the book
+>   lock before market_service hears of either. Whichever commits its row
+>   first wins. The other finds that row under the lock and writes nothing:
+>   settlement answers `409 market_already_voided`, and the void
+>   `409 market_already_settled`. So a stale APPROVED read cannot pay over a
+>   void or refund over a settlement. Send-back needed the five-minute gap
+>   because it changes market_service with no ledger record. The void's
+>   ledger record is what stops it.
+> - **In market_service the edges never meet.** `voidable` ends at
+>   `dispute_window_ends_at`, and the void step accepts APPROVED until that
+>   end plus five minutes, which is exactly when `settleable` and the settle
+>   step start. Both steps read `clock_timestamp()` after the row lock.
+> - **What remains is the direct-call gap.** An administrator calling
+>   market_service's void step directly, before the end plus five minutes,
+>   while the ledger pays a settlement it read on a fast clock, leaves winners
+>   paid and a VOIDED market. That needs skew near the gap or a deliberate
+>   direct call, and both are already accepted here.
+>
+> The trigger stands for any later exit from APPROVED that is not recorded
+> in the ledger's latch first.
+
 ### The result is a record, and positions and `q` are never written
 
 `ledger.market_settlements` holds one row per settled market: `market_id` as
@@ -449,6 +488,16 @@ data this service owns, so it still makes no call to market_service.
 > **Reversal trigger:** #221 closes without a void, or voids get a table of
 > their own. A revision then drops `kind` and restores `NOT NULL` on
 > `outcome_id`.
+
+> **Amended 2026-10-20. Decided by [ADR 0025](0025-voiding-a-flawed-market.md),
+> and not built yet. What this amendment left to #221 is decided.** Ledger
+> revision `0007` adds `voided` to `kind`, and `reason` and `voided_by` to the
+> row, each set exactly when `kind = 'voided'` by a hand-written CHECK. A
+> settlement on a voided market is `409 market_already_voided`. The second
+> exit from APPROVED, and why reading the status before the lock survives it,
+> is under "APPROVED is read before the lock" below. Readers still never
+> filter on `kind`, with one exception: settlement itself, which must not
+> replay a void as its own.
 
 ### One transaction, through `posting.post_all`
 
@@ -764,6 +813,8 @@ non-null, because a settlement always has a winner, so a void may need a
 record shape of its own.
 
 > *Amended 2026-10-09: see the amendment under "The result is a record".*
+
+> *Amended 2026-10-20: designed in [ADR 0025](0025-voiding-a-flawed-market.md), Accepted.*
 
 **The leaderboard sees settlement for free.** [L-1] #38 reads the portfolio's
 `net_worth`, which now counts a settled market once. [L-3] #40's "recalculated

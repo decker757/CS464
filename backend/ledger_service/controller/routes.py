@@ -10,7 +10,7 @@ DELETE anywhere on this service. That is the whole design, it is enforced by
 a trigger rather than by this file being short, and a route added here in a
 hurry would fail against the database.
 
-**Five routes write, and none takes money.** `POST /markets/{market_id}/trades`
+**Six routes write, and none takes money.** `POST /markets/{market_id}/trades`
 ([T-2] #22) answers ADR 0009's deferred service-auth question for exactly this
 shape of caller: the request model is `extra="forbid"` over five fields, none
 of them money, so the trader's account is `accounts.ensure(USER, claims.sub)`
@@ -29,6 +29,9 @@ only because its input is a list of ids, and it writes nothing.
 token and an empty body: the winner comes from market_service and the holders
 and amounts from the ledger's own positions (ADR 0009's second amendment, ADR
 0019). It publishes nothing, so unlike the trade it holds no Redis client.
+`POST /markets/{market_id}/void` ([BE] #221) is the same shape with one field,
+the reason: which market may be voided comes from market_service, and the
+holders and amounts from the ledger's own trades and positions (ADR 0025).
 
 The grant is the older exception that proves the same rule from the read
 side: a user reading their own balance can write, because [B-1] #32's starting
@@ -90,6 +93,8 @@ from model.schemas import (
     TradeIn,
     TradeOut,
     ValidationErrorOut,
+    VoidIn,
+    VoidOut,
 )
 from service import (
     cancellation,
@@ -103,6 +108,7 @@ from service import (
     settlement,
     snapshot as snapshot_service,
     trading,
+    voiding,
 )
 from service.book_prices import PricedOutcome
 from service.snapshot import ListedSnapshot, Snapshot
@@ -269,10 +275,12 @@ _PORTFOLIO_DESCRIPTION = (
     "first read exactly as `/balances/me` does. Makes no call to "
     "market_service — a market that has closed is valued at its frozen "
     "book like any other.\n\n"
-    "A market this service has settled is not valued: its rows carry "
-    "`result` and `payout`, and `price`, `value` and `unrealized_pnl` are "
-    "null. The payout is already in `balance`, so such a row adds nothing "
-    "to `positions_value`. Every key is on every row; branch on `result`.\n\n"
+    "A market this service has settled or voided is not valued: its rows "
+    "carry `result` and `payout`, and `price`, `value` and `unrealized_pnl` "
+    "are null. The payout is already in `balance`, so such a row adds nothing "
+    "to `positions_value`. A voided market's rows are `refunded`, and `payout` "
+    "is what the void refunded that position, `0.0000` if it rounded down to "
+    "nothing (ADR 0025). Every key is on every row; branch on `result`.\n\n"
     "[B-1] #359. `starting_credits` is what this user's grant actually "
     "paid, read from that transaction's entry rather than from the "
     "`STARTING_CREDITS` setting, which can change without rewriting an "
@@ -1295,9 +1303,11 @@ _SETTLEMENT_DESCRIPTION = (
         404: {"description": "`market_not_found`: no such market."},
         409: {
             "description": (
-                "`market_not_approved`: nothing is recorded here and the "
-                "market is in a status other than `approved` or `settled`. "
-                "`dispute_window_open`: approved, but not yet `settleable`."
+                "`market_already_voided`: the market has been voided, here "
+                "or by market_service. `market_not_approved`: nothing is "
+                "recorded here and the market is in a status other than "
+                "`approved` or `settled`. `dispute_window_open`: approved, but "
+                "not yet `settleable`."
             )
         },
         422: _invalid_request(
@@ -1337,6 +1347,113 @@ async def settle_market(
         recorded_at=result.recorded_at,
         holders_paid=result.holders_paid,
         total_paid=result.total_paid,
+        residue=result.residue,
+    )
+
+
+_VOID_DESCRIPTION = (
+    "[BE] #221, ADR 0025. End a flawed market with no winner: refund every "
+    "share still held at what it cost, once, then tell market_service the "
+    "market is voided. Administrators only, and not one who has traded the "
+    "market.\n\n"
+    "**The request chooses nothing but the reason.** `reason` is required, at "
+    "least 10 characters once trimmed and at most 5,000, and stored trimmed. "
+    "Any other field is `422 invalid_request`: which market may be voided "
+    "comes from market_service (`voidable`), and the holders and amounts from "
+    "this service's own trades and positions.\n\n"
+    "**`200` on the request that refunds and on every repeat**, with the same "
+    "nine fields as the first request, its reason and administrator included, "
+    "never the repeating administrator's. A repeat writes nothing "
+    "here and retries the last step, so it is how a `503 void_unconfirmed` is "
+    "finished.\n\n"
+    "**No price frame is published**: a void moves neither `q` nor any "
+    "position. Every open limit order on the market is released in the "
+    "void's commit."
+)
+
+
+@router.post(
+    "/markets/{market_id}/void",
+    response_model=VoidOut,
+    status_code=200,
+    summary="Void a flawed market and refund every holder",
+    description=_VOID_DESCRIPTION,
+    responses={
+        401: {
+            "description": (
+                "`invalid_token`: missing, malformed or expired access "
+                "token, or market_service refused the forwarded one."
+            )
+        },
+        403: {
+            "description": (
+                "`not_an_administrator`: authenticated, but a trader. "
+                "`admin_has_a_stake`: the caller has traded this market, a "
+                "filled limit order or a position since sold to zero "
+                "included; another administrator has to void it."
+            )
+        },
+        404: {"description": "`market_not_found`: no such market."},
+        409: {
+            "description": (
+                "`market_already_settled`: this service has settled the "
+                "market, or market_service reports it `settled`. "
+                "`market_not_voidable`: nothing is recorded here and the "
+                "market is not `voidable`: `open`, or `approved` with its "
+                "dispute window ended."
+            )
+        },
+        422: _invalid_request(
+            "`invalid_request`: no `reason`, a `reason` that is not a string "
+            "or is over 5,000 characters, any other field, or a `market_id` "
+            "that is not a UUID. `void_incomplete`: a `reason` under 10 "
+            "characters once trimmed, with no `error.details`."
+        ),
+        500: {
+            "description": (
+                "`void_replay_mismatch`: the market's trades do not agree with "
+                "its positions or its book. Nothing is written, and retrying "
+                "will not help."
+            )
+        },
+        503: {
+            "description": (
+                "`market_terms_unavailable`: market_service could not be "
+                "reached, or answered with terms no void can use; nothing was "
+                "refunded by this request. On a repeat after `void_unconfirmed` "
+                "the earlier refunds stand, so repeat again; never read this as "
+                "the void having failed. `void_unconfirmed`: every holder is "
+                "refunded and the void is recorded, and market_service did not "
+                "confirm. Repeat the request."
+            )
+        },
+    },
+)
+async def void_flawed_market(
+    market_id: uuid.UUID,
+    actor: CurrentActor,
+    access_token: AccessToken,
+    terms_client: TermsClient,
+    session: DbSession,
+    body: VoidIn,
+) -> VoidOut:
+    result = await voiding.void_market(
+        session,
+        market_id,
+        actor=actor,
+        reason=body.reason,
+        access_token=access_token,
+        terms_client=terms_client,
+    )
+    return VoidOut(
+        market_id=result.market_id,
+        reason=result.reason,
+        voided_by=result.voided_by,
+        recorded_at=result.recorded_at,
+        positions_refunded=result.positions_refunded,
+        total_owed=result.total_owed,
+        total_refunded=result.total_refunded,
+        refunds_cut=result.refunds_cut,
         residue=result.residue,
     )
 

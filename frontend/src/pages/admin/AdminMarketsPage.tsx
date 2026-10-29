@@ -15,7 +15,7 @@ import { latestActionPerTarget } from '../../utils/proposals'
 type StatusFilter = AdminMarketStatus | 'all'
 type StatusCounts = MarketOverview['counts']
 
-const FILTERS: StatusFilter[] = ['all', 'draft', 'submitted', 'open', 'closed', 'pending_resolution', 'approved', 'settled']
+const FILTERS: StatusFilter[] = ['all', 'draft', 'submitted', 'open', 'closed', 'pending_resolution', 'approved', 'settled', 'voided']
 
 function filterLabel(filter: StatusFilter): string {
   return filter === 'all' ? 'All' : STATUS_CONFIG[filter].label

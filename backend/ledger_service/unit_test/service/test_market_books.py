@@ -13,7 +13,7 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from model.entities import (
@@ -23,7 +23,7 @@ from model.entities import (
     Transaction,
     TransactionKind,
 )
-from core.database import get_engine
+from core.database import get_engine, get_session_factory
 from service import accounts, posting
 from unit_test.conftest import mint_token, terms_client_over
 
@@ -99,6 +99,7 @@ class _Upstream:
             "published_at": published_at,
             "proposed_outcome_id": None,
             "settleable": False,
+            "voidable": False,
             # Raw dicts pass straight through, for a malformed outcome list.
             # `is not None`, not truthiness: `outcomes=[]` must stay empty.
             "outcomes": (
@@ -653,3 +654,31 @@ async def test_a_warm_book_still_refuses_a_caller_with_pending_writes(
         await _open(session, upstream)
 
     assert pending in session.new, "the pending write was discarded"
+
+
+# --- the lock -------------------------------------------------------------
+async def test_lock_book_reads_the_locked_row_over_the_copy_the_session_holds(
+    session: AsyncSession,
+) -> None:
+    """#543: a book this session already read, unlocked, is replaced by the
+    row the lock reads. Here a trade's version bump commits from another
+    session between the two, and the lock must see it, because every
+    decision taken under the lock reads that object (ADR 0015). Remove
+    `populate_existing` from `lock_book` and this reads the 0 the session
+    held."""
+    upstream = _Upstream()
+    await _open(session, upstream)
+    held = await _books().find(session, upstream.market_id)
+    assert held is not None and held.state_version == 0
+
+    async with get_session_factory()() as other:
+        await other.execute(
+            update(_entities().MarketBook)
+            .where(_entities().MarketBook.market_id == upstream.market_id)
+            .values(state_version=1)
+        )
+        await other.commit()
+
+    locked = await _books().lock_book(session, upstream.market_id)
+
+    assert locked.state_version == 1

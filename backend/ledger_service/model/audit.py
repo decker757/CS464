@@ -23,6 +23,11 @@ class AdminAction(StrEnum):
     # DECISIONS.md, "`market.settled` carries the winner and the three figures".
     MARKET_SETTLED = "market.settled"
 
+    # [BE] #221, ADR 0025. Appended in the refunds' transaction, never on a
+    # repeat. The trimmed reason in `reason`; the five figures in `context`,
+    # whether refunds were cut among them.
+    MARKET_VOIDED = "market.voided"
+
     # [T-8] #326. Appended in the cancel's transaction. The reason, and the
     # order's owner and market in `context`. The owner's own cancel appends
     # nothing, so every entry of this type is an administrator's.

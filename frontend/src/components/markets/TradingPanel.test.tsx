@@ -63,6 +63,9 @@ interface PanelOptions {
   available?: string | null | undefined
   heldByOutcome?: Record<string, string> | null
   reservedSharesByOutcome?: Record<string, string>
+  // The outcome chosen on the page's price blocks (#429). Yes by default, the
+  // page's own default.
+  outcomeId?: string
   refetch?: () => Promise<void>
   onTraded?: () => void
   // Off by default so these tests drive the market-order body directly, as
@@ -73,14 +76,15 @@ interface PanelOptions {
 }
 
 function panel({
-  balance = '1000.0000', available = balance, heldByOutcome = HELD_PLENTY, reservedSharesByOutcome = {}, refetch = vi.fn(async () => {}), onTraded = vi.fn(),
-  limitOrdersAllowed = false, onOrderPlaced = vi.fn(),
+  balance = '1000.0000', available = balance, heldByOutcome = HELD_PLENTY, reservedSharesByOutcome = {}, outcomeId = 'o-yes',
+  refetch = vi.fn(async () => {}), onTraded = vi.fn(), limitOrdersAllowed = false, onOrderPlaced = vi.fn(),
 }: PanelOptions = {}) {
   return (
     <BalanceContext.Provider value={{ balance, available, refetch }}>
       <TradingPanel
         marketId={MARKET_ID}
         outcomes={outcomes}
+        outcomeId={outcomeId}
         limitOrdersAllowed={limitOrdersAllowed}
         heldByOutcome={heldByOutcome}
         reservedSharesByOutcome={reservedSharesByOutcome}
@@ -129,11 +133,10 @@ describe('TradingPanel', () => {
   it('shows how the trade moves the selected outcome\'s price', async () => {
     mockPreview(previewResponse({ outcome_id: 'o-no' }))
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    renderPanel()
+    // Yes is both the default and first in the outcomes list, so trading No
+    // catches a preview that reads prices[0] instead of matching by id.
+    renderPanel({ outcomeId: 'o-no' })
 
-    // Yes is both the default and first in the outcomes list, so selecting
-    // No catches a preview that reads prices[0] instead of matching by id.
-    await actor.click(screen.getByRole('button', { name: 'No' }))
     await typeQuantity(actor, '10')
 
     const preview = await screen.findByLabelText('trade preview')
@@ -154,16 +157,27 @@ describe('TradingPanel', () => {
     expect(preview).toHaveTextContent('2.0000')
   })
 
-  it('heads the side and outcome toggles separately, so the two rows are not one control', () => {
+  it('heads the order type and side toggles separately, so the two rows are not one control', () => {
     // #430: the two rows are the same shape and sit a few pixels apart, and
     // the side row keeps the green/red trading convention rather than the
-    // outcome row's navy fill. The headings are what stops a trader reading
-    // the pair as one control disagreeing with itself, and they are the
-    // groups' names for a screen reader too.
-    renderPanel()
+    // order type row's navy fill. The headings are what stops a trader
+    // reading the pair as one control disagreeing with itself, and they are
+    // the groups' names for a screen reader too.
+    renderPanel({ limitOrdersAllowed: true })
 
+    expect(screen.getByRole('group', { name: 'Order type' })).toContainElement(screen.getByRole('button', { name: 'Market' }))
     expect(screen.getByRole('group', { name: 'Buy or sell' })).toContainElement(screen.getByRole('button', { name: 'Buy' }))
-    expect(screen.getByRole('group', { name: 'Outcome' })).toContainElement(screen.getByRole('button', { name: 'Yes' }))
+  })
+
+  // #429: the outcome is chosen on the page's price blocks, so the panel
+  // offers no choice of its own — it says which one it is trading,
+  // which the limit ticket's button otherwise never names.
+  it('names the outcome it trades, and offers no outcome choice of its own', () => {
+    renderPanel({ outcomeId: 'o-no', limitOrdersAllowed: true })
+
+    expect(screen.getByText(/^Trading/)).toHaveTextContent(/^Trading No/)
+    expect(screen.queryByRole('button', { name: 'Yes' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'No' })).not.toBeInTheDocument()
   })
 
   it('does not fetch a preview before the debounce settles', async () => {
@@ -595,11 +609,13 @@ describe('TradingPanel', () => {
   it('clears a stale preview immediately when the outcome changes', async () => {
     mockPreview(previewResponse())
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    renderPanel()
+    const { rerender } = renderPanel()
     await typeQuantity(actor, '10')
     await screen.findByLabelText('trade preview')
 
-    await actor.click(screen.getByRole('button', { name: /^no$/i }))
+    // No chosen on the page's price blocks (#429), which reach the panel as
+    // a new prop.
+    rerender(panel({ outcomeId: 'o-no' }))
 
     expect(screen.queryByLabelText('trade preview')).not.toBeInTheDocument()
   })
@@ -742,12 +758,11 @@ describe('TradingPanel', () => {
   // never be pressed, and said why only once a quantity was typed.
   it('says on choosing Sell that the trader holds none of the outcome, and offers to buy it instead', async () => {
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    renderPanel({ heldByOutcome: { 'o-yes': '6.0000' } })
+    renderPanel({ heldByOutcome: { 'o-yes': '6.0000' }, outcomeId: 'o-no' })
     // On the page before its message, which is what lets a screen reader
     // announce the message when it arrives.
     expect(screen.getByRole('status')).toBeEmptyDOMElement()
 
-    await actor.click(screen.getByRole('button', { name: 'No' }))
     await actor.click(screen.getByRole('button', { name: /^sell$/i }))
 
     expect(screen.getByRole('status')).toHaveTextContent("You don't hold any No shares.")
@@ -760,7 +775,7 @@ describe('TradingPanel', () => {
 
     // Still No: the offer is to buy the outcome the trader was looking at.
     expect(screen.getByRole('button', { name: 'Buy' })).toBePressed()
-    expect(screen.getByRole('button', { name: 'No' })).toBePressed()
+    expect(screen.getByRole('button', { name: /^buy no$/i })).toBeInTheDocument()
     // The offer's button has gone, so focus moves to what comes next rather
     // than dropping to the top of the page.
     expect(screen.getByLabelText('Quantity (shares)')).toHaveFocus()
@@ -768,7 +783,7 @@ describe('TradingPanel', () => {
 
   it('keeps the quantity field for an outcome the trader holds, while offering the buy on the one they do not', async () => {
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    renderPanel({ heldByOutcome: { 'o-yes': '6.0000' } })
+    const { rerender } = renderPanel({ heldByOutcome: { 'o-yes': '6.0000' } })
 
     await actor.click(screen.getByRole('button', { name: /^sell$/i }))
 
@@ -776,7 +791,8 @@ describe('TradingPanel', () => {
     expect(screen.getByLabelText('Quantity (shares)')).toBeInTheDocument()
     expect(screen.getByRole('status')).toBeEmptyDOMElement()
 
-    await actor.click(screen.getByRole('button', { name: 'No' }))
+    // No chosen on the page's price blocks (#429), with Sell still pressed.
+    rerender(panel({ heldByOutcome: { 'o-yes': '6.0000' }, outcomeId: 'o-no' }))
 
     expect(screen.getByRole('status')).toHaveTextContent("You don't hold any No shares.")
   })
@@ -796,6 +812,50 @@ describe('TradingPanel', () => {
 
     expect(screen.getByRole('status')).toHaveTextContent("You don't hold any Yes shares.")
     expect(screen.queryByLabelText('Quantity (shares)')).not.toBeInTheDocument()
+  })
+
+  // [T-6] #496: the limit ticket makes the market ticket's offer, through the
+  // panel that decides it. The holding is known before Sell is pressed, which
+  // is the usual case, so the region has to be on the page already on the
+  // buy side for the sentence to arrive in it rather than with it.
+  it('says on the limit ticket that the trader holds none of the outcome, and offers to buy it instead', async () => {
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ limitOrdersAllowed: true, heldByOutcome: { 'o-yes': '6.0000' }, outcomeId: 'o-no' })
+
+    await actor.click(screen.getByRole('button', { name: 'Limit' }))
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
+
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+
+    // The sentence alone: the offer is a button after the region, not part
+    // of what the region announces.
+    expect(screen.getByRole('status')).toHaveTextContent(/^You don't hold any No shares\.$/)
+    expect(screen.queryByLabelText('Limit price')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /place sell order/i })).not.toBeInTheDocument()
+
+    await actor.click(screen.getByRole('button', { name: 'Buy No instead' }))
+
+    expect(screen.getByRole('button', { name: 'Buy' })).toBePressed()
+    expect(screen.getByText(/^Trading/)).toHaveTextContent(/^Trading No/)
+    // The limit ticket's first field, as the market ticket's offer moves on
+    // to its quantity, rather than dropping focus to the top of the page.
+    expect(screen.getByLabelText('Limit price')).toHaveFocus()
+  })
+
+  // #496's second criterion, asked of the panel because the panel is what
+  // decides whether a holding counts as none.
+  it('keeps the limit ticket for a holding its own sell orders reserve in full', async () => {
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({
+      limitOrdersAllowed: true,
+      heldByOutcome: { 'o-yes': '40.0000' },
+      reservedSharesByOutcome: { 'o-yes': '40.0000' },
+    })
+
+    await actor.click(screen.getByRole('button', { name: 'Limit' }))
+    await actor.click(screen.getByRole('button', { name: /^sell$/i }))
+
+    expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 0.0000 of your 40.0000 shares')
   })
 
   it('blocks a sell of shares that open sell orders already reserve, before any request', async () => {
@@ -822,9 +882,10 @@ describe('TradingPanel', () => {
     expect(screen.getByLabelText('Quantity (shares)')).toHaveValue(4)
   })
 
-  it('offers nothing to sell, not a negative, while the orders list lags a smaller holding', async () => {
-    // A sell order's fill lowers the position and its reservation together,
-    // but they arrive on two reads, and the holdings read can land first.
+  it('offers nothing to sell, not a negative, when the reservation is above the holding', async () => {
+    // Both figures come off one portfolio row (#410), so this would be the
+    // ledger contradicting itself. The clamp keeps the line and the refusal
+    // from going negative if it ever does.
     mockPreview(previewResponse({ side: 'sell', quantity: '0.5000', total: '0.2500' }))
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     renderPanel({ heldByOutcome: { 'o-yes': '1.0000' }, reservedSharesByOutcome: { 'o-yes': '2.0000' } })

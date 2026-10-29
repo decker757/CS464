@@ -53,6 +53,7 @@ def _terms_body(**overrides: object) -> dict[str, object]:
         "published_at": "2026-09-01T09:00:00Z",
         "proposed_outcome_id": None,
         "settleable": False,
+        "voidable": False,
         "outcomes": [
             {"id": str(_YES), "position": 0, "label": "Yes"},
             {"id": str(_NO), "position": 1, "label": "No"},
@@ -554,6 +555,7 @@ def test_market_terms_without_a_status_cannot_be_built() -> None:
             outcomes=[],
             proposed_outcome_id=None,
             settleable=False,
+            voidable=False,
         )
 
 
@@ -568,16 +570,20 @@ def _without(field: str) -> dict[str, object]:
         "outcomes": [],
         "proposed_outcome_id": None,
         "settleable": False,
+        "voidable": False,
     }
     del fields[field]
     return fields
 
 
-@pytest.mark.parametrize("field", ["settleable", "proposed_outcome_id"])
-def test_market_terms_without_a_settlement_field_cannot_be_built(field: str) -> None:
+@pytest.mark.parametrize("field", ["settleable", "proposed_outcome_id", "voidable"])
+def test_market_terms_without_a_required_terms_field_cannot_be_built(field: str) -> None:
     """ADR 0019 gives `settleable` no default: `False` hides a broken deploy as
-    a window that never closes, and `True` pays out inside it. The `match`
-    makes this pass only for a missing field, not an unknown one.
+    a window that never closes, and `True` pays out inside it. ADR 0025's
+    ruling D gives `voidable` none either: true would refund a market whose
+    result is final, and false hides a broken deploy as a market that can
+    never be voided. The `match` makes this pass only for a missing field, not
+    an unknown one.
     """
     with pytest.raises(TypeError, match=rf"missing .*'{field}'"):
         _terms().MarketTerms(**_without(field))
@@ -610,14 +616,22 @@ def test_market_terms_without_a_settlement_field_cannot_be_built(field: str) -> 
             "proposed_outcome_id is a 32-digit number",
             _terms_body(proposed_outcome_id=12345678901234567890123456789012),
         ),
+        (
+            "voidable is absent",
+            {k: v for k, v in _terms_body().items() if k != "voidable"},
+        ),
+        # Truthy: coerced, it would refund a market whose result is final.
+        ("voidable is the string false", _terms_body(voidable="false")),
     ],
 )
-async def test_a_malformed_settlement_field_is_unavailable(
+async def test_a_malformed_required_terms_field_is_unavailable(
     label: str, body: object
 ) -> None:
     """Each body differs from a valid one in exactly this key, so nothing
     else can be what refuses it. A 503 on every pull, the trade path's
-    included (ADR 0017's amendment).
+    included (ADR 0017's amendment; for `voidable`, ADR 0025's ruling D).
+    `voidable` shares `settleable`'s parse, so its number and null cases
+    would repeat `settleable`'s.
     """
     with pytest.raises(_errors().MarketTermsUnavailable):
         await _terms().fetch(
@@ -625,6 +639,21 @@ async def test_a_malformed_settlement_field_is_unavailable(
             access_token=_token(),
             terms_client=terms_client_over(_responds(body=body)),
         )
+
+
+# --- [BE] #221: `voidable`, parsed as strictly as `settleable` ------------
+@pytest.mark.parametrize("voidable", [True, False])
+async def test_voidable_is_carried_through(voidable: bool) -> None:
+    """DECISIONS.md, "`MarketTerms` carries `voidable`, required, and
+    market_service deploys it first". The client carries the flag and decides
+    nothing on it: the void reads it (ADR 0025)."""
+    terms = await _terms().fetch(
+        _MARKET_ID,
+        access_token=_token(),
+        terms_client=terms_client_over(_responds(body=_terms_body(voidable=voidable))),
+    )
+
+    assert terms.voidable is voidable
 
 
 async def test_a_ten_outcome_market_still_parses() -> None:
@@ -929,8 +958,9 @@ async def test_a_mark_settled_failure_is_logged_at_error_naming_the_cause(
     caplog: pytest.LogCaptureFixture, transport: httpx.MockTransport, cause: str
 ) -> None:
     """Money has moved and the market is not marked until a person repeats the
-    request, so this is the one 503 above WARNING. Captured at DEBUG, so it is
-    the record's own level that is asserted, not the capture's.
+    request, so this 503 is logged above WARNING, as `_confirm` logs
+    `mark_voided`'s too. Captured at DEBUG, so it is the record's own level
+    that is asserted, not the capture's.
     """
     with caplog.at_level(logging.DEBUG):
         with pytest.raises(_errors().SettlementUnconfirmed):
@@ -961,3 +991,58 @@ async def test_a_fetch_failure_logs_nothing_at_error(
             )
 
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+# --- [BE] #221: mark_voided, the void's last step ---------------------------
+_REASON = "The match was abandoned after ten overs; there is no result."
+
+
+async def _mark_voided(
+    transport: httpx.MockTransport,
+    *,
+    access_token: str | None = None,
+    reason: str = _REASON,
+) -> None:
+    return await _terms().mark_voided(
+        _MARKET_ID,
+        reason=reason,
+        access_token=access_token if access_token is not None else _token(),
+        terms_client=terms_client_over(transport),
+    )
+
+
+async def test_mark_voided_posts_the_reason_to_void_with_the_token() -> None:
+    """`docs/api/market-service.md`, `POST /markets/{id}/void`: the body is
+    `{"reason": ...}`, stored as sent, and the administrator's token is
+    forwarded (ADR 0025, step 8)."""
+    token = _token()
+    seen: list[httpx.Request] = []
+
+    result = await _mark_voided(_responds(record=seen), access_token=token)
+
+    assert result is None
+    assert len(seen) == 1
+    assert seen[0].method == "POST"
+    assert seen[0].url.path == f"/markets/{_MARKET_ID}/void"
+    assert json.loads(seen[0].content) == {"reason": _REASON}
+    assert seen[0].headers["Authorization"] == f"Bearer {token}"
+
+
+async def test_a_void_step_that_fails_raises_void_unconfirmed() -> None:
+    """ADR 0025, step 8: the refunds have committed, so every failure has the
+    one remedy, repeat the request. Which answers count as failures, the
+    unread body and the ERROR log are `_confirm`'s, held for both callers by
+    `mark_settled`'s tests above; this is the one case that shows the void's
+    error is the one raised."""
+    with pytest.raises(_errors().VoidUnconfirmed):
+        await _mark_voided(_raises(httpx.ConnectError("nope")))
+
+
+async def test_void_unconfirmed_is_a_503_named_void_unconfirmed() -> None:
+    """The code a client acts on, from the void's contract."""
+    with pytest.raises(_errors().LedgerError) as raised:
+        await _mark_voided(_answers(409, "market_not_voidable"))
+
+    assert isinstance(raised.value, _errors().VoidUnconfirmed)
+    assert raised.value.status_code == 503
+    assert raised.value.code == "void_unconfirmed"

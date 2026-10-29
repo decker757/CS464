@@ -14,11 +14,17 @@ from fastapi import APIRouter, Query
 from fastapi.exceptions import RequestValidationError
 from pydantic import AwareDatetime
 
-from controller.dependencies import CurrentUser, DbSession, PageCursor, PageLimit
+from controller.dependencies import (
+    CurrentUser,
+    DbSession,
+    PageCursor,
+    PageLimit,
+    QuestionSearch,
+)
+from core.clock import has_utc_instant
 from core.paging import page_size_of
 from model.entities import MarketStatus, PublicMarketStatus
 from model.schemas import (
-    MAX_QUESTION_LENGTH,
     PublicMarketListResponse,
     PublicMarketOut,
     PublicMarketSummaryOut,
@@ -57,21 +63,6 @@ ClosesBefore = Annotated[
 ]
 
 
-def _has_utc_instant(moment: datetime) -> bool:
-    """Does `moment` name an instant inside year 1 to 9999 in UTC? #490.
-
-    asyncpg converts every bound to UTC before it sends it, and a time near
-    either end of `datetime`'s range can fall outside it there: the last hour
-    of year 9999 at UTC-5, or year 1 at UTC+1. Only that is refused; every
-    instant a `datetime` can hold in UTC still passes.
-    """
-    try:
-        moment.astimezone(UTC)
-    except OverflowError:
-        return False
-    return True
-
-
 def _window_problem(parameter: str, value: datetime, message: str) -> dict:
     """One closing-window end's item in a `422`, shaped like FastAPI's own."""
     return {
@@ -95,7 +86,7 @@ def _refuse_if_window_unencodable(
         ("closes_from", closes_from),
         ("closes_before", closes_before),
     ):
-        if value is not None and not _has_utc_instant(value):
+        if value is not None and not has_utc_instant(value):
             message = f"`{parameter}` has no instant between year 1 and 9999 in UTC."
             problems.append(_window_problem(parameter, value, message))
     if problems:
@@ -137,8 +128,8 @@ def _refuse_if_window_empty(
         "and there is nothing to distinguish them from if those are "
         "missing.\n\n"
         "`status` narrows to one of `open`, `closed`, `pending_resolution`, "
-        "`approved` or `settled`; `status=open` is the narrower query a "
-        "trader gets by choosing the first group explicitly. `draft` and "
+        "`approved`, `settled` or `voided`; `status=open` is the narrower "
+        "query a trader gets by choosing the first group explicitly. `draft` and "
         "`submitted` are never visible here and are not accepted values. `q` "
         "searches the question, case-insensitively, and composes with "
         "`status`.\n\n"
@@ -186,20 +177,7 @@ def _refuse_if_window_empty(
 async def browse_markets(
     user: CurrentUser,
     session: DbSession,
-    q: str | None = Query(
-        default=None,
-        alias="q",
-        max_length=MAX_QUESTION_LENGTH,
-        # No NUL: Postgres text cannot hold one, and asyncpg's error would be
-        # a 500. Refused as a 422 rather than stripped, which would answer a
-        # question the trader did not ask.
-        pattern=r"^[^\x00]*$",
-        description=(
-            "Case-insensitive containment search over the question. "
-            "Surrounding whitespace is ignored, and a blank search is the "
-            "same as omitting it."
-        ),
-    ),
+    q: QuestionSearch = None,
     status: PublicStatusFilter | None = Query(
         default=None,
         description=(
@@ -249,7 +227,16 @@ async def browse_markets(
         "writes it (ADR 0011).\n\n"
         "`settleable` ([3.4] #12) is true from five minutes after the dispute "
         "window ends and stays true once the market is `settled`; false for "
-        "every other status."
+        "every other status, `voided` included.\n\n"
+        "A `voided` market ([BE] #221) has no winning outcome: "
+        "`proposed_outcome_id` is null, even on one voided after its outcome "
+        "was approved. `voided_at` and `void_reason` say when and why, and "
+        "are null on every other market; show the reason to traders.\n\n"
+        "`voidable` ([BE] #221) is true on a `closed` or `pending_resolution` "
+        "market, on an `approved` one while its dispute window is open, and "
+        "on a `voided` one; false for every other status. It reads the stored "
+        "status, so a market past its `close_time` that the sweep has not yet "
+        "closed reads `closed` here and is not yet voidable."
     ),
     responses={404: {"description": "No such market, or it is a draft or submitted."}},
 )

@@ -2,10 +2,11 @@
 
 Browse ([X-1] #34), search and filter ([X-2] #35), detail ([X-3] #36), and the
 per-status counts (D-020), which the admin overview ([2.1] #5) reuses, as it
-does the status filter. Every filter, count and status here derives from the
-clock through `service/closing.py`, never from the status column alone
-(ADR 0011, D-022). No prices: `q` lives with the ledger (ADR 0005).
-Each browse card names its outcomes (#214), so a card never guesses a label.
+does the status filter and the question search (#555). Every filter, count
+and status here derives from the clock through `service/closing.py`, never
+from the status column alone (ADR 0011, D-022). No prices: the share
+quantities `q` live with the ledger (ADR 0005). Each browse card names its
+outcomes (#214), so a card never guesses a label.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ from model.entities import (
     displayed_status,
 )
 from service.closing import open_for_trading, was_open_for_trading_at
-from service.settling import settleable
+from service.settling import settleable, voidable
 
 # The escape character handed to `ILIKE ... ESCAPE`. A single backslash; the
 # doubling is Python's, not SQL's.
@@ -82,6 +83,16 @@ def _question_contains(query: str) -> ColumnElement[bool]:
     for wildcard in _LIKE_WILDCARDS:
         escaped = escaped.replace(wildcard, _LIKE_ESCAPE + wildcard)
     return Market.question.ilike(f"%{escaped}%", escape=_LIKE_ESCAPE)
+
+
+def _question_search(query: str | None) -> list[ColumnElement[bool]]:
+    """The WHERE of a question search: `_question_contains` on the stripped
+    input, or nothing when that is blank, so `?q=%20%20` means what `?q=` does.
+    """
+    search = (query or "").strip()
+    if not search:
+        return []
+    return [_question_contains(search)]
 
 
 def _closes_within(
@@ -313,10 +324,7 @@ async def browse(
     if status is not None:
         stmt = stmt.where(_status_matches(status, now))
 
-    # Blank after stripping is no filter, so `?q=%20%20` means what `?q=` does.
-    search = (query or "").strip()
-    if search:
-        stmt = stmt.where(_question_contains(search))
+    stmt = stmt.where(*_question_search(query))
 
     # A WHERE that leaves the order alone, so the keyset below pages the
     # filtered rows exactly as it pages all of them.
@@ -361,7 +369,8 @@ async def get_published(
     invisibility would go with no test failing. The derived status goes on an
     unmapped attribute, never on `status`; see `TRADER_FACING_STATUS`. D-027.
     `settleable` goes beside it, against the same `now`, for the same reason:
-    a computed field would re-run on a clock it cannot see. [3.4] #12.
+    a computed field would re-run on a clock it cannot see. [3.4] #12. So
+    does `voidable`, from the stored status. [BE] #221.
     """
     now = now or datetime.now(UTC)
 
@@ -378,15 +387,19 @@ async def get_published(
     market.settleable = settleable(
         market.status, market.dispute_window_ends_at, now=now
     )
+    market.voidable = voidable(market.status, market.dispute_window_ends_at, now=now)
     return market
 
 
 # --- the administrator's overview. [2.1] #5, #210 --------------------------
-# Its two groups, in order: every market still in play, then the settled ones.
-# Settled markets are finished, and an action queue ordered by oldest close
-# would otherwise put every one of them first.
+# Its two groups, in order: every market still in play, then the finished
+# ones, settled or voided. An action queue ordered by oldest close would
+# otherwise put every finished one first. ADR 0025.
 _ACTIVE_GROUP = 0
-_SETTLED_GROUP = 1
+_FINISHED_GROUP = 1
+
+# The statuses no action follows: both are final. [3.4] #12, [BE] #221.
+_FINISHED_STATUSES = (MarketStatus.SETTLED, MarketStatus.VOIDED)
 
 
 def _visible_to_admin(caller_id: uuid.UUID) -> ColumnElement[bool]:
@@ -399,27 +412,28 @@ def _visible_to_admin(caller_id: uuid.UUID) -> ColumnElement[bool]:
     return or_(_visible(), Market.creator_id == caller_id)
 
 
-def _is_settled() -> ColumnElement[bool]:
-    """Is the market settled? Decides its overview group. #210.
+def _is_finished() -> ColumnElement[bool]:
+    """Is the market settled or voided? Decides its overview group. #210.
 
-    Switched on by [3.4] #12 (#227), which added `MarketStatus.SETTLED`. The
-    order, the keyset and the cursor carried the group already, so this is the
-    only line that changed.
+    The stored status: both are final, so the column cannot lag. One group,
+    so a voided market sorts among the settled ones by close time.
+    DECISIONS.md, "Settled markets sink in the overview's unfiltered view,
+    and the counts are unchanged", as amended for ADR 0025.
     """
-    return Market.status == MarketStatus.SETTLED
+    return Market.status.in_(_FINISHED_STATUSES)
 
 
 def _overview_group() -> ColumnElement[int]:
-    """0 for a market still in play, 1 for a settled one, which sorts last.
+    """0 for a market still in play, 1 for a finished one, which sorts last.
 
     A CASE rather than the boolean, so the group is an integer: the keyset
     compares it with the cursor's group, and the cursor reads it back.
     """
-    return case((_is_settled(), _SETTLED_GROUP), else_=_ACTIVE_GROUP)
+    return case((_is_finished(), _FINISHED_GROUP), else_=_ACTIVE_GROUP)
 
 
 def _overview_order() -> tuple[ColumnElement[object], ...]:
-    """Settled last; then soonest close, none last; then id.
+    """Finished last; then soonest close, none last; then id.
 
     "The admin overview orders by soonest close, missing close times last,
     then id", with #210's group in front. Nothing here reads the clock, so a
@@ -451,7 +465,7 @@ def _after_in_overview(position: OverviewPosition) -> ColumnElement[bool]:
     """Every market `_overview_order` puts after `position`: the rest of its
     group, then every later group."""
     group = _overview_group()
-    position_group = _SETTLED_GROUP if position.settled else _ACTIVE_GROUP
+    position_group = _FINISHED_GROUP if position.finished else _ACTIVE_GROUP
     if position.close_time is None:
         rest_of_group = _after_an_undated_market(position)
     else:
@@ -463,7 +477,7 @@ def _overview_cursor_after(row: Row) -> str:
     """The cursor that continues the overview after `row`."""
     return encode_overview_cursor(
         OverviewPosition(
-            settled=row.overview_group == _SETTLED_GROUP,
+            finished=row.overview_group == _FINISHED_GROUP,
             close_time=row.close_time,
             market_id=row.id,
         )
@@ -475,14 +489,16 @@ async def _list_overview_rows(
     *,
     caller_id: uuid.UUID,
     limit: int,
+    query: str | None,
     status: MarketStatus | None,
     now: datetime,
     after: OverviewPosition | None,
 ) -> Sequence[Row]:
     """Up to `limit + 1` overview rows after `after`, in the overview's order.
 
-    The status filter is the browse's (`_status_matches`), in the query and
-    so before the limit. Columns, not entities, for the reason `browse` gives.
+    The question search and the status filter are the browse's
+    (`_question_search`, `_status_matches`), in the query and so before the
+    limit. Columns, not entities, for the reason `browse` gives.
     """
     stmt = select(
         Market.id,
@@ -496,6 +512,8 @@ async def _list_overview_rows(
 
     if status is not None:
         stmt = stmt.where(_status_matches(status, now))
+
+    stmt = stmt.where(*_question_search(query))
 
     if after is not None:
         stmt = stmt.where(_after_in_overview(after))
@@ -553,6 +571,7 @@ async def overview(
     *,
     caller_id: uuid.UUID,
     limit: int,
+    query: str | None = None,
     status: MarketStatus | None = None,
     now: datetime,
     cursor: str | None = None,
@@ -560,11 +579,13 @@ async def overview(
     """One page of what an administrator can see, with counts over all of it. [2.1] #5, #210.
 
     Published markets plus the caller's own drafts and submissions: settled
-    last, then soonest close with none last, then id. At most `limit`;
-    `next_cursor` is None on the last page. The counts cover every market the
-    caller can see, whatever `status` and `cursor` say. The page and the
-    counts are two statements in one REPEATABLE READ transaction, so they
-    describe one snapshot, and read one `now` (D-025). Raises `MalformedCursor`
+    and voided last, then soonest close with none last, then id. `query`
+    searches the question as `browse`'s does (#555) and composes with
+    `status`. At most `limit`; `next_cursor` is None on the last page. The
+    counts cover every market the caller can see, whatever `query`, `status`
+    and `cursor` say. The page and the counts are two statements in one
+    REPEATABLE READ transaction, so they describe one snapshot, and read one
+    `now` (D-025). Raises `MalformedCursor`
     for a cursor this service did not issue, and `InvalidRequestError` if the
     session already has a transaction open. Commits its own read-only
     transaction. DECISIONS.md, "The admin overview pages by keyset, settled
@@ -586,6 +607,7 @@ async def overview(
             session,
             caller_id=caller_id,
             limit=limit,
+            query=query,
             status=status,
             now=now,
             after=after,
@@ -606,6 +628,7 @@ async def overview(
             close_time=row.close_time,
             settleable=settleable(row.status, row.dispute_window_ends_at, now=now),
             dispute_window_ends_at=row.dispute_window_ends_at,
+            voidable=voidable(row.status, row.dispute_window_ends_at, now=now),
         )
         for row in shown
     ]

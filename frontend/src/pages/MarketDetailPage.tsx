@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { getMyPortfolio, type Order } from '../api/ledgerApi'
+import { getMyPortfolio } from '../api/ledgerApi'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
-import { type MarketStatus, tradingStopped } from '../components/markets/marketStatus'
+import PriceFeedStatus from '../components/markets/PriceFeedStatus'
+import { formatCloseCountdown, type MarketStatus } from '../components/markets/marketStatus'
 import OpenOrdersList from '../components/markets/OpenOrdersList'
+import OutcomePrices from '../components/markets/OutcomePrices'
 import PriceHistorySection from '../components/markets/PriceHistorySection'
 import ResolutionDetails from '../components/markets/ResolutionDetails'
 import StatusBadge from '../components/markets/StatusBadge'
@@ -15,19 +17,19 @@ import Card from '../components/ui/Card'
 import SectionCard from '../components/ui/SectionCard'
 import { useBalance } from '../context/BalanceContext'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { useMarketClock } from '../hooks/useMarketClock'
 import { type OrderFrame, useMarketPrices } from '../hooks/useMarketPrices'
 import { useMyOrders } from '../hooks/useMyOrders'
 import { useWindowOpen } from '../hooks/useWindowOpen'
 import { disputeWindowLine } from '../utils/formatCountdown'
-import { addCredits } from '../utils/formatCredits'
-import { formatDateTime as formatDate } from '../utils/formatDateTime'
-import { formatPrice } from '../utils/formatPrice'
+import { formatDateTime } from '../utils/formatDateTime'
 
 // Why trading is closed, for a market that cannot be traded right now.
 function closedMessage(status: MarketStatus): string {
   if (status === 'pending_resolution') return 'Trading is closed while the outcome is decided.'
   if (status === 'approved') return 'The outcome is approved and payouts are pending. Trading is closed.'
   if (status === 'settled') return 'This market has been settled. Trading is closed.'
+  if (status === 'voided') return 'This market has been voided. Trading is closed.'
   return 'Trading is closed for this market.'
 }
 
@@ -40,22 +42,17 @@ function outcomeBannerLabel(status: MarketStatus): string {
   return 'Proposed outcome'
 }
 
-// What the trader's own open sell orders hold back of each outcome, summed:
-// the ledger will not sell those shares a second time
-// (insufficient_shares_held, ledger-service.md), so the panel's sell check
-// stops short of them. A buy reserves credits, and carries null here.
-function reservedSharesByOutcomeOf(orders: Order[]): Record<string, string> {
-  const reserved: Record<string, string> = {}
-  for (const order of orders) {
-    if (order.reserved_shares === null) continue
-    const total = addCredits(reserved[order.outcome_id] ?? '0', order.reserved_shares)
-    if (total !== null) reserved[order.outcome_id] = total
-  }
-  return reserved
-}
-
-function Banner({ className, children }: { className: string; children: React.ReactNode }) {
-  return <div className={`mb-6 rounded-xl border px-5 py-3.5 text-sm ${className}`}>{children}</div>
+// A banner with a `label` is a named region, so a screen reader can jump to
+// it by name: the voided one carries the only explanation of a refund. It
+// says where a refund shows rather than that one was paid: a market marked
+// voided by a direct call to market_service reads the same and has refunded
+// nobody yet (ADR 0025, "Known edges, accepted").
+function Banner({ className, label, children }: { className: string; label?: string; children: React.ReactNode }) {
+  return (
+    <div role={label ? 'region' : undefined} aria-label={label} className={`mb-6 rounded-xl border px-5 py-3.5 text-sm ${className}`}>
+      {children}
+    </div>
+  )
 }
 
 export default function MarketDetailPage() {
@@ -92,18 +89,43 @@ export default function MarketDetailPage() {
   const closeTimeStillAhead = useWindowOpen(market?.close_time ?? null)
   const pastClose = market !== null && !closeTimeStillAhead
   const tradeable = market?.status === 'open' && !pastClose
+  // The browse card's clock and the card's words for it, so the two screens
+  // say the same thing about the same market at the same minute (#429).
+  const now = useMarketClock(market)
+
+  // The outcome the trading panel trades, chosen on the price blocks (#429):
+  // one choice, made where its price is shown, and handed to the panel.
+  // Tagged with the market it was made on, like `loaded` and `held`, and
+  // dropped as soon as the route leaves that market — so the next market,
+  // and this one again after Back, opens on its first outcome rather than on
+  // a choice from an earlier visit.
+  const [choice, setChoice] = useState<{ marketId: string; outcomeId: string } | null>(null)
+  if (choice !== null && choice.marketId !== id) setChoice(null)
+  const choiceHere = choice !== null && choice.marketId === id ? choice.outcomeId : null
+  const tradedOutcomeId = choiceHere ?? market?.outcomes[0]?.id ?? ''
+  const handleChooseOutcome = (outcomeId: string) => {
+    if (id) setChoice({ marketId: id, outcomeId })
+  }
 
   // What the trader holds of each of this market's outcomes, for the sell
-  // clamp ([T-2] #357). The portfolio route carries every market's positions
-  // and names no questions or labels (ledger-service.md), so picking out this
-  // market's is the page's own join.
+  // clamp ([T-2] #357): the whole position, and the part of it their own live
+  // sell orders hold back. Both come off the one portfolio read that already
+  // carries them (#410), so the two can never disagree. The route carries
+  // every market's positions and names no questions or labels
+  // (ledger-service.md), so picking out this market's is the page's own join.
   //
   // Tagged with the market it was read for, like `loaded` above: outcome ids
   // differ between markets, so an untagged map would read as "holds nothing"
   // on the next market until its own read landed, and clamp every sell on
   // that. Null says the holdings are unknown, which clamps nothing at all.
-  const [held, setHeld] = useState<{ id: string; byOutcome: Record<string, string> } | null>(null)
-  const heldByOutcome = held !== null && held.id === id ? held.byOutcome : null
+  const [held, setHeld] = useState<{
+    id: string
+    quantityByOutcome: Record<string, string>
+    reservedByOutcome: Record<string, string>
+  } | null>(null)
+  const heldHere = held !== null && held.id === id ? held : null
+  const heldByOutcome = heldHere?.quantityByOutcome ?? null
+  const reservedByOutcome = heldHere?.reservedByOutcome ?? {}
 
   // The most recent read's own number, so an answer that arrives after a
   // newer one is dropped instead of overwriting it. BalanceContext keeps the
@@ -125,7 +147,11 @@ export default function MarketDetailPage() {
       portfolio => {
         if (requestId !== latestHeldReadRef.current) return
         const mine = portfolio.positions.filter(position => position.market_id === id)
-        setHeld({ id, byOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.quantity])) })
+        setHeld({
+          id,
+          quantityByOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.quantity])),
+          reservedByOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.reserved_shares])),
+        })
       },
       // Leave the last known holdings up rather than blanking them, the same
       // way BalanceContext keeps the last balance on a failed refetch.
@@ -133,18 +159,20 @@ export default function MarketDetailPage() {
     )
   }, [id, tradeable])
 
-  // The price history is read once, so the trader's own trade would leave it
-  // behind: on a fresh market it would go on saying nobody has traded. Each
-  // trade or limit placement here re-reads it (#453). Other traders' trades
-  // are not followed, nor a resting order's later fill (an order frame).
+  // Each trade or limit placement here re-reads the price history (#453).
+  // Other traders' trades reach the chart as price frames ([T-5] #495); the
+  // trader's own is read again as well, for the two cases a frame cannot
+  // cover, which the section's `key` below names.
   const [tradesMade, setTradesMade] = useState(0)
   const handleTraded = useCallback(() => {
     refetchHeld()
     setTradesMade(count => count + 1)
   }, [refetchHeld])
 
-  // A placement or a cancel moves credits, or what they reserve, and a
-  // placement that filled also changed the holdings the sell clamp reads.
+  // A placement or a cancel moves credits, or what they reserve. A sell's
+  // reservation is read off the portfolio row (#410), so every sell placement
+  // and cancel changes the holdings the sell clamp reads, not only one that
+  // filled.
   // The balance comes back through BalanceContext, as it does after a trade.
   // Every subscribe ack re-reads all three too, the first one included: a
   // fill whose frame was published before the socket was listening — while
@@ -152,7 +180,9 @@ export default function MarketDetailPage() {
   // (realtime-service.md, "Reconnecting": the orders and the balance again).
   const onOrdersChanged = useCallback(() => {
     refetchOrders()
-    refetchBalance()
+    // `void`: BalanceContext's refetch catches its own failure and settles
+    // either way, and this caller has nothing to do with the answer (#551).
+    void refetchBalance()
     refetchHeld()
   }, [refetchOrders, refetchBalance, refetchHeld])
 
@@ -175,16 +205,27 @@ export default function MarketDetailPage() {
   const onFrame = useCallback((frame: OrderFrame) => {
     applyFrame(frame)
     refetchOrders()
-    refetchBalance()
+    // `void`, as above.
+    void refetchBalance()
     refetchHeld()
   }, [applyFrame, refetchOrders, refetchBalance, refetchHeld])
 
   // One socket for the page: price frames keep the prices above current, and
   // order frames the list below it. Order frames need no subscribe, so they
   // arrive on this same connection (realtime-service.md, "Order updates").
-  const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null, {
+  // Bumped on every `subscribed` ack, the first included: frames published
+  // while a dropped connection was away are gone (ADR 0010), so the price
+  // history has to be read again rather than caught up from frames ([T-5]
+  // #495). The first ack's read is a harmless repeat of the mount's.
+  const [subscribes, setSubscribes] = useState(0)
+  const onSubscribed = useCallback(() => {
+    onOrdersChanged()
+    setSubscribes(count => count + 1)
+  }, [onOrdersChanged])
+
+  const { prices, status: priceStatus, snapshot: livePrice } = useMarketPrices(market?.id ?? null, {
     onOrderFrame: onFrame,
-    onSubscribed: onOrdersChanged,
+    onSubscribed,
   })
   // Re-evaluates the instant the dispute window closes, rather than only at
   // whatever render happens to run next — an approved market has no trades
@@ -207,14 +248,6 @@ export default function MarketDetailPage() {
     refetchHeld()
   }, [refetchHeld])
 
-  // An early close leaves close_time in the future, so "Closed <close_time>"
-  // would name a date that has not happened yet.
-  function closeLabel(m: PublicMarketDetail): string {
-    if (!pastClose && !tradingStopped(m.status, m.close_time)) return `Closes ${formatDate(m.close_time)}`
-    if (pastClose) return `Closed ${formatDate(m.close_time)}`
-    return 'Closed early'
-  }
-
   // The badge reads the same answer the panel is gated on rather than the raw
   // status column. The clock closes a market and the sweep writes CLOSED a
   // few seconds later (ADR 0011), so for that window the column still says
@@ -224,7 +257,12 @@ export default function MarketDetailPage() {
     return m.status === 'open' && !tradeable ? 'closed' : m.status
   }
 
-  const winningOutcome = market?.proposed_outcome_id
+  // A voided market has no winner, even one voided while approved
+  // (market-service.md sends its proposed_outcome_id as null; #526 asks the
+  // page not to lean on that), and no price either: the last prices are what
+  // the crowd thought of a question with no answer (ADR 0025).
+  const isVoided = market?.status === 'voided'
+  const winningOutcome = market?.proposed_outcome_id && !isVoided
     ? market.outcomes.find(o => o.id === market.proposed_outcome_id)
     : null
 
@@ -245,7 +283,7 @@ export default function MarketDetailPage() {
           <div className="mb-8">
             <div className="mb-4 flex items-center gap-3">
               <StatusBadge status={badgeStatus(market)} />
-              <span className="text-[13px] text-subtle">{closeLabel(market)}</span>
+              <span className="text-[13px] text-subtle">{formatCloseCountdown(market.status, market.close_time, now)}</span>
             </div>
             <h1 className="text-[26px] leading-[1.4] font-extrabold tracking-[-0.3px] text-smu-navy">{market.question}</h1>
             {market.description && (
@@ -256,6 +294,15 @@ export default function MarketDetailPage() {
           {winningOutcome && (
             <Banner className="border-info/20 bg-info/5 font-semibold text-info-strong">
               {outcomeBannerLabel(market.status)}: <strong>{winningOutcome.label}</strong>
+            </Banner>
+          )}
+
+          {isVoided && (
+            <Banner label="Voided" className="border-muted/25 bg-muted/5 text-secondary">
+              <p className="font-semibold text-smu-navy">
+                Voided{market.voided_at && ` on ${formatDateTime(market.voided_at)}`}, with no result. Refunds show in each holder's portfolio and history.
+              </p>
+              {market.void_reason && <p className="mt-1">{market.void_reason}</p>}
             </Banner>
           )}
 
@@ -271,40 +318,27 @@ export default function MarketDetailPage() {
             </Banner>
           )}
 
-          <div className="mb-3 grid gap-3" style={{ gridTemplateColumns: `repeat(${market.outcomes.length}, 1fr)` }}>
-            {market.outcomes.map(outcome => {
-              const outcomePrice = prices?.find(p => p.outcome_id === outcome.id)
-              const isWinner = outcome.id === market.proposed_outcome_id
-              return (
-                <Card key={outcome.id} borderColor={isWinner ? 'border-info/40' : undefined} className="px-6 py-5 text-center">
-                  <p className="mb-2 text-[13px] font-semibold tracking-[0.5px] text-muted uppercase">{outcome.label}</p>
-                  <p aria-label={`${outcome.label} price`} className="mb-1 text-[32px] font-extrabold tracking-[-1px] text-smu-navy">
-                    {outcomePrice ? formatPrice(outcomePrice.price) : '—'}
-                  </p>
-                  <p className="text-xs text-subtle">{outcomePrice ? 'implied probability' : 'loading price…'}</p>
-                </Card>
-              )
-            })}
-          </div>
+          <OutcomePrices
+            marketId={market.id}
+            outcomes={market.outcomes}
+            prices={prices}
+            isVoided={isVoided}
+            winningOutcomeId={winningOutcome?.id ?? null}
+            choice={tradeable ? { outcomeId: tradedOutcomeId, onChoose: handleChooseOutcome } : null}
+            className="mb-3"
+          />
 
-          {(priceStatus === 'reconnecting' || priceStatus === 'degraded') && (
-            <div
-              role="status"
-              className={`mb-6 flex items-center gap-2 text-xs font-medium ${priceStatus === 'degraded' ? 'text-danger' : 'text-warning-strong'}`}
-            >
-              <span className={`h-2 w-2 shrink-0 rounded-full ${priceStatus === 'degraded' ? 'bg-danger' : 'animate-pulse bg-warning'}`} />
-              {priceStatus === 'reconnecting' ? 'Reconnecting to live prices…' : 'Live prices unavailable.'}
-            </div>
-          )}
+          <PriceFeedStatus status={priceStatus} className="mb-6" />
 
           <Card className="mb-6 px-6 py-5">
             {tradeable ? (
               <TradingPanel
                 marketId={market.id}
                 outcomes={market.outcomes}
+                outcomeId={tradedOutcomeId}
                 limitOrdersAllowed={!!binaryMarket}
                 heldByOutcome={heldByOutcome}
-                reservedSharesByOutcome={reservedSharesByOutcomeOf(ordersHere)}
+                reservedSharesByOutcome={reservedByOutcome}
                 onTraded={handleTraded}
                 onOrderPlaced={handleOrderPlaced}
               />
@@ -332,7 +366,18 @@ export default function MarketDetailPage() {
               them, so the history arriving after first paint never moves the
               controls a trader is reaching for (#453). Every status: a closed
               market's history still says how it got there. */}
-          <PriceHistorySection key={tradesMade} marketId={market.id} outcomes={market.outcomes} />
+          {/* The chart follows the socket, so another trader's trade reaches
+              it without a remount ([T-5] #495). `key` still restarts it on
+              the trader's own trade, for what a frame cannot carry: a socket
+              that is down or degraded sends none, and a trade that fills
+              resting orders makes a point per fill but one frame (ADR 0024). */}
+          <PriceHistorySection
+            key={tradesMade}
+            marketId={market.id}
+            outcomes={market.outcomes}
+            liveSnapshot={livePrice}
+            reconnects={subscribes}
+          />
 
           <SectionCard title="About this market">
             <ResolutionDetails market={market} />

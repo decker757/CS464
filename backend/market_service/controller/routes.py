@@ -17,6 +17,7 @@ from controller.dependencies import (
     DbSession,
     PageCursor,
     PageLimit,
+    QuestionSearch,
 )
 from core.paging import page_size_of
 from model.entities import MarketStatus
@@ -29,6 +30,7 @@ from model.schemas import (
     MarketOverviewRowOut,
     MarketSaveResponse,
     MarketSummaryOut,
+    MarketVoidRequest,
     OutcomeApprovalRequest,
     OutcomeProposalRequest,
     OutcomeRejectionRequest,
@@ -375,6 +377,7 @@ async def reject_market_outcome(
         409: {
             "description": (
                 "`market_already_settled` — it has been settled. "
+                "`market_already_voided` — it has been voided. "
                 "`market_pending_resolution` — its outcome is proposed but not "
                 "yet approved; review it instead. `market_not_approved` — no "
                 "outcome is approved. `dispute_window_closed` — the window has "
@@ -423,9 +426,10 @@ async def send_back_market_outcome(
         404: {"description": "No such market."},
         409: {
             "description": (
-                "`market_not_approved` — the market's outcome has not been "
-                "approved. `dispute_window_open` — it is approved, but not "
-                "yet settleable."
+                "`market_already_voided` — the market has been voided, so it "
+                "will never be settled. `market_not_approved` — the market's "
+                "outcome has not been approved. `dispute_window_open` — it is "
+                "approved, but not yet settleable."
             )
         },
     },
@@ -437,6 +441,59 @@ async def settle_market(
     # after the row lock, never the request's. DECISIONS.md, "The settle
     # step's window check reads `clock_timestamp()` after the row lock".
     market = await market_service.settle(session, actor, market_id)
+    return MarketOut.model_validate(market)
+
+
+@router.post(
+    "/{market_id}/void",
+    response_model=MarketOut,
+    status_code=status.HTTP_200_OK,
+    summary="Mark a market voided (the ledger's last step)",
+    description=(
+        "[BE] #221. **Called by the ledger's void route only.** Clients void "
+        "a market with `POST /ledger/markets/{id}/void`, which refunds every "
+        "holder and then calls this with the administrator's token and the "
+        "recorded reason. A direct call marks the market voided and "
+        "**refunds nobody**.\n\n"
+        "Accepts a `closed` or `pending_resolution` market, and an "
+        "`approved` one until five minutes after its dispute window ends, "
+        "judged on the database's clock after the market is locked. Any "
+        "administrator's token is accepted. `reason` is stored as sent, at "
+        "most 5,000 characters and not otherwise checked here: the ledger "
+        "checked it before the refunds.\n\n"
+        "A pending proposal is cleared; an approval is kept, though no "
+        "winner is shown. `closed_at` is unchanged. A market already "
+        "`voided` is answered `200` with the same market and nothing "
+        "written, so the ledger can repeat a request whose last step "
+        "failed.\n\n"
+        "The flip appends a `market.marked_voided` entry to the audit log "
+        "([4.3] #15) in the same transaction. A repeat appends nothing. One "
+        "with no `market.voided` from the ledger before it is the trace of a "
+        "direct call (ADR 0025)."
+    ),
+    responses={
+        403: {"description": "`not_an_administrator` — a trader."},
+        404: {"description": "No such market."},
+        409: {
+            "description": (
+                "`market_already_settled` — the market has been settled. "
+                "`market_not_voidable` — it is a draft, submitted or open by "
+                "its stored status, or approved and past five minutes after "
+                "its dispute window, or approved with no window end."
+            )
+        },
+        422: {"description": "`reason` is missing or longer than 5,000 characters."},
+    },
+)
+async def void_market(
+    market_id: uuid.UUID,
+    payload: MarketVoidRequest,
+    actor: CurrentActor,
+    session: DbSession,
+) -> MarketOut:
+    # No `now` from here: the edge is judged on Postgres's clock, read after
+    # the row lock, never the request's. ADR 0025.
+    market = await market_service.void(session, actor, market_id, payload)
     return MarketOut.model_validate(market)
 
 
@@ -459,7 +516,10 @@ async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListRes
 @router.get(
     "/overview",
     response_model=MarketOverviewResponse,
-    summary="Every market I can see, a page at a time, filtered by status, with counts",
+    summary=(
+        "Every market I can see, a page at a time, filtered by status or "
+        "question, with counts"
+    ),
     description=(
         "[2.1] #5, #210. Every published market, plus the calling "
         "administrator's own drafts and submissions; another administrator's "
@@ -473,14 +533,22 @@ async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListRes
         "one snapshot.\n\n"
         "Each row's `settleable` ([3.4] #12) is derived against the same "
         "instant: true from five minutes after the dispute window ends, "
-        "still true once `settled`, false otherwise.\n\n"
+        "still true once `settled`, false otherwise. Each row's `voidable` "
+        "([BE] #221) is the public detail's flag, against the same "
+        "instant.\n\n"
         "Ordered by soonest `close_time`, markets with none last, then by id. "
-        "Settled markets sort last, after all of those, in the unfiltered "
-        "view.\n\n"
+        "Settled and voided markets sort last, after all of those, in the "
+        "unfiltered view, in the same order among themselves. One settled "
+        "or voided between two page reads moves to the end and can appear "
+        "twice.\n\n"
+        "`q` (#555) searches the question exactly as `GET /public/markets`'s "
+        "`q` does, the caller's own drafts and submissions included, and "
+        "composes with `status`. Like `status`, it narrows the list and "
+        "leaves `counts` alone.\n\n"
         "Paged by keyset (#210). Send `next_cursor` back as `cursor`, with the "
-        "same `status` and `limit`, to continue; null means there is nothing "
-        "after this page. `limit` defaults to the server's page size (50) and "
-        "a value above its maximum (200) is clamped."
+        "same `q`, `status` and `limit`, to continue; null means there is "
+        "nothing after this page. `limit` defaults to the server's page size "
+        "(50) and a value above its maximum (200) is clamped."
     ),
     responses={
         400: {
@@ -489,12 +557,19 @@ async def list_markets(admin: CurrentAdmin, session: DbSession) -> MarketListRes
             )
         },
         403: {"description": "`not_an_administrator` — a trader."},
-        422: {"description": "`status` is not one of the seven, or `limit` is below 1."},
+        422: {
+            "description": (
+                "`status` is not one of the eight, `q` is longer than a "
+                "question may be or contains a NUL character, or `limit` is "
+                "below 1."
+            )
+        },
     },
 )
 async def market_overview(
     admin: CurrentAdmin,
     session: DbSession,
+    q: QuestionSearch = None,
     status: MarketStatus | None = Query(
         default=None,
         description="Restrict the list to one status. Counts are unaffected.",
@@ -510,6 +585,7 @@ async def market_overview(
         session,
         caller_id=admin.user_id,
         limit=page_size_of(limit),
+        query=q,
         status=status,
         now=now,
         cursor=cursor,

@@ -1,12 +1,14 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, isInaccessible, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse, ws } from 'msw'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import MarketCard from '../components/markets/MarketCard'
 import type { User } from '../context/AuthContext'
 import { holdUntilReleased } from '../test/holdUntilReleased'
 import { server } from '../test/server'
 import { WithProviders } from '../test/renderWithProviders'
+import { formatDateTime } from '../utils/formatDateTime'
 import MarketDetailPage from './MarketDetailPage'
 
 const MARKET_BASE = 'http://localhost:8001'
@@ -42,15 +44,20 @@ const baseMarket = {
 }
 
 // The trader's own positions, which the page reads for the sell clamp
-// (#357). `position` carries only the three fields the page joins on.
-function portfolio(positions: { market_id: string; outcome_id: string; quantity: string }[] = []) {
+// (#357). `position` carries only the fields the page reads: the three it
+// joins on, and `reserved_shares` where a test holds some back.
+function portfolio(
+  positions: { market_id: string; outcome_id: string; quantity: string; reserved_shares?: string }[] = [],
+) {
   return {
     user_id: '1',
     account_id: 'acct-1',
     balance: '1000.0000',
     positions_value: '0.0000',
     net_worth: '1000.0000',
-    positions: positions.map(p => ({ ...p, outcome_position: 0, cost_basis: '0.0000', average_entry_price: '0.5000', price: '0.5000', value: '0.0000', unrealized_pnl: '0.0000', result: null, payout: null, state_version: 1 })),
+    // `reserved_shares` defaults to nothing held back, and is never null on a
+    // position (ledger-service.md) — unlike the same name on an order.
+    positions: positions.map(p => ({ reserved_shares: '0.0000', ...p, outcome_position: 0, cost_basis: '0.0000', average_entry_price: '0.5000', price: '0.5000', value: '0.0000', unrealized_pnl: '0.0000', result: null, payout: null, state_version: 1 })),
   }
 }
 
@@ -224,17 +231,24 @@ describe('MarketDetailPage', () => {
     act(() => wsClient!.send(JSON.stringify({ type: 'price', ...priceFrame(6, '0.7000', '0.3000') })))
     await waitFor(() => expect(screen.getByLabelText('Yes price')).toHaveTextContent('70.0%'))
     expect(screen.getByLabelText('No price')).toHaveTextContent('30.0%')
+    // The price is also in the name of the control that picks the outcome
+    // (#429), so that follows the socket too.
+    expect(screen.getByRole('radio', { name: 'Yes, 70.0%' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'No, 30.0%' })).toBeInTheDocument()
   })
 
-  it('says closed early, not a future closing date, for a market an admin closed', async () => {
+  // The card's words, not a future closing date (#429): the badge and the
+  // close label both say Closed, as they do on the market's browse card.
+  it('says Closed, not a future closing date, for a market an admin closed', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets/:id`, () =>
         HttpResponse.json({ ...baseMarket, status: 'closed' }),
       ),
     )
     renderPage()
-    expect(await screen.findByText('Closed early')).toBeInTheDocument()
-    expect(screen.queryByText(/^Closes \d/)).not.toBeInTheDocument()
+    await screen.findByText(baseMarket.question)
+    expect(screen.getAllByText('Closed')).toHaveLength(2)
+    expect(screen.queryByText(/^Closes /)).not.toBeInTheDocument()
   })
 
   it('shows the trading panel for open markets', async () => {
@@ -243,6 +257,114 @@ describe('MarketDetailPage', () => {
     renderPage()
     expect(await screen.findByRole('button', { name: /^buy$/i })).toBeInTheDocument()
     expect(screen.getByLabelText('Quantity (shares)')).toBeInTheDocument()
+  })
+
+  // #429 point 2: choosing an outcome and seeing its price are one control,
+  // the price block, and the page owns the choice it hands the panel.
+  describe('choosing an outcome by its price', () => {
+    function serveSnapshot(yes: string, no: string) {
+      server.use(http.get(SNAPSHOT, () => HttpResponse.json(priceFrame(5, yes, no))))
+    }
+
+    it('trades and quotes the outcome whose price was clicked', async () => {
+      serveSnapshot('0.6000', '0.4000')
+      const quotedOutcomes: (string | null)[] = []
+      server.use(
+        http.get(PREVIEW, ({ request }) => {
+          quotedOutcomes.push(new URL(request.url).searchParams.get('outcome_id'))
+          return HttpResponse.json({ ...tradeQuote(), outcome_id: 'o2' })
+        }),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+
+      const no = await screen.findByRole('radio', { name: 'No, 40.0%' })
+      await actor.click(no)
+
+      expect(no).toBeChecked()
+      expect(screen.getByRole('radio', { name: 'Yes, 60.0%' })).not.toBeChecked()
+      expect(screen.getByText(/^Trading/)).toHaveTextContent(/^Trading No/)
+      await actor.type(screen.getByLabelText('Quantity (shares)'), '10')
+      await waitFor(() => expect(quotedOutcomes).toContain('o2'))
+      expect(quotedOutcomes).not.toContain('o1')
+      expect(await screen.findByLabelText('trade preview')).toHaveTextContent('50.0% → 47.5%')
+      expect(screen.getByRole('button', { name: /^buy no$/i })).toBeInTheDocument()
+    })
+
+    // No price yet is not a price of zero, or of half: the control says it
+    // is still loading rather than naming a number nobody quoted.
+    it('starts on the first outcome, named without a price until one arrives', async () => {
+      renderPage()
+
+      expect(await screen.findByRole('radio', { name: 'Yes, price loading' })).toBeChecked()
+      expect(screen.getByRole('radio', { name: 'No, price loading' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /^buy yes$/i })).toBeInTheDocument()
+    })
+
+    // The control's name already says "No, 40.0%", so the label and figure
+    // drawn in the block are hidden from a screen reader, which would
+    // otherwise hear each outcome twice.
+    it('says each outcome and its price once to a screen reader, in its control\'s name', async () => {
+      serveSnapshot('0.6000', '0.4000')
+      renderPage()
+      expect(await screen.findByRole('radio', { name: 'No, 40.0%' })).toBeInTheDocument()
+
+      expect(isInaccessible(screen.getByLabelText('No price'))).toBe(true)
+      expect(isInaccessible(screen.getByText('No', { selector: 'p' }))).toBe(true)
+    })
+
+    // Outcome ids differ between markets, so the choice made on one cannot
+    // carry to the next: the panel would trade an id the market does not
+    // have, under no label at all. Nor does it wait for a return: Back opens
+    // the first market as any visit does, on its first outcome.
+    it('starts each market it opens on its first outcome, the one Back returns to included', async () => {
+      const otherMarket = {
+        ...baseMarket,
+        id: 'mkt-other',
+        question: 'Will the other market resolve yes?',
+        outcomes: [{ id: 'p1', position: 0, label: 'Up' }, { id: 'p2', position: 1, label: 'Down' }],
+      }
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, ({ params }) =>
+          HttpResponse.json(params.id === 'mkt-other' ? otherMarket : baseMarket),
+        ),
+      )
+      const actor = userEvent.setup()
+      const router = renderMovableRouter('mkt-abc')
+      await actor.click(await screen.findByRole('radio', { name: /^No,/ }))
+      expect(screen.getByRole('button', { name: /^buy no$/i })).toBeInTheDocument()
+
+      await act(() => router.navigate('/markets/mkt-other'))
+
+      expect(await screen.findByRole('radio', { name: /^Up,/ })).toBeChecked()
+      expect(screen.getByRole('button', { name: /^buy up$/i })).toBeInTheDocument()
+
+      await act(() => router.navigate(-1))
+
+      expect(await screen.findByRole('radio', { name: /^Yes,/ })).toBeChecked()
+      expect(screen.getByRole('button', { name: /^buy yes$/i })).toBeInTheDocument()
+    })
+
+    // A block that looks pickable on a market nobody can trade reads as a
+    // buy control that does nothing, so its price is shown as a figure and
+    // not as a choice. The clock is the authority (ADR 0011), so the open
+    // market past its close time is the sweep window, still `open` in the
+    // status column.
+    it.each([
+      { name: 'an admin closed', overrides: { status: 'closed' } },
+      { name: 'the clock has closed and the sweep has not', overrides: { close_time: '2025-08-09T12:00:00Z' } },
+    ])('shows the prices and offers no outcome to pick on a market $name', async ({ overrides }) => {
+      serveSnapshot('0.6000', '0.4000')
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...baseMarket, ...overrides })),
+      )
+      renderPage()
+      expect(await screen.findByText(/trading is closed/i)).toBeInTheDocument()
+
+      await waitFor(() => expect(screen.getByLabelText('Yes price')).toHaveTextContent('60.0%'))
+      expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
+      expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+    })
   })
 
   // The panel's sell clamp needs the trader's position on *this* market and
@@ -263,7 +385,8 @@ describe('MarketDetailPage', () => {
 
     expect(await screen.findByText("You don't hold any Yes shares.")).toBeInTheDocument()
 
-    await actor.click(screen.getByRole('button', { name: 'No' }))
+    // No by its price block, which is where the outcome is chosen (#429).
+    await actor.click(screen.getByRole('radio', { name: /^No,/ }))
 
     expect(screen.getByText(/you hold 6\.0000 shares/i)).toBeInTheDocument()
   })
@@ -408,6 +531,26 @@ describe('MarketDetailPage', () => {
     expect(screen.getByRole('link', { name: 'MAS statistics' })).toHaveAttribute('href', 'https://www.mas.gov.sg/statistics')
   })
 
+  // #429's review: with the header reading "Closed", About this market said
+  // "Closes 5 Jan 2099" under it for a market an admin had closed early — an
+  // early close leaves close_time in the future. Once trading has stopped the
+  // date is the schedule the market was published with, not a close still to
+  // come. Stopped is the clock rule (ADR 0011), so the third case is still
+  // `open` in the status column, inside the sweep window.
+  it.each([
+    { name: 'an open market', status: 'open', closeTime: '2099-01-05T12:00:00Z', label: 'Closes', date: /5 Jan 2099/ },
+    { name: 'a market an admin closed early', status: 'closed', closeTime: '2099-01-05T12:00:00Z', label: 'Scheduled to close', date: /5 Jan 2099/ },
+    { name: 'a market the clock has closed and the sweep has not', status: 'open', closeTime: '2025-08-09T12:00:00Z', label: 'Scheduled to close', date: /9 Aug 2025/ },
+  ])('labels the close date under About as "$label" for $name', async ({ status, closeTime, label, date }) => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...baseMarket, status, close_time: closeTime })),
+    )
+    renderPage()
+    await screen.findByText(baseMarket.question)
+
+    expect(screen.getByText(label, { exact: true }).nextElementSibling).toHaveTextContent(date)
+  })
+
   it('shows an error when the API fails', async () => {
     server.use(
       http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.error()),
@@ -484,8 +627,9 @@ describe('MarketDetailPage', () => {
       // #357's fourth finding: this is the sweep window, where the status
       // column still reads `open` because CLOSED is written a few seconds
       // later (ADR 0011). A badge read straight off the column would say Open
-      // directly above the line asserted above.
-      expect(screen.getByText('Closed')).toBeInTheDocument()
+      // directly above the line asserted above. The close label beside the
+      // badge is the second Closed (#429).
+      expect(screen.getAllByText('Closed')).toHaveLength(2)
       expect(screen.queryByText('Open')).not.toBeInTheDocument()
     })
 
@@ -499,11 +643,175 @@ describe('MarketDetailPage', () => {
       )
       renderPage()
       expect(await screen.findByRole('button', { name: /buy yes/i })).toBeInTheDocument()
+      expect(screen.getByRole('radiogroup', { name: 'Outcome to trade' })).toBeInTheDocument()
 
       await act(() => vi.advanceTimersByTimeAsync(5000))
 
       expect(screen.getByText(/trading is closed/i)).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /buy/i })).not.toBeInTheDocument()
+      // The price blocks stop being choices at the same instant (#429).
+      expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+    })
+  })
+
+  // #429 point 1: the browse card said "Closes in 23m" while this page said
+  // "Closes 21 Oct 2026, 01:24 pm" for the same market at the same minute. The
+  // clock is the authority (ADR 0011), so the screen a trader commits money on
+  // counts down the way the card does, and keeps counting.
+  describe('the close countdown', () => {
+    const NOW = new Date('2026-10-18T12:00:00Z')
+    const fromNow = (ms: number) => new Date(NOW.getTime() + ms).toISOString()
+
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      vi.setSystemTime(NOW)
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    function serveMarket(overrides: Record<string, unknown>) {
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...baseMarket, ...overrides })),
+      )
+    }
+
+    // Ten seconds across a minute boundary, the card's tick. A full minute
+    // would also pass on the dispute-window timer's once-a-minute render,
+    // which is not the clock this page's countdown is meant to keep. The
+    // first two seconds let the page's other reads land, since any render
+    // they cause reads the clock too; the label has not moved by the end of
+    // them, so what moves it after is the tick.
+    it('counts the close down as time passes rather than freezing at first render', async () => {
+      serveMarket({ close_time: fromNow((3 * 60 + 12) * 60_000 + 8_000) })
+      renderPage()
+      expect(await screen.findByText('Closes in 3h 12m')).toBeInTheDocument()
+      await act(() => vi.advanceTimersByTimeAsync(2_000))
+      expect(screen.getByText('Closes in 3h 12m')).toBeInTheDocument()
+
+      await act(() => vi.advanceTimersByTimeAsync(8_000))
+
+      expect(screen.getByText('Closes in 3h 11m')).toBeInTheDocument()
+    })
+
+    // The DoD's first item: the card and this page, given the same market and
+    // the same clock, say the same thing about its close — near, far, and
+    // after trading has stopped.
+    it.each([
+      { name: 'an open market closing within two days', status: 'open' as const, closeTime: fromNow((3 * 60 + 12) * 60_000 + 30_000), label: 'Closes in 3h 12m' },
+      { name: 'an open market closing in three days', status: 'open' as const, closeTime: '2026-10-21T12:00:00Z', label: 'Closes 21 Oct 2026' },
+      { name: 'an approved market', status: 'approved' as const, closeTime: fromNow(-60_000), label: 'Closed' },
+    ])('reads "$label" on both the card and the page for $name', async ({ status, closeTime, label }) => {
+      serveMarket({ status, close_time: closeTime, proposed_outcome_id: status === 'approved' ? 'o1' : null, dispute_window_ends_at: null })
+      const { id, question, outcomes } = baseMarket
+      const card = render(
+        <MemoryRouter>
+          <MarketCard market={{ id, status, question, close_time: closeTime, outcomes }} />
+        </MemoryRouter>,
+      )
+      const page = renderPage()
+
+      expect(await within(page.container).findByText(label)).toBeInTheDocument()
+      expect(within(card.container).getByText(label)).toBeInTheDocument()
+    })
+
+    // The panel locks at close_time on a timer of its own (#36). A label on a
+    // ten-second tick would go on saying "Closes in under a minute" beside
+    // "Trading is closed" until its next tick came round.
+    it('stops counting at the instant the trading panel locks', async () => {
+      serveMarket({ close_time: fromNow(5_000) })
+      renderPage()
+      expect(await screen.findByText('Closes in under a minute')).toBeInTheDocument()
+
+      await act(() => vi.advanceTimersByTimeAsync(5_000))
+
+      expect(screen.getByText(/trading is closed/i)).toBeInTheDocument()
+      expect(screen.queryByText('Closes in under a minute')).not.toBeInTheDocument()
+    })
+  })
+
+  // #429 point 3: an approved market read "Approved outcome: Yes" above YES
+  // 48.8% and NO 51.3%, each labelled "implied probability" — the answer is
+  // known, and the largest thing on the page said the market thought it
+  // unlikely. Past PENDING_RESOLUTION the result takes the price's place.
+  describe('a market with a decided result', () => {
+    it.each(['approved', 'settled'])('shows the result in place of the price once the market is %s', async status => {
+      let snapshotServed = false
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () =>
+          HttpResponse.json({ ...baseMarket, status, close_time: '2026-01-05T12:00:00Z', proposed_outcome_id: 'o1', dispute_window_ends_at: null }),
+        ),
+        http.get(SNAPSHOT, () => {
+          snapshotServed = true
+          return HttpResponse.json(priceFrame(9, '0.4880', '0.5130'))
+        }),
+      )
+      renderPage()
+
+      expect(await screen.findByLabelText('Yes result')).toHaveTextContent('Won')
+      expect(screen.getByLabelText('No result')).toHaveTextContent('Lost')
+      // The last trade's price has reached the page by now; it must not be
+      // what the page shows, under any caption.
+      await waitFor(() => expect(snapshotServed).toBe(true))
+      await act(() => new Promise(resolve => setTimeout(resolve, 50)))
+      expect(screen.queryByText('implied probability')).not.toBeInTheDocument()
+      expect(screen.queryByText('48.8%')).not.toBeInTheDocument()
+      expect(screen.queryByText('51.3%')).not.toBeInTheDocument()
+    })
+  })
+
+  // #526, and market-service.md's void-screen notes (6): a voided market has
+  // no result, and the reason is the only explanation of a trader's refund.
+  describe('a voided market', () => {
+    const voidedMarket = {
+      ...baseMarket,
+      status: 'voided',
+      close_time: '2026-01-05T12:00:00Z',
+      voidable: true,
+      voided_at: '2026-01-07T09:41:02.411000Z',
+      void_reason: 'The match was abandoned after ten overs; there is no result.',
+      settleable: false,
+      dispute_window_ends_at: null,
+    }
+
+    it('shows the Voided banner with the reason and when it was voided, and no trading', async () => {
+      server.use(http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...voidedMarket, proposed_outcome_id: null })))
+      renderPage()
+
+      const banner = await screen.findByRole('region', { name: 'Voided' })
+      expect(banner).toHaveTextContent('The match was abandoned after ten overs; there is no result.')
+      expect(banner).toHaveTextContent(formatDateTime('2026-01-07T09:41:02.411000Z'))
+      expect(screen.getByText('This market has been voided. Trading is closed.')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /buy/i })).not.toBeInTheDocument()
+    })
+
+    // The public read sends a voided market's proposed_outcome_id as null,
+    // even one voided while approved (market-service.md). #526 asks for no
+    // winner "even for a market voided while approved", so the page does not
+    // lean on that: a stale outcome id must not be drawn as a winner either.
+    it('shows no probability and no winner, even with the last prices and an outcome id to hand', async () => {
+      let snapshotServed = false
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...voidedMarket, proposed_outcome_id: 'o1' })),
+        http.get(SNAPSHOT, () => {
+          snapshotServed = true
+          return HttpResponse.json(priceFrame(9, '0.4880', '0.5130'))
+        }),
+      )
+      renderPage()
+
+      await screen.findByRole('region', { name: 'Voided' })
+      await waitFor(() => expect(snapshotServed).toBe(true))
+      await act(() => new Promise(resolve => setTimeout(resolve, 50)))
+      // Void in each outcome's result slot, which is also neither Won nor Lost.
+      expect(screen.getByLabelText('Yes result')).toHaveTextContent('Void')
+      expect(screen.getByLabelText('No result')).toHaveTextContent('Void')
+      // The outcome banner, under any of its three labels ("Proposed outcome:",
+      // "Approved outcome:", "Settled:").
+      expect(screen.queryByText(/outcome:|settled:/i)).not.toBeInTheDocument()
+      expect(screen.queryByText('48.8%')).not.toBeInTheDocument()
+      expect(screen.queryByText('implied probability')).not.toBeInTheDocument()
     })
   })
 
@@ -839,17 +1147,19 @@ describe('MarketDetailPage', () => {
       reReadAfterFill.release()
     })
 
-    it('gives the trading panel what the sell orders on this market reserve, so it offers only the rest', async () => {
-      // The join is the page's: the holdings come from the portfolio, the
-      // reservations from the open-orders list. A buy reserves no shares, and
-      // an order on another market belongs to that market's page.
+    // #410: the panel offers `quantity - reserved_shares`, and both figures
+    // come from the portfolio row. The ledger sums the trader's live sell
+    // orders itself, in the statement that reads the position — so the page no
+    // longer adds up the orders list, and the orders here deliberately say a
+    // different thing from the portfolio to prove which one is read.
+    it('offers only the part of the holding the portfolio says is not reserved', async () => {
       server.use(
-        http.get(PORTFOLIO, () => HttpResponse.json(portfolio([{ market_id: 'mkt-abc', outcome_id: 'o1', quantity: '6.0000' }]))),
+        http.get(PORTFOLIO, () => HttpResponse.json(portfolio([
+          { market_id: 'mkt-abc', outcome_id: 'o1', quantity: '6.0000', reserved_shares: '2.0000' },
+        ]))),
+        // Were the page still summing these, it would offer 4.5000.
         http.get(ORDERS, () => HttpResponse.json({ orders: [
           restingOrder({ id: 'ord-1', side: 'sell', limit_price: '0.7000', quantity: '1.5000', reserved_credits: null, reserved_shares: '1.5000' }),
-          restingOrder({ id: 'ord-2', side: 'sell', limit_price: '0.8000', quantity: '0.5000', reserved_credits: null, reserved_shares: '0.5000' }),
-          restingOrder({ id: 'ord-3', market_id: 'mkt-other', side: 'sell', reserved_credits: null, reserved_shares: '3.0000' }),
-          restingOrder({ id: 'ord-4' }),
         ] })),
       )
       const actor = userEvent.setup()
@@ -857,6 +1167,23 @@ describe('MarketDetailPage', () => {
       await actor.click(await screen.findByRole('button', { name: /^sell$/i }))
 
       await waitFor(() => expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 4.0000 of your 6.0000 shares'))
+    })
+
+    // #451 / #478: a trader whose shares are all held back still holds them,
+    // so the line says so rather than "You don't hold any", which would offer
+    // to buy shares they already own.
+    it('says a fully reserved holding can sell nothing, not that none is held', async () => {
+      server.use(
+        http.get(PORTFOLIO, () => HttpResponse.json(portfolio([
+          { market_id: 'mkt-abc', outcome_id: 'o1', quantity: '6.0000', reserved_shares: '6.0000' },
+        ]))),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+      await actor.click(await screen.findByRole('button', { name: /^sell$/i }))
+
+      await waitFor(() => expect(screen.getByLabelText('shares held')).toHaveTextContent('You can sell 0.0000 of your 6.0000 shares'))
+      expect(screen.queryByText(/don't hold any/i)).not.toBeInTheDocument()
     })
 
     it('re-reads the balance and the holdings, not only the orders, after a reconnect', async () => {
@@ -968,6 +1295,230 @@ describe('MarketDetailPage — price history', () => {
     const legend = screen.getByRole('list', { name: 'Outcomes' })
     expect(within(legend).getByText('Yes')).toBeInTheDocument()
     expect(within(legend).getByText('No')).toBeInTheDocument()
+  })
+
+  // [T-5] #495's first criterion: the chart adds a point for every live price
+  // frame. Before this, Alice's price cards moved on Bob's trade and her chart
+  // did not, with nothing to say it was behind.
+  it('adds a point when another trader moves the price', async () => {
+    let wsClient: { send(data: string): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => HttpResponse.json(priceHistory('mkt-abc', threeTrades))),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    // Somebody else's trade, arriving as a frame on this page's socket.
+    await act(async () => {
+      wsClient?.send(JSON.stringify({
+        type: 'price',
+        market_id: 'mkt-abc',
+        state_version: 3,
+        prices: [
+          { outcome_id: 'o1', position: 0, price: '0.7000' },
+          { outcome_id: 'o2', position: 1, price: '0.3000' },
+        ],
+        occurred_at: '2026-09-16T09:00:00Z',
+      }))
+    })
+
+    expect(await screen.findByText(/showing all 4 price points/i)).toBeInTheDocument()
+  })
+
+  // "A point for every live price frame", not only the newest: the socket
+  // hook keeps one snapshot per market, so a chart that drew only that
+  // snapshot lost the first of two trades the moment the second arrived.
+  it('keeps a point for each of two trades by others', async () => {
+    let wsClient: { send(data: string): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => HttpResponse.json(priceHistory('mkt-abc', threeTrades))),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    act(() => wsClient!.send(JSON.stringify({ type: 'price', ...priceFrame(3, '0.7000', '0.3000') })))
+    expect(await screen.findByText(/showing all 4 price points/i)).toBeInTheDocument()
+
+    act(() => wsClient!.send(JSON.stringify({ type: 'price', ...priceFrame(4, '0.8000', '0.2000') })))
+    expect(await screen.findByText(/showing all 5 price points/i)).toBeInTheDocument()
+  })
+
+  // #495's second, from the other side: "never goes backwards". A read begun
+  // before a trade can land after that trade's frame, and must not take the
+  // trade's point off the chart when it does.
+  it('keeps a frame that arrived while the history was still being read', async () => {
+    let releaseHistory = () => {}
+    const historyHeld = new Promise<void>(resolve => { releaseHistory = resolve })
+    let wsClient: { send(data: string): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, async () => {
+        await historyHeld
+        return HttpResponse.json(priceHistory('mkt-abc', threeTrades))
+      }),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    expect(await screen.findByText(/loading price history/i)).toBeInTheDocument()
+    await waitFor(() => expect(wsClient).not.toBeNull())
+
+    act(() => wsClient!.send(JSON.stringify({ type: 'price', ...priceFrame(3, '0.7000', '0.3000') })))
+    await waitFor(() => expect(screen.getByLabelText('Yes price')).toHaveTextContent('70.0%'))
+
+    // The read answers with what the ledger held before the trade.
+    releaseHistory()
+    expect(await screen.findByText(/showing all 4 price points/i)).toBeInTheDocument()
+  })
+
+  // #495's second: a frame whose state_version the chart already holds is
+  // skipped, so a refetch and the frames around it never draw a trade twice.
+  it('ignores a frame for a trade already on the chart', async () => {
+    let wsClient: { send(data: string): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => HttpResponse.json(priceHistory('mkt-abc', threeTrades))),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    // state_version 2 is the newest point the history already carries. A
+    // later `occurred_at` must not make it look like a new trade: the same
+    // trade carries one time on its point and another on its frame
+    // (ledger-service.md, "Dedupe on state_version, never on time").
+    await act(async () => {
+      wsClient?.send(JSON.stringify({
+        type: 'price',
+        market_id: 'mkt-abc',
+        state_version: 2,
+        prices: [
+          { outcome_id: 'o1', position: 0, price: '0.5744' },
+          { outcome_id: 'o2', position: 1, price: '0.4256' },
+        ],
+        occurred_at: '2026-09-15T09:00:09Z',
+      }))
+    })
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+
+    expect(screen.getByText(/showing all 3 price points/i)).toBeInTheDocument()
+  })
+
+  // #495's third: frames published while a dropped connection was away are
+  // gone (ADR 0010), so a reconnect re-reads the history rather than trusting
+  // the frames it missed.
+  it('re-reads the history after a reconnect', async () => {
+    let reads = 0
+    let dropped = false
+    let wsClient: { close(code?: number): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => {
+        reads += 1
+        // Only a read after the drop sees the trade made while the socket was
+        // away. Keyed on the drop and not on the read count, because the
+        // first ack re-reads too: a count would hand that read the trade, and
+        // the test would pass with no re-read on the reconnect at all.
+        const points = dropped ? [...threeTrades, pricePoint(3, '2026-09-16T09:00:00Z', '0.7000', '0.3000')] : threeTrades
+        return HttpResponse.json(priceHistory('mkt-abc', points))
+      }),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    // The mount's read and the first ack's, both before the drop.
+    await waitFor(() => expect(reads).toBe(2))
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    // An abnormal close, so the hook reconnects and subscribes again.
+    dropped = true
+    act(() => wsClient!.close(1006))
+
+    // The first retry waits one second. Three is room for it and still under
+    // the test's own five, so a missing re-read fails here and not as a timeout.
+    expect(await screen.findByText(/showing all 4 price points/i, undefined, { timeout: 3000 })).toBeInTheDocument()
+  })
+
+  // The re-read on a reconnect is a top-up, not the chart's only source: if it
+  // fails, the history already drawn stays, as the price cards keep their last
+  // price through a drop (#37 AC 7). Swapping it for an error would take the
+  // chart off the page over a request the trader never asked for.
+  it('keeps the chart when the re-read after a reconnect fails', async () => {
+    let reads = 0
+    let dropped = false
+    let wsClient: { close(code?: number): void } | null = null
+    server.use(
+      http.get(THIS_MARKETS_HISTORY, () => {
+        reads += 1
+        if (dropped) {
+          return HttpResponse.json({ error: { code: 'internal_error', message: 'Boom.' } }, { status: 500 })
+        }
+        return HttpResponse.json(priceHistory('mkt-abc', threeTrades))
+      }),
+      priceService.addEventListener('connection', ({ client }) => {
+        wsClient = client
+        client.addEventListener('message', event => {
+          const message = JSON.parse(event.data as string)
+          if (message.action === 'subscribe') {
+            client.send(JSON.stringify({ type: 'subscribed', market_id: message.market_id }))
+          }
+        })
+      }),
+    )
+
+    renderPage()
+    await waitFor(() => expect(reads).toBe(2))
+    expect(await screen.findByText(/showing all 3 price points/i)).toBeInTheDocument()
+
+    dropped = true
+    act(() => wsClient!.close(1006))
+    await waitFor(() => expect(reads).toBe(3), { timeout: 3000 })
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+
+    expect(screen.getByText(/showing all 3 price points/i)).toBeInTheDocument()
+    expect(screen.queryByText('Failed to load price history.')).not.toBeInTheDocument()
   })
 
   it('charts the history of a market that has stopped trading', async () => {
@@ -1143,8 +1694,8 @@ describe('MarketDetailPage — the browser tab', () => {
     // the one page that has to title itself (#356).
     renderPage()
 
-    await screen.findByText(baseMarket.question)
-
-    expect(document.title).toBe(`${baseMarket.question} · PredictSMU`)
+    // The title is set in an effect, after the question is drawn, so wait for
+    // the title itself rather than for the text (#559).
+    await waitFor(() => expect(document.title).toBe(`${baseMarket.question} · PredictSMU`))
   })
 })

@@ -38,7 +38,7 @@ from model.entities import (
     Position,
     Transaction,
 )
-from service import grants, reservations, valuation
+from service import grants, reservations, valuation, voiding
 
 ZERO = Decimal(0)
 
@@ -86,7 +86,11 @@ async def _read(
     (ADR 0009). `held_markets` keeps the markets with a position of
     `quantity > 0`. The joins from there are `valuation.held_outcomes_query`'s.
     Each outcome row also carries `reserved_shares`, a subquery over the
-    caller's live sell orders of that outcome, correlated to the outcome.
+    caller's live sell orders of that outcome, correlated to the outcome, and
+    `void_refund`, the caller's leg of that outcome's `void_refund`, found by
+    its derived key on the unique `idempotency_key`, or null where there is
+    none ([BE] #221, ruling A). Not in `held_outcomes_query`, so the
+    leaderboard's refresh reads no refund.
     """
     balance = _sum_of_user_entries(user_id).scalar_subquery()
     starting_credits = (
@@ -118,9 +122,31 @@ async def _read(
         market_id=MarketOutcome.market_id,
         outcome_id=MarketOutcome.outcome_id,
     ).scalar_subquery()
+    # The caller's own entries, picked out as `_sum_of_user_entries` picks
+    # them, then narrowed to one refund and read as its leg. Its twin: a
+    # change to which entries count as the user's belongs in both.
+    void_refund = (
+        select(Entry.amount)
+        .join(Account, Account.id == Entry.account_id)
+        .join(Transaction, Transaction.id == Entry.transaction_id)
+        .where(
+            Account.kind == AccountKind.USER,
+            Account.owner_id == user_id,
+            Transaction.idempotency_key
+            == voiding.refund_key_column(
+                MarketOutcome.market_id,
+                user_id=user_id,
+                outcome_id=MarketOutcome.outcome_id,
+            ),
+        )
+        .scalar_subquery()
+    )
     stmt = (
         valuation.held_outcomes_query(anchored, held_markets, holder_id=user_id)
-        .add_columns(reserved_shares.label("reserved_shares"))
+        .add_columns(
+            reserved_shares.label("reserved_shares"),
+            void_refund.label("void_refund"),
+        )
         .order_by(MarketOutcome.market_id, MarketOutcome.position)
     )
 
@@ -128,6 +154,17 @@ async def _read(
     # and every join below it is a left join.
     rows = (await session.execute(stmt)).all()
     return rows[0].balance, rows[0].starting_credits, rows
+
+
+def _refunds_of(rows: list[Row]) -> valuation.Refunds:
+    """Each held outcome's refund from `_read`'s rows, keyed `(market_id,
+    outcome_id)`, for the outcomes a void refunded this user."""
+    refunds: dict[tuple[uuid.UUID, uuid.UUID], Decimal] = {}
+    for row in rows:
+        if row.market_id is None or row.void_refund is None:
+            continue
+        refunds[(row.market_id, row.outcome_id)] = row.void_refund
+    return refunds
 
 
 def _reserved_shares_of(rows: list[Row]) -> dict[tuple[uuid.UUID, uuid.UUID], Decimal]:
@@ -153,12 +190,13 @@ async def portfolio_of_user(session: AsyncSession, user_id: uuid.UUID) -> Portfo
     Mints the user's starting grant first, exactly as the balance route does,
     which may post and commit. The read that follows takes no lock and makes
     no call to market_service, so a market that has closed is valued at its
-    frozen book like any other. A settled market is not valued: its payout is
-    already in `balance`, so its rows add nothing to `positions_value`.
+    frozen book like any other. A settled or voided market is not valued: its
+    payout or refund is already in `balance`, so its rows add nothing to
+    `positions_value`.
     """
     account = await grants.ensure_granted(session, user_id)
     balance, starting_credits, rows = await _read(session, user_id)
-    totals = valuation.valuation_of(balance, rows)
+    totals = valuation.valuation_of(balance, rows, refunds=_refunds_of(rows))
     pnl = valuation.profit_and_loss_of(
         totals.positions, balance=balance, starting_credits=starting_credits
     )

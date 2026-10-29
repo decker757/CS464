@@ -23,9 +23,30 @@ export async function logOut(page: Page, session: Session): Promise<void> {
  * The card on a markets list whose question is `question`. Two levels up from
  * the question's text, which is how the admin list and the proposals list
  * both nest it today; a wrapper around the question breaks this.
+ *
+ * The **last** match, because the browse list shows a market twice once it is
+ * in one of the curated bands above the list ([X-1] #448) — once in the band
+ * and once in the full list below, which is the point of a band being a
+ * shortcut into the list rather than a partition of it. The full list is
+ * always the later of the two and always holds every market on the page, so
+ * the last match is the one a test can rely on. Every other list shows a
+ * market once, where last and only are the same card.
  */
 export function marketCard(page: Page, question: string): Locator {
-  return page.getByText(question, { exact: true }).locator('xpath=../..')
+  return page.getByText(question, { exact: true }).locator('xpath=../..').last()
+}
+
+/**
+ * The browse page's full market list, apart from the curated bands above it
+ * ([X-1] #448). Use it to count what the list holds: a market in a band is on
+ * screen twice on purpose, so a count across the page is not the list's.
+ *
+ * Only matches when a band is shown: the list takes its "Browse all" heading
+ * only then, so a page with no band has no region to scope to — and needs
+ * none, because nothing is on screen twice there.
+ */
+export function browseList(page: Page): Locator {
+  return page.getByRole('region', { name: 'Browse all' })
 }
 
 /**
@@ -70,6 +91,32 @@ export async function setQueryParams(page: Page, pathname: string, params: Recor
 }
 
 /**
+ * Sets one market's `prices_7d_ago` on the page's batch snapshot reads, on
+ * their way back from the real ledger ([X-1] #564): everything else in the
+ * answer is the ledger's own.
+ *
+ * The ledger measures a week from a market's last trade at least seven days
+ * old, and a trade's time is the `created_at` on `ledger.entries`, which an
+ * append-only trigger keeps from being rewritten. A market a test creates
+ * therefore always answers null, and this is the only honest way to put a
+ * change on its card: hand the batch field a price the same market really
+ * had earlier, read from the ledger before the later trade.
+ */
+export async function setPricesWeekAgo(page: Page, marketId: string, pricesWeekAgo: unknown[]): Promise<void> {
+  await page.route(
+    url => url.pathname === '/ledger/markets/snapshots',
+    async route => {
+      const response = await route.fetch()
+      const body = (await response.json()) as { snapshots: { market_id: string; prices_7d_ago: unknown }[] }
+      for (const item of body.snapshots) {
+        if (item.market_id === marketId) item.prices_7d_ago = pricesWeekAgo
+      }
+      await route.fulfill({ response, json: body })
+    },
+  )
+}
+
+/**
  * Clicks a status tab on the admin markets list and waits for the answer to the
  * first-page request it sends. For a moment after the click the old tab's rows,
  * Load more included, are still on screen, and a Load more clicked then belongs
@@ -86,10 +133,29 @@ export async function selectTab(page: Page, name: RegExp): Promise<void> {
   await answered
 }
 
+/**
+ * The control on a market's page that chooses the outcome the trading panel
+ * trades: that outcome's price block (#429). Its name is the label and then
+ * the price, which moves, so this matches on the label alone. `label` is
+ * matched as written, so it must hold no regular-expression characters.
+ */
+export function outcomeChoice(page: Page, label: string): Locator {
+  return page.getByRole('radiogroup', { name: 'Outcome to trade' }).getByRole('radio', { name: new RegExp(`^${label},`) })
+}
+
 /** A screen, and the `<h1>` that says it has been drawn (#438). */
 export interface Screen {
   path: string
   heading: string
+}
+
+/** How wide the page is drawn (`scrollWidth`) beside how wide the window
+ * shows it (`clientWidth`): any more than that scrolls sideways. */
+export async function documentWidth(page: Page): Promise<{ scrollWidth: number; clientWidth: number }> {
+  return page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }))
 }
 
 /**
@@ -107,10 +173,7 @@ export async function overflowingScreens(page: Page, screens: Screen[], viewport
     // "Loading …" line, before the list or table that might be too wide, so
     // the measurement waits for every such line to go.
     await expect(page.getByText(/^Loading\b/)).toHaveCount(0)
-    const { scrollWidth, clientWidth } = await page.evaluate(() => ({
-      scrollWidth: document.documentElement.scrollWidth,
-      clientWidth: document.documentElement.clientWidth,
-    }))
+    const { scrollWidth, clientWidth } = await documentWidth(page)
     if (scrollWidth > clientWidth) overflowing.push(`${screen.path} at ${viewport.width}px is ${scrollWidth}px wide`)
   }
   return overflowing

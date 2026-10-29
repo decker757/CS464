@@ -123,7 +123,9 @@ export default function TopBar({ nav, children }: TopBarProps) {
             controls at the far right however many links there are. A page with
             no navigation of its own gets the spacer and no empty landmark. */}
         {nav ? <MainNavigation>{nav}</MainNavigation> : <div className="flex-1" />}
-        <div className="flex items-center gap-3">{children}</div>
+        {/* min-w-0, so a bar short of room shortens the username inside
+            (AccountMenu) rather than running past its frame (#516). */}
+        <div className="flex min-w-0 items-center gap-3">{children}</div>
       </div>
     </header>
   )
