@@ -3,8 +3,8 @@
 `GET /markets/overview`. The rows and counts themselves are
 `unit_test/service/test_market_overview.py`'s; this suite pins the guard, the
 route's place before `/markets/{market_id}`, the filter's accepted values,
-the paging parameters, what reaches the wire, and that the two older lists did
-not move.
+the search's wiring and the values it refuses, the paging parameters, what
+reaches the wire, and that the two older lists did not move.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
 from model.entities import Market, MarketStatus
+from model.schemas import MAX_QUESTION_LENGTH
 from service.audit import Actor
 from unit_test.conftest import (
     approved_market,
@@ -147,6 +148,65 @@ async def test_a_finished_status_is_an_accepted_overview_filter(
 
     assert response.status_code == 200
     assert [row["id"] for row in response.json()["markets"]] == [str(finished_id)]
+
+
+# --- the question search, #555 ---------------------------------------------
+async def test_the_search_term_is_a_query_parameter_on_the_overview(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_id: uuid.UUID,
+    admin_headers: dict[str, str],
+) -> None:
+    """#555: "`GET /markets/overview` takes `q`". The wiring only; what the
+    search matches is `test_market_overview.py`'s."""
+    closes = datetime.now(UTC) + timedelta(days=1)
+    wanted = await published_market_closing_at(
+        session,
+        _admin(admin_id),
+        closes,
+        question="Will Singapore core inflation be below 2% in December 2026?",
+    )
+    await published_market_closing_at(
+        session,
+        _admin(admin_id),
+        closes,
+        question="Will the MRT Cross Island Line open before June 2027?",
+    )
+    wanted_id = str(wanted.id)
+
+    payload = (
+        await client.get(_OVERVIEW, params={"q": "inflation"}, headers=admin_headers)
+    ).json()
+
+    assert [row["id"] for row in payload["markets"]] == [wanted_id]
+
+
+@pytest.mark.parametrize(
+    "q",
+    ["\x00", "inflation\x00", "\x00inflation", "x" * (MAX_QUESTION_LENGTH + 1)],
+    ids=["nul-alone", "nul-last", "nul-first", "longer-than-a-question"],
+)
+async def test_a_search_term_the_browse_refuses_is_422_on_q_here_too(
+    client: AsyncClient, admin_headers: dict[str, str], q: str
+) -> None:
+    """#555: "a NUL or a `q` longer than a question can be is a 422", the
+    same as on `/public/markets`. Unrefused, a NUL reaches asyncpg and is a
+    500. Every position of the NUL, so a prefix- or suffix-only guard fails."""
+    response = await client.get(_OVERVIEW, params={"q": q}, headers=admin_headers)
+
+    assert response.status_code == 422
+    assert any(error["loc"] == ["query", "q"] for error in response.json()["detail"])
+
+
+async def test_a_search_term_as_long_as_a_question_is_accepted_on_the_overview(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """The other edge of the length rule above, so a ceiling one short fails."""
+    response = await client.get(
+        _OVERVIEW, params={"q": "x" * MAX_QUESTION_LENGTH}, headers=admin_headers
+    )
+
+    assert response.status_code == 200
 
 
 # --- what reaches the wire -------------------------------------------------

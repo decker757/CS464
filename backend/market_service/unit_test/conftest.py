@@ -299,7 +299,7 @@ async def published_market(session, actor: Actor, **overrides: object) -> Market
 
 
 async def published_market_closing_at(
-    session, actor: Actor, closes: datetime
+    session, actor: Actor, closes: datetime, **overrides: object
 ) -> Market:
     """A published market, stored OPEN, closing at `closes`. [2.1] #5.
 
@@ -307,7 +307,11 @@ async def published_market_closing_at(
     the real future, or `publish` refuses it. Nothing sweeps it.
     """
     return await published_market(
-        session, actor, close_time=closes, resolution_time=closes + timedelta(days=15)
+        session,
+        actor,
+        close_time=closes,
+        resolution_time=closes + timedelta(days=15),
+        **overrides,
     )
 
 
