@@ -2,15 +2,13 @@ import { Link } from 'react-router-dom'
 import type { Position, PriceState } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
 import { useMarketClock } from '../../hooks/useMarketClock'
-import { usePriceMovements } from '../../hooks/usePriceMovements'
 import { formatTimeAgo } from '../../utils/formatDateTime'
-import { formatPrice } from '../../utils/formatPrice'
 import Badge from '../ui/Badge'
 import Button from '../ui/Button'
 import Card from '../ui/Card'
 import { heldOutcomesOf } from './holdings'
 import { formatCloseCountdown, tradingStopped } from './marketStatus'
-import { movementLabel, type PriceMovement } from './priceMovement'
+import MarketCardOutcomes from './MarketCardOutcomes'
 import StatusBadge from './StatusBadge'
 
 interface MarketCardProps {
@@ -59,21 +57,10 @@ const PRICES_FAILED = 'Prices could not be loaded.'
 // (ADR 0025, "Known edges, accepted"), and refunds can be cut.
 const VOIDED_NOTE = 'Voided with no result.'
 
-// The chip's background while a price is marked as moved. A tint of the tone
-// rather than the tone itself: this sits behind an 11px label and a bold
-// price, both of which have to stay readable on it (#380).
-function movementTint(movement: PriceMovement | undefined): string {
-  if (movement === 'up') return 'bg-success/10'
-  if (movement === 'down') return 'bg-danger/10'
-  return 'bg-smu-cream'
-}
-
 export default function MarketCard({ market, snapshot, priceReadFailed = false, onRetryPrice, positions }: MarketCardProps) {
   // The card keeps a clock for its countdown, and stops it once the market
   // has stopped trading (useMarketClock).
   const now = useMarketClock(market)
-  // Which outcomes have just moved, and which way, for the cue on each chip.
-  const movements = usePriceMovements(snapshot)
   const hasStopped = tradingStopped(market.status, market.close_time, now)
   // Every price-shaped thing below asks this first: the prices, the untraded
   // invitation, the last trade, and the loading and failed lines (#526).
@@ -117,45 +104,7 @@ export default function MarketCard({ market, snapshot, priceReadFailed = false, 
         </div>
         {/* break-words: a question can be one unbroken word, wider than the page (#516). */}
         <p className="text-[15px] leading-normal font-semibold break-words text-smu-navy">{market.question}</p>
-        {/* Wraps onto more rows for a market with many outcomes (up to ten). */}
-        <div className="mt-4 flex flex-wrap gap-2">
-          {market.outcomes.map(outcome => {
-            const outcomePrice = snapshot?.prices.find(price => price.outcome_id === outcome.id)
-            const movement = movements.get(outcome.id)
-            return (
-              <div
-                key={outcome.id}
-                className={`flex min-w-[120px] flex-1 items-center justify-between gap-2 rounded-control px-3 py-2 transition-colors duration-500 motion-reduce:transition-none ${movementTint(movement)}`}
-              >
-                <span title={outcome.label} className="truncate text-xs font-semibold tracking-[0.5px] text-muted uppercase">
-                  {outcome.label}
-                </span>
-                {/* An untraded market keeps its outcome names (#214) and shows
-                    no number at all. A dash would say the wrong thing: that is
-                    what a price still on its way, or one that could not be
-                    read, reads as — and the line below the chips says which
-                    of those two it is (#431). */}
-                {showsPrices && !hasNeverTraded && (
-                  <span
-                    aria-label={movement ? movementLabel(outcome.label, movement) : `${outcome.label} price`}
-                    className="flex shrink-0 items-center gap-1 text-sm font-bold text-smu-navy"
-                  >
-                    {/* The arrow is the cue that is not colour: the tint
-                        behind it fails for a trader who cannot tell the two
-                        tones apart, and the label above says it in words for
-                        one who hears the card instead (AC 3). */}
-                    {movement && (
-                      <span aria-hidden="true" className={movement === 'up' ? 'text-success-strong' : 'text-danger-strong'}>
-                        {movement === 'up' ? '▲' : '▼'}
-                      </span>
-                    )}
-                    {outcomePrice ? formatPrice(outcomePrice.price) : '—'}
-                  </span>
-                )}
-              </div>
-            )
-          })}
-        </div>
+        <MarketCardOutcomes outcomes={market.outcomes} snapshot={snapshot} showsPrices={showsPrices} hasNeverTraded={hasNeverTraded} />
         {/* What the trader holds here, which turns a catalogue into their own
             markets ([X-1] #450). Nothing renders for a market they hold
             nothing in: an empty slot or a dash would make fifty untouched

@@ -238,3 +238,72 @@ describe('a price that has just moved', () => {
     expect(screen.queryByLabelText('Yes price rose')).not.toBeInTheDocument()
   })
 })
+
+// [X-1] #441. The sides used to be two equal chips at 50/50 and at 89/11
+// alike, so the one fact a card exists to say — which way the crowd leans,
+// and how far — had to be read rather than seen. A priced card now draws a
+// bar split at the prices, named for what it shows.
+describe('the split bar on a priced card', () => {
+  // The bar's segments, in outcome order. jsdom lays nothing out, so the
+  // share each segment is given is the only place its width exists here;
+  // e2e/browse-prices measures the widths a browser actually draws from it.
+  function segmentsOf(bar: HTMLElement): Element[] {
+    return Array.from(bar.children)
+  }
+
+  it('splits at the prices, and says so', () => {
+    const { repriceWith } = renderCard(MARKET, { snapshot: pricedAt(3, '0.8900', '0.1100') })
+
+    const bar = screen.getByRole('img', { name: 'Yes 89.0%, No 11.0%' })
+    expect(segmentsOf(bar)[0]).toHaveStyle({ flexGrow: '0.89' })
+    expect(segmentsOf(bar)[1]).toHaveStyle({ flexGrow: '0.11' })
+
+    // And the other way round once the crowd turns: the first side is not
+    // simply the wider one.
+    act(() => repriceWith(pricedAt(4, '0.3000', '0.7000')))
+
+    const turned = screen.getByRole('img', { name: 'Yes 30.0%, No 70.0%' })
+    expect(segmentsOf(turned)[0]).toHaveStyle({ flexGrow: '0.3' })
+    expect(segmentsOf(turned)[1]).toHaveStyle({ flexGrow: '0.7' })
+  })
+
+  // AC 5 and #431: a card with no price must not draw a split at all. The
+  // traps are the two cards whose snapshot *does* carry prices — an untraded
+  // book quotes its 50/50 seed, which is nobody's opinion (#445), and a voided
+  // market's last prices answer a question with no answer (#526) — and a card
+  // still waiting, which has nothing to divide by.
+  it.each([
+    { state: 'untraded', market: MARKET, prices: { snapshot: pricedAt(0, '0.5000', '0.5000') } },
+    { state: 'voided', market: { ...MARKET, status: 'voided' as const }, prices: { snapshot: pricedAt(7, '0.6200', '0.3800') } },
+    { state: 'still loading', market: MARKET, prices: {} },
+  ])('draws no split for a market that is $state', ({ market, prices }) => {
+    renderCard(market, prices)
+
+    expect(screen.getByText('Yes')).toBeInTheDocument()
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+  })
+
+  // AC 4: five sides in one row would be five slivers of truncated text. A
+  // market with more outcomes keeps one readable chip each, under one bar.
+  it('draws a market with more than two outcomes as one bar, each outcome still named and priced', () => {
+    const fiveWay: PublicMarketSummary = {
+      ...MARKET,
+      outcomes: ['Red', 'Blue', 'Green', 'Gold', 'Grey'].map((label, position) => ({ id: `m1-${position}`, position, label })),
+    }
+    const prices = ['0.4000', '0.3000', '0.1500', '0.1000', '0.0500']
+    renderCard(fiveWay, {
+      snapshot: {
+        market_id: 'm1',
+        state_version: 9,
+        prices: prices.map((price, position) => ({ outcome_id: `m1-${position}`, position, price })),
+        occurred_at: '2026-10-18T11:59:00Z',
+      },
+    })
+
+    expect(screen.getByLabelText('Red price')).toHaveTextContent('40.0%')
+    expect(screen.getByLabelText('Grey price')).toHaveTextContent('5.0%')
+    const bar = screen.getByRole('img', { name: 'Red 40.0%, Blue 30.0%, Green 15.0%, Gold 10.0%, Grey 5.0%' })
+    expect(segmentsOf(bar)[0]).toHaveStyle({ flexGrow: '0.4' })
+    expect(segmentsOf(bar)[4]).toHaveStyle({ flexGrow: '0.05' })
+  })
+})

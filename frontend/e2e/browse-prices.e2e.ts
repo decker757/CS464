@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, snapshot, uniqueName, type Market } from './support/backend'
-import { logIn, marketCard } from './support/browser'
+import { boxOf, logIn, marketCard } from './support/browser'
 
 /** What the ledger quotes for one outcome of `market`, by its id. */
 function priceOf(market: Market, prices: { outcome_id: string; price: string }[], label: string): string | undefined {
@@ -56,4 +56,34 @@ test('a browse card picks up a new price without a reload', async ({ page }) => 
   expect(priceOf(market, prices, 'Lakers')).toBe('0.7311')
 
   await expect(card.getByLabel('Lakers price')).toHaveText('73.1%', { timeout: 40_000 })
+})
+
+// [X-1] #441: a priced card draws a bar split at its prices, so a lopsided
+// market looks lopsided. jsdom lays nothing out, so only a browser can show
+// the split is drawn at the true proportion, the way round the ledger priced
+// it. Lopsided on purpose: a floor under the narrow side once drew 88/12 as
+// 69/31, which a near-even market would never have caught. The second side
+// is the one bought, so a bar that drew its first segment wider fails here.
+test('a browse card splits its bar at the prices, however lopsided', async ({ page }) => {
+  const admin = await registerAdmin('bp_split_admin')
+  const market = await publishMarket(admin, `Will ${uniqueName('split')} lean one way?`, ['Lakers', 'Celtics'], { closesInHours: 1 })
+  const trader = await registerTrader('bp_split_trader')
+
+  // 200 Celtics shares at b = 100 give 0.8808 to Celtics and 0.1192 to Lakers.
+  await buy(trader, market, 'Celtics', '200')
+  const { prices } = await snapshot(trader, market.id)
+  expect(priceOf(market, prices, 'Celtics')).toBe('0.8808')
+
+  await logIn(page, trader)
+  const bar = marketCard(page, market.question).getByRole('img', { name: 'Lakers 11.9%, Celtics 88.1%' })
+  const lakersSegment = bar.locator('> *').nth(0)
+  const celticsSegment = bar.locator('> *').nth(1)
+
+  // 88.08 to 11.92 is about 7.4 to 1. Polled, because a split that arrives
+  // on a later price slides into place.
+  await expect
+    .poll(async () => (await boxOf(celticsSegment)).width / (await boxOf(lakersSegment)).width)
+    .toBeGreaterThan(4)
+  // And it is still the second segment: the wider one moved, not the order.
+  expect((await boxOf(celticsSegment)).x).toBeGreaterThan((await boxOf(lakersSegment)).x)
 })
