@@ -164,7 +164,6 @@ export default function TradingPanel({
   const [submitting, setSubmitting] = useState(false)
   const [submitErrorFor, setSubmitErrorFor] = useState('')
   const [submitError, setSubmitError] = useState('')
-  const [lastTradeFor, setLastTradeFor] = useState('')
   const [lastTrade, setLastTrade] = useState<{ side: TradeSide; quantity: string; outcomeLabel: string; total: string } | null>(null)
   // Regenerated only once the server has given a definite answer: success,
   // or a 4xx that means the trade did not happen. A lost reply or a 5xx
@@ -177,7 +176,11 @@ export default function TradingPanel({
   const quantityInputRef = useRef<HTMLInputElement>(null)
 
   const visibleSubmitError = submitErrorFor === inputKey ? submitError : ''
-  const visibleLastTrade = lastTradeFor === inputKey ? lastTrade : null
+  // Shown until the trader types the next quantity, and only that: tying it to
+  // the outcome too hid a buy's confirmation from a trader who picked another
+  // outcome while it was in flight (#566). It names its own outcome, so it
+  // cannot be read as being about the one now selected.
+  const visibleLastTrade = quantity === '' ? lastTrade : null
 
   const selectedOutcome = outcomes.find(o => o.id === outcomeId)
   const heldQuantity = heldByOutcome === null ? null : (heldByOutcome[outcomeId] ?? '0')
@@ -217,9 +220,6 @@ export default function TradingPanel({
         idempotency_key: idempotencyKeyRef.current,
       })
       idempotencyKeyRef.current = crypto.randomUUID()
-      // Keyed to the post-clear input (quantity ""), which is what the
-      // confirmation renders against once this commits.
-      setLastTradeFor(`${marketId}:${outcomeId}:${side}:`)
       setLastTrade({ side, quantity: result.quantity, outcomeLabel: selectedOutcome?.label ?? '', total: result.total })
       setQuantity('')
       // `void`: BalanceContext's refetch catches its own failure, and the
