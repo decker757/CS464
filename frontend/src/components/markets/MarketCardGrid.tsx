@@ -1,10 +1,13 @@
 import type { Position, PriceState } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
+import type { MarketFigures } from '../../hooks/usePricesForMarkets'
 import MarketCard from './MarketCard'
 
 interface MarketCardGridProps {
   markets: PublicMarketSummary[]
   snapshotsByMarket: Map<string, PriceState>
+  /** The batch-only figures, by market id, for each card's change over the week (#564). */
+  marketFigures: Map<string, MarketFigures>
   failedMarkets: Set<string>
   positionsByMarket: Map<string, Position[]>
   onRetryPrice: (marketId: string) => void
@@ -20,6 +23,7 @@ interface MarketCardGridProps {
 export default function MarketCardGrid({
   markets,
   snapshotsByMarket,
+  marketFigures,
   failedMarkets,
   positionsByMarket,
   onRetryPrice,
@@ -34,6 +38,7 @@ export default function MarketCardGrid({
           priceReadFailed={failedMarkets.has(market.id)}
           onRetryPrice={() => onRetryPrice(market.id)}
           positions={positionsByMarket.get(market.id)}
+          pricesWeekAgo={marketFigures.get(market.id)?.prices_7d_ago}
         />
       ))}
     </div>

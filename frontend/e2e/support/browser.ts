@@ -91,6 +91,32 @@ export async function setQueryParams(page: Page, pathname: string, params: Recor
 }
 
 /**
+ * Sets one market's `prices_7d_ago` on the page's batch snapshot reads, on
+ * their way back from the real ledger ([X-1] #564): everything else in the
+ * answer is the ledger's own.
+ *
+ * The ledger measures a week from a market's last trade at least seven days
+ * old, and a trade's time is the `created_at` on `ledger.entries`, which an
+ * append-only trigger keeps from being rewritten. A market a test creates
+ * therefore always answers null, and this is the only honest way to put a
+ * change on its card: hand the batch field a price the same market really
+ * had earlier, read from the ledger before the later trade.
+ */
+export async function setPricesWeekAgo(page: Page, marketId: string, pricesWeekAgo: unknown[]): Promise<void> {
+  await page.route(
+    url => url.pathname === '/ledger/markets/snapshots',
+    async route => {
+      const response = await route.fetch()
+      const body = (await response.json()) as { snapshots: { market_id: string; prices_7d_ago: unknown }[] }
+      for (const item of body.snapshots) {
+        if (item.market_id === marketId) item.prices_7d_ago = pricesWeekAgo
+      }
+      await route.fulfill({ response, json: body })
+    },
+  )
+}
+
+/**
  * Clicks a status tab on the admin markets list and waits for the answer to the
  * first-page request it sends. For a moment after the click the old tab's rows,
  * Load more included, are still on screen, and a Load more clicked then belongs

@@ -1,5 +1,6 @@
 import type { Position, PriceState } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
+import type { MarketFigures } from '../../hooks/usePricesForMarkets'
 import MarketCardGrid from './MarketCardGrid'
 
 interface MarketBandProps {
@@ -11,6 +12,7 @@ interface MarketBandProps {
   rule?: string
   markets: PublicMarketSummary[]
   snapshotsByMarket: Map<string, PriceState>
+  marketFigures: Map<string, MarketFigures>
   failedMarkets: Set<string>
   positionsByMarket: Map<string, Position[]>
   onRetryPrice: (marketId: string) => void
@@ -27,6 +29,7 @@ export default function MarketBand({
   rule,
   markets,
   snapshotsByMarket,
+  marketFigures,
   failedMarkets,
   positionsByMarket,
   onRetryPrice,
@@ -40,6 +43,7 @@ export default function MarketBand({
       <MarketCardGrid
         markets={markets}
         snapshotsByMarket={snapshotsByMarket}
+        marketFigures={marketFigures}
         failedMarkets={failedMarkets}
         positionsByMarket={positionsByMarket}
         onRetryPrice={onRetryPrice}

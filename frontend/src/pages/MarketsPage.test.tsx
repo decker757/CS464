@@ -1543,3 +1543,42 @@ describe('the curated sections above the list', () => {
     expect(within(trending).getByText('Will the runner-up be banded?')).toBeInTheDocument()
   })
 })
+
+// [X-1] #564. The week-old prices ride only on the batch read, and a price
+// frame carries none of them (ledger-service.md), so this is where a card's
+// change could be lost: on its way down from the page's one read, or blanked
+// by the first trade that arrives on the socket.
+describe("a card's change over the week, from the page's one batch read", () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('shows the change the batch measures, and moves it with the next price frame', async () => {
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets`, () => HttpResponse.json({ markets: [mockMarkets[0]], next_cursor: null })),
+    )
+    serveSnapshots(id => ({
+      ...snapshotFor(id, ['0.6200', '0.3800']),
+      prices_7d_ago: snapshotFor(id, ['0.5000', '0.5000']).prices,
+    }))
+    FakeSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeSocket)
+    renderPage()
+
+    // A twelve-point move also puts the market in Biggest movers, so the
+    // card is read in the full list, which always holds it.
+    const list = await screen.findByRole('region', { name: 'Browse all' })
+    expect(await within(list).findByLabelText('Yes up 12.0 points over the last 7 days')).toHaveTextContent('▲ +12.0 pts')
+
+    await act(async () => { latestSocket().open() })
+    await act(async () => {
+      for (const command of latestSocket().sent.filter(sent => sent.action === 'subscribe')) {
+        latestSocket().receive({ type: 'subscribed', market_id: command.market_id })
+      }
+    })
+    await act(async () => {
+      latestSocket().receive({ type: 'price', ...snapshotFor('a1', ['0.7000', '0.3000']), state_version: 4 })
+    })
+
+    // Measured from the live price, against the week-old one the batch gave.
+    expect(await within(list).findByLabelText('Yes up 20.0 points over the last 7 days')).toHaveTextContent('▲ +20.0 pts')
+  })
+})

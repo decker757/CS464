@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import type { Position, PriceState } from '../../api/ledgerApi'
+import type { OutcomePrice, Position, PriceState } from '../../api/ledgerApi'
 import type { PublicMarketSummary } from '../../api/marketApi'
 import { useMarketClock } from '../../hooks/useMarketClock'
 import { formatTimeAgo } from '../../utils/formatDateTime'
@@ -25,6 +25,12 @@ interface MarketCardProps {
    * most of them, and for a portfolio read that failed.
    */
   positions?: Position[]
+  /**
+   * Each outcome's price a week ago, from the page's one batch snapshot read
+   * ([X-1] #564). Null when the ledger has none to give, which shows no
+   * change; undefined until the batch has answered.
+   */
+  pricesWeekAgo?: OutcomePrice[] | null
 }
 
 // What a market nobody has traded says instead of a price. An untouched LMSR
@@ -57,7 +63,7 @@ const PRICES_FAILED = 'Prices could not be loaded.'
 // (ADR 0025, "Known edges, accepted"), and refunds can be cut.
 const VOIDED_NOTE = 'Voided with no result.'
 
-export default function MarketCard({ market, snapshot, priceReadFailed = false, onRetryPrice, positions }: MarketCardProps) {
+export default function MarketCard({ market, snapshot, priceReadFailed = false, onRetryPrice, positions, pricesWeekAgo }: MarketCardProps) {
   // The card keeps a clock for its countdown, and stops it once the market
   // has stopped trading (useMarketClock).
   const now = useMarketClock(market)
@@ -104,7 +110,13 @@ export default function MarketCard({ market, snapshot, priceReadFailed = false, 
         </div>
         {/* break-words: a question can be one unbroken word, wider than the page (#516). */}
         <p className="text-[15px] leading-normal font-semibold break-words text-smu-navy">{market.question}</p>
-        <MarketCardOutcomes outcomes={market.outcomes} snapshot={snapshot} showsPrices={showsPrices} hasNeverTraded={hasNeverTraded} />
+        <MarketCardOutcomes
+          outcomes={market.outcomes}
+          snapshot={snapshot}
+          showsPrices={showsPrices}
+          hasNeverTraded={hasNeverTraded}
+          pricesWeekAgo={pricesWeekAgo}
+        />
         {/* What the trader holds here, which turns a catalogue into their own
             markets ([X-1] #450). Nothing renders for a market they hold
             nothing in: an empty slot or a dash would make fifty untouched

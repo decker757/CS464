@@ -13,9 +13,22 @@ import { formatCreditsPrecise } from './formatCredits'
 const PLAIN_DECIMAL = /^\d+(\.\d+)?$/
 
 export function formatPrice(price: string): string {
-  if (!PLAIN_DECIMAL.test(price)) return '—'
+  const points = formatPercentagePoints(price)
+  return points === '—' ? points : `${points}%`
+}
 
-  const [whole, fraction = ''] = price.split('.')
+/**
+ * A probability, or a distance between two of them, as percentage points to
+ * one decimal place and nothing else: "0.1200" is "12.0". Rounded exactly as
+ * `formatPrice` rounds, because it is `formatPrice`'s own arithmetic, so a
+ * card's change and the prices it is the difference of round the same way
+ * (#564). Unsigned: a caller with a signed change passes its magnitude and
+ * says the direction itself.
+ */
+export function formatPercentagePoints(value: string): string {
+  if (!PLAIN_DECIMAL.test(value)) return '—'
+
+  const [whole, fraction = ''] = value.split('.')
   const keptDigits = fraction.padEnd(3, '0').slice(0, 3)
   const firstDroppedDigit = fraction[3] ?? '0'
 
@@ -23,7 +36,7 @@ export function formatPrice(price: string): string {
   if (firstDroppedDigit >= '5') tenthsOfAPercent += 1n
 
   const digits = tenthsOfAPercent.toString().padStart(2, '0')
-  return `${digits.slice(0, -1)}.${digits.slice(-1)}%`
+  return `${digits.slice(0, -1)}.${digits.slice(-1)}`
 }
 
 /**
