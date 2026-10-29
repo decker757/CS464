@@ -1,7 +1,7 @@
 import { buy, publishMarket, registerAdmin, registerTrader, startingGrant, uniqueName } from './support/backend'
 import { creditsLess, formatRoundedCredits } from './support/credits'
 import { expect, test } from './support/fixtures'
-import { logIn } from './support/browser'
+import { logIn, outcomeChoice } from './support/browser'
 
 // [FE][T-6] #61, through the real ledger and the real socket. The backend
 // halves shipped without a browser test on purpose — there was no UI — so
@@ -26,7 +26,7 @@ test('a trader rests a limit order, watches another trade fill it, and cancels t
   // A buy well under the current price (0.5000 on a fresh book) rests
   // instead of filling.
   await page.getByRole('button', { name: 'Limit', exact: true }).click()
-  await page.getByRole('button', { name: 'Yes', exact: true }).click()
+  await outcomeChoice(page, 'Yes').click()
   await page.getByLabel('Limit price').fill('0.30')
   await page.getByLabel('Quantity (shares)').fill('50')
   await page.getByRole('button', { name: 'Place buy order', exact: true }).click()
@@ -86,7 +86,7 @@ test('an order filled the rest of the way by another trade leaves the list on it
   // lands is the order's last and its frame reads `filled` rather than
   // `open` (realtime-service.md, "Order updates").
   await page.getByRole('button', { name: 'Limit', exact: true }).click()
-  await page.getByRole('button', { name: 'Yes', exact: true }).click()
+  await outcomeChoice(page, 'Yes').click()
   await page.getByLabel('Limit price').fill('0.45')
   await page.getByLabel('Quantity (shares)').fill('2')
   await page.getByRole('button', { name: 'Place buy order', exact: true }).click()
@@ -116,7 +116,7 @@ test('a limit order priced through the market fills on arrival', async ({ page }
   // cost 100·ln((e^0.1 + 1)/2) = 5.12497…, rounded up for a buy, 5.1250:
   // 0.5125 a share.
   await page.getByRole('button', { name: 'Limit', exact: true }).click()
-  await page.getByRole('button', { name: 'Yes', exact: true }).click()
+  await outcomeChoice(page, 'Yes').click()
   await page.getByLabel('Limit price').fill('0.90')
   await page.getByLabel('Quantity (shares)').fill('10')
   await page.getByRole('button', { name: 'Place buy order', exact: true }).click()
@@ -145,12 +145,12 @@ test('selling on the limit ticket with nothing held offers to buy it instead', a
   await page.goto(`/markets/${market.id}`)
 
   const buyToggle = page.getByRole('button', { name: 'Buy', exact: true })
-  const noToggle = page.getByRole('button', { name: 'No', exact: true })
+  const noChoice = outcomeChoice(page, 'No')
   const holdsNone = page.getByRole('status').filter({ hasText: "You don't hold any No shares." })
 
   await page.getByRole('button', { name: 'Limit', exact: true }).click()
   await page.getByRole('button', { name: 'Sell', exact: true }).click()
-  await noToggle.click()
+  await noChoice.click()
 
   // The sentence, announced, and no form to fill in behind it.
   await expect(holdsNone).toBeVisible()
@@ -161,7 +161,7 @@ test('selling on the limit ticket with nothing held offers to buy it instead', a
   // The offer turns the ticket into the buy it names, as on the market ticket.
   await page.getByRole('button', { name: 'Buy No instead' }).click()
   await expect(buyToggle).toHaveAttribute('aria-pressed', 'true')
-  await expect(noToggle).toHaveAttribute('aria-pressed', 'true')
+  await expect(noChoice).toBeChecked()
   // The clicked button has gone, so focus moves on to the form's first field.
   await expect(page.getByLabel('Limit price')).toBeFocused()
 
@@ -175,7 +175,7 @@ test('selling on the limit ticket with nothing held offers to buy it instead', a
   await expect(page.getByText(/^Buy 1\.0000 No at 0\.9000: filled in full at /)).toBeVisible()
 
   await page.getByRole('button', { name: 'Sell', exact: true }).click()
-  await expect(noToggle).toHaveAttribute('aria-pressed', 'true')
+  await expect(noChoice).toBeChecked()
   await expect(page.getByLabel('shares held')).toContainText('You hold 1.0000 shares')
   await expect(holdsNone).toHaveCount(0)
   await expect(page.getByLabel('Limit price')).toBeVisible()
@@ -184,7 +184,7 @@ test('selling on the limit ticket with nothing held offers to buy it instead', a
   // The outcome the trader does hold keeps its form: this is about an empty
   // holding, not about selling on the limit ticket at all.
   await page.getByRole('button', { name: 'Sell', exact: true }).click()
-  await page.getByRole('button', { name: 'Yes', exact: true }).click()
+  await outcomeChoice(page, 'Yes').click()
   await expect(page.getByLabel('shares held')).toContainText('You hold 2.0000 shares')
   await expect(page.getByLabel('Limit price')).toBeVisible()
 })

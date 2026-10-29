@@ -107,6 +107,16 @@ export async function selectTab(page: Page, name: RegExp): Promise<void> {
   await answered
 }
 
+/**
+ * The control on a market's page that chooses the outcome the trading panel
+ * trades: that outcome's price block (#429). Its name is the label and then
+ * the price, which moves, so this matches on the label alone. `label` is
+ * matched as written, so it must hold no regular-expression characters.
+ */
+export function outcomeChoice(page: Page, label: string): Locator {
+  return page.getByRole('radiogroup', { name: 'Outcome to trade' }).getByRole('radio', { name: new RegExp(`^${label},`) })
+}
+
 /** A screen, and the `<h1>` that says it has been drawn (#438). */
 export interface Screen {
   path: string
