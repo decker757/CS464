@@ -265,6 +265,54 @@ describe('TradingPanel', () => {
     expect(onTraded).toHaveBeenCalledTimes(1)
   })
 
+  it('confirms a buy that commits after the trader picked another outcome, naming the one it bought', async () => {
+    mockPreview(previewResponse())
+    let answerTrade: () => void = () => {}
+    const tradeAnswered = new Promise<void>(resolve => { answerTrade = resolve })
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async () => {
+        await tradeAnswered
+        return HttpResponse.json({
+          transaction_id: 'tx-1', user_id: 'u1', market_id: MARKET_ID,
+          outcome_id: 'o-yes', side: 'buy', quantity: '10.0000', total: '-5.1250', state_version: 2,
+        }, { status: 201 })
+      }),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { rerender } = renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    // The No price block, clicked while the Yes buy is still in flight (#566).
+    rerender(panel({ outcomeId: 'o-no' }))
+    answerTrade()
+
+    expect(await screen.findByText(/bought 10.0000 yes for 5.1250 credits/i)).toBeInTheDocument()
+  })
+
+  it('drops the confirmation once the trader types a quantity for the next trade', async () => {
+    mockPreview(previewResponse())
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, () =>
+        HttpResponse.json({
+          transaction_id: 'tx-1', user_id: 'u1', market_id: MARKET_ID,
+          outcome_id: 'o-yes', side: 'buy', quantity: '10.0000', total: '-5.1250', state_version: 2,
+        }, { status: 201 }),
+      ),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    await screen.findByText(/bought 10.0000 yes/i)
+
+    await typeQuantity(actor, '3')
+
+    expect(screen.queryByText(/bought 10.0000 yes/i)).not.toBeInTheDocument()
+  })
+
   it('re-previews automatically on a 409 quote_stale, re-enables submit, and sends the same key with the new state_version on confirm', async () => {
     let previewCalls = 0
     server.use(
