@@ -10,8 +10,7 @@ Covers [F-1] #41, the backend half of [B-1] #32, [B-2] #33 and [4.1] #13,
 #6's market exposure, [L-1] #38's leaderboard, which also covers [L-3] #40,
 [BE][2.4] #63's price history and trade feed, and [BE][X-1] #432's batch
 snapshot with #447's activity figure.
-The void route ([BE] #221) is decided by ADR 0025 and not built yet; every
-part of this page that it changes says so where it does.
+The void route ([BE] #221) is decided by ADR 0025.
 
 Why balances are derived rather than stored and why a read can write:
 [ADR 0009](../adr/0009-the-ledger-write-path.md), amended by [T-2] #22 to
@@ -44,7 +43,7 @@ what each share cost: [ADR 0025](../adr/0025-voiding-a-flawed-market.md).
 | GET | `/ledger/markets/{market_id}/trades` | The market's trades, newest first (admin) |
 | POST | `/ledger/markets/{market_id}/trades` | Buy or sell shares |
 | POST | `/ledger/markets/{market_id}/settlement` | Pay out an approved market (admin) |
-| POST | `/ledger/markets/{market_id}/void` | Void a flawed market and refund every holder (admin; ADR 0025, not built yet) |
+| POST | `/ledger/markets/{market_id}/void` | Void a flawed market and refund every holder (admin; ADR 0025) |
 | POST | `/ledger/markets/{market_id}/orders` | Place a limit order (ADR 0024) |
 | GET | `/ledger/orders/me` | My live limit orders (ADR 0024) |
 | POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (ADR 0024) |
@@ -69,7 +68,7 @@ entry. The ledger is
 append-only, enforced by a database trigger rather than by the absence of a
 route.
 
-**ADR 0025: not built yet. A sixth write route.**
+**ADR 0025. A sixth write route.**
 `POST .../void` takes an administrator's token and a body of one field,
 `reason`. Which market may be voided comes from market_service; the holders
 and the amounts come from this service's own trades and positions. It takes
@@ -248,10 +247,10 @@ be recognised as one event, not so you can fetch the other half; there is no
 route that returns it.
 
 `kind` is the vocabulary of why credits moved. The values that reach a user's
-own history today are `signup_grant`, `trade_buy`, `trade_sell` and
-`settlement`, a winning holder's payout, which the settlement route below
-writes ([3.4] #12). A holder of only losing shares is paid nothing, and gets
-no row.
+own history are `signup_grant`, `trade_buy`, `trade_sell`, `settlement`, a
+winning holder's payout, which the settlement route below writes ([3.4] #12),
+and `void_refund`, which the void route writes. A holder of only losing shares
+is paid nothing, and gets no row.
 `market_seed` and
 `settlement_residue` exist as kinds too, but never reach here: each moves
 credits between the platform and a market's pool, touching no USER account.
@@ -276,7 +275,7 @@ the number of winning shares paid out, at one credit each, so `amount` equals
 `quantity`. `side` and `average_price` are `null` there: a payout is not a
 trade, and its price is always one.
 
-**ADR 0025: not built yet. `void_refund` rows.** A void writes one
+**ADR 0025. `void_refund` rows.** A void writes one
 `void_refund` row for each position it refunds: `amount` is the refund,
 positive, and `market_id`, `outcome_id` and `quantity` (the shares refunded)
 are set, as on a `settlement` row. `side` and `average_price` are `null`: a
@@ -410,7 +409,7 @@ On every other row, `result` and `payout` are `null`. Every row carries all the
 keys, so branch on `result`, not on which keys are present. **`price`, `value`
 and `unrealized_pnl` can be `null`.** Guard them before formatting.
 
-**ADR 0025: not built yet. A voided market's rows show the refund.**
+**ADR 0025. A voided market's rows show the refund.**
 Once this service has voided a market (`POST /ledger/markets/{id}/void`,
 below), each of its rows carries `result: "refunded"`, and `payout` is what
 the void refunded for that position, read from its `void_refund` entry. It is
@@ -1045,7 +1044,7 @@ in `market_ids`. Like the single snapshot, it never checks whether a market is
 still open (ADR 0017): a closed or settled market is answered with its last
 price.
 
-**ADR 0025: not built yet. A voided market is answered the same way**, with
+**ADR 0025. A voided market is answered the same way**, with
 its last `prices`, its `prices_7d_ago` and its `credits_traded`. A void writes
 no trade, so `credits_traded` still counts every trade, refunded or not,
 and never falls. A card shows a voided market as "Voided", with no
@@ -1110,13 +1109,13 @@ whole pool goes back to the platform.
 | `opened_at` | When this service opened the market's book. `null` means it never has (below). |
 | `state_version` | The same counter the snapshot and every price frame report: which trade this read reflects. `null` when there is no book. |
 | `seed_subsidy` | What the platform put up at book creation. |
-| `pool` | What the market pool holds now: the seed plus every buy, minus every sell. Derived from the pool's entries, like every balance. `null` once the market is settled. |
-| `payout_exceeds_pool` | True when any outcome's payout is strictly greater than `pool`, i.e. any `residue_if_wins` is negative. Always `false` once the market is settled. |
-| `result` | `null` until the ledger records how the market ended; then that record's kind, today always `"settled"`. |
-| `winning_outcome_id` | `null` until the market is settled; then the outcome that paid. |
+| `pool` | What the market pool holds now: the seed plus every buy, minus every sell. Derived from the pool's entries, like every balance. `null` once the market is settled or voided. |
+| `payout_exceeds_pool` | True when any outcome's payout is strictly greater than `pool`, i.e. any `residue_if_wins` is negative. Always `false` once the market is settled or voided. |
+| `result` | `null` until the ledger records how the market ended; then that record's kind, `"settled"` or `"voided"`. |
+| `winning_outcome_id` | `null` until the market is settled; then the outcome that paid. Still `null` on a voided market. |
 | `shares_outstanding` | Every trader's shares in this outcome, summed. |
-| `payout_if_wins` | One credit per share outstanding. `null` once the market is settled. |
-| `residue_if_wins` | `pool − payout_if_wins`. Positive goes to the platform at settlement; negative is what the platform tops up. `null` once the market is settled. |
+| `payout_if_wins` | One credit per share outstanding. `null` once the market is settled or voided. |
+| `residue_if_wins` | `pool − payout_if_wins`. Positive goes to the platform at settlement; negative is what the platform tops up. `null` once the market is settled or voided. |
 
 Money and shares are decimal strings at scale 4, as everywhere in this service.
 `outcomes` carries every outcome, ordered by `position`. The largest payout is
@@ -1198,7 +1197,7 @@ That is the first example's market, settled for its second outcome. Branch on
 audit entry (DECISIONS.md, "A settled market's exposure reads its result, and
 reports no payouts against the drained pool").
 
-**ADR 0025: not built yet. A voided market reads the same way.**
+**ADR 0025. A voided market reads the same way.**
 `result` is `"voided"` and `winning_outcome_id` is `null`. `pool`, every
 `payout_if_wins` and every `residue_if_wins` are `null`, and the flag is
 `false`: a void empties the pool as settlement does. What it refunded is in
@@ -1674,7 +1673,7 @@ order leave `GET /ledger/orders/me`.
 - **Price history and the trade feed:** one point and one row per fill.
 - **Trade route:** `book_state_version`, and the two refusals that now count
   reservations (above).
-- **A void** (ADR 0025, not built yet) releases every open order on its market,
+- **A void** (ADR 0025) releases every open order on its market,
   as a settlement does, and refunds every fill like any other trade.
 
 ## POST /ledger/markets/{market_id}/settlement
@@ -1795,8 +1794,10 @@ the settle step.
 | read | 401 | `invalid_token` | market_service refused the forwarded token. |
 | read | 404 | `market_not_found` | No such market, including a draft or a submitted one, which market_service's public detail refuses with the same 404. |
 | read | 503 | `market_terms_unavailable` | market_service could not be reached, answered with unusable terms, or answered `404` for a market this service holds a book for. |
+| lookup | 409 | `market_already_voided` | This service has voided the market. Checked again under the book lock. |
+| status | 409 | `market_already_voided` | Nothing is recorded here, and market_service reports the market `voided`: a direct call to its void step. |
 | status | 409 | `dispute_window_open` | Nothing is recorded here, and the market is `approved` but not yet `settleable`. Retry once it is. |
-| status | 409 | `market_not_approved` | Nothing is recorded here, and the market is in any status other than `approved` or `settled`. |
+| status | 409 | `market_not_approved` | Nothing is recorded here, and the market is in any status other than `approved`, `settled` or `voided`. |
 | book | 503 | `market_terms_unavailable` | On a market nobody has touched, opening its book reads market_service again, and that read failed or answered terms no book can be opened from. If market_service's answer has changed since the read step, this read can also answer that step's `401` or `404`. |
 | winner | 503 | `market_terms_unavailable` | market_service reported a winner that is null or not one of this market's outcomes. |
 | settle step | 503 | `settlement_unconfirmed` | The payouts are committed, by this request or by an earlier one, and market_service did not answer `200`. Repeat the request; see above. |
@@ -1807,16 +1808,13 @@ touched comes after the book was opened, as a preview's first request would
 open it. That happens once per market, and it is the only write such a
 refusal leaves.
 
-**ADR 0025: not built yet. A voided market is
-`409 market_already_voided`.** At the lookup step, before the status check,
-and again under the book lock: a market this service has voided is refused
-with nothing written, never treated as a settlement to replay. At the status
-step, a market market_service reports `voided` with nothing recorded here
-gets the same code. Today a voided status would be `market_not_approved`.
+**ADR 0025. A voided market is `409 market_already_voided`**, at the lookup
+and status steps above: refused with nothing written, and never treated as a
+settlement to replay.
 
 ## POST /ledger/markets/{market_id}/void
 
-**ADR 0025: not built yet.** [BE] #221. End a flawed market with no
+**ADR 0025.** [BE] #221. End a flawed market with no
 winner, refund every share still held at what it cost, then tell
 market_service that the market is voided. Administrators only, and not one
 who has traded the market.
@@ -2096,11 +2094,11 @@ reported beside the points:
 
 | Field | Meaning |
 | --- | --- |
-| `result` | `null` until the ledger records how the market ended. Then that record's kind, today always `"settled"`. The same values as the exposure read's `result`. Treat an unrecognised value as opaque. |
-| `winning_outcome_id` | `null` until the market is settled. Then the outcome that paid. |
-| `result_recorded_at` | `null` until the market is settled. Then the settlement's `recorded_at`, the same instant the settlement route reports. |
+| `result` | `null` until the ledger records how the market ended. Then that record's kind, `"settled"` or `"voided"`. The same values as the exposure read's `result`. Treat an unrecognised value as opaque. |
+| `winning_outcome_id` | `null` until the market is settled. Then the outcome that paid. Still `null` on a voided market. |
+| `result_recorded_at` | `null` until the market is settled or voided. Then that record's `recorded_at`, the same instant the settlement or void route reports. |
 
-**ADR 0025: not built yet. A voided market** ends its points at the
+**ADR 0025. A voided market** ends its points at the
 last trade too, since a void moves no price. `result` is `"voided"`,
 `winning_outcome_id` is `null`, and `result_recorded_at` is the void's
 `recorded_at`.
@@ -2328,7 +2326,7 @@ placement's own. `order_not_found`, `order_already_filled`,
 above. `cancellation_incomplete` (422, new in [T-8] #326) is the
 administrator's cancel's own, documented there too.
 
-**ADR 0025: not built yet.** `admin_has_a_stake` (403),
+**ADR 0025.** `admin_has_a_stake` (403),
 `market_already_settled` and `market_not_voidable` (409), `void_incomplete`
 (422), `void_replay_mismatch` (500) and `void_unconfirmed` (503) are the void
 route's own, documented in its section above. `market_already_voided` (409)
