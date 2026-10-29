@@ -11,17 +11,18 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | Area | Issues | State |
 | --- | --- | --- |
 | Authentication | [A-1]–[A-3] #29–#31, UI #46–#48 | shipped, both sides |
-| Market creation | [1.1]–[1.4] #1–#4, UI #45 | shipped, both sides: drafts autosave, and only a draft or a submitted market can be edited |
-| Admin market tools | [2.1]–[2.4] #5–#8, UI #51, #55, #56 | shipped, both sides: overview, early close, exposure, price history, and a trade log that names traders (#273) |
+| Market creation | [1.1]–[1.4] #1–#4, UI #45, #354 | shipped, both sides: drafts autosave, and only a draft or a submitted market can be edited |
+| Admin market tools | [2.1]–[2.4] #5–#8, UI #51, #55, #56, #418, #434 | shipped, both sides: overview, early close, exposure, price history, and a trade log and user history that name people rather than ids (#273) |
 | Resolution | [3.1]–[3.4] #9–#12, UI #52, #59, #87, #216 | shipped, both sides: propose, a second admin approves, the dispute window and send-back, settlement |
 | Voiding | #221, UI #526 | shipped, both sides: an admin voids a flawed market and every holder is refunded at cost (ADR 0025) |
-| Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60 | shipped, both sides; promoting an admin is an API call and has no screen yet |
-| Credits | [B-1] #32, [B-2] #33, [F-1] #41 | shipped; every balance is derived from append-only entries |
-| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61 | shipped, both sides, including limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024) |
-| Discovery | [X-1]–[X-4] #34–#37, #447, UI #54, #126, #209, #444, #448, #450 | shipped: search, live prices, the trader's own holdings, and bands for closing soon, trending and biggest movers; the seven-day change on each card has its backend (#446) and its UI is #564 |
+| Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60, #479 | shipped, both sides, including the suspend control and a users list that filters by role and by status; promoting an admin is an API call and has no screen yet |
+| Credits | [B-1] #32, [B-2] #33, [F-1] #41, UI #376, #443, #410 | shipped; every balance is derived from append-only entries, and the portfolio shows profit and loss and how many shares a live sell order holds back |
+| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61, #429, #495 | shipped, both sides: the price is the control that picks an outcome, a live price chart, and limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024) |
+| Discovery | [X-1]–[X-4] #34–#37, #446, #447, UI #54, #126, #209, #441, #444, #448, #450, #564 | shipped: search and filters, live prices, the trader's own holdings, bands for closing soon, trending and biggest movers, and cards that show the odds as a split bar and each outcome's change over the week |
 | Leaderboard | [L-1]–[L-3] #38–#40, UI #58 | shipped, both sides |
+| Layout and accessibility | #380, #437, #438, #452 | every signed-in page fits a phone, with the navigation behind a menu button, and every text colour pair passes WCAG AA |
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
-| Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot and the ledger's price producer |
+| Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot, the ledger's price producer and its order frames |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
 | Deployment | [5.1] #17, [5.2] #18, [5.4] #440 | containers, CI and the replicated stack shipped; the deploy pipeline [5.3] #19 and the load test [5.4] #20 are open |
 
@@ -77,12 +78,17 @@ accept browser requests from ports 5173 and 3000 unless `CORS_ORIGINS` says
 otherwise.
 
 Creating a market needs an administrator, and registration never grants one.
-Register normally, then promote by hand and log in again:
+The first administrator is made by hand: register normally, promote, and log
+in again:
 
 ```bash
 docker compose exec db psql -U cs464 -d cs464 \
   -c "UPDATE auth.users SET role = 'admin' WHERE lower(username) = 'your_username';"
 ```
+
+Every administrator after that is promoted by an existing one through
+`PATCH /admin/users/{user_id}/role`, which writes an audit entry, and also has
+to log in again: authority rides in the access token (ADR 0003, ADR 0007).
 
 Already running Postgres on 5432? Set `POSTGRES_PORT` to something else in
 `.env`, and use the same port in each `<SERVICE>_TEST_DATABASE_URL`. Same for
@@ -216,6 +222,16 @@ instead of on deploy. The pure unit layers need no database:
 Each service reads its own `<SERVICE>_TEST_DATABASE_URL` from the root `.env`,
 so a suite always connects as its own restricted role rather than as the
 superuser. That is what makes the cross-schema denial tests mean something.
+
+The frontend has unit tests that need nothing running, and a Playwright suite
+that drives the real frontend against the real stack:
+
+```bash
+cd frontend && npm ci
+npm run test:run              # unit tests
+docker compose up -d --build --wait   # from the repo root, then:
+npm run e2e                   # end to end
+```
 
 ## Architecture
 
