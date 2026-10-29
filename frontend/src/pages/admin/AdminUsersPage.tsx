@@ -93,7 +93,8 @@ export default function AdminUsersPage() {
                 <Card interactive className="flex items-center justify-between gap-4 px-6 py-4">
                   <div className="min-w-0">
                     <p className="truncate text-[15px] font-semibold text-smu-navy">{user.username}</p>
-                    <p className="mt-1 text-xs text-subtle">{user.email}</p>
+                    {/* break-words: an email can be one unbroken word, wider than a phone (#516). */}
+                    <p className="mt-1 text-xs break-words text-subtle">{user.email}</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-3 text-xs">
                     {user.is_suspended && <span className="font-semibold text-danger">Suspended</span>}

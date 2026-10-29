@@ -113,6 +113,15 @@ export interface Screen {
   heading: string
 }
 
+/** How wide the page is drawn (`scrollWidth`) beside how wide the window
+ * shows it (`clientWidth`): any more than that scrolls sideways. */
+export async function documentWidth(page: Page): Promise<{ scrollWidth: number; clientWidth: number }> {
+  return page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }))
+}
+
 /**
  * Opens each screen at one viewport size and returns the ones the page
  * scrolls sideways on, with how wide the document came out, so a failure
@@ -128,10 +137,7 @@ export async function overflowingScreens(page: Page, screens: Screen[], viewport
     // "Loading …" line, before the list or table that might be too wide, so
     // the measurement waits for every such line to go.
     await expect(page.getByText(/^Loading\b/)).toHaveCount(0)
-    const { scrollWidth, clientWidth } = await page.evaluate(() => ({
-      scrollWidth: document.documentElement.scrollWidth,
-      clientWidth: document.documentElement.clientWidth,
-    }))
+    const { scrollWidth, clientWidth } = await documentWidth(page)
     if (scrollWidth > clientWidth) overflowing.push(`${screen.path} at ${viewport.width}px is ${scrollWidth}px wide`)
   }
   return overflowing

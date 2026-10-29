@@ -116,7 +116,7 @@ export default function AppNavbar() {
           the navigation: the balance stays on screen because it is the figure
           a trader checks most, and the menu holds the two things that are
           about the account rather than about where to go. */}
-      <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 py-1 pr-1 pl-3 sm:gap-4 sm:pl-4">
+      <div className="flex min-w-0 items-center gap-2 rounded-full border border-white/10 bg-white/5 py-1 pr-1 pl-3 sm:gap-4 sm:pl-4">
         {available !== undefined && <BalanceReadout available={available} />}
         <AccountMenu username={user.username} email={user.email} isLoggingOut={loggingOut} onLogout={handleLogout} />
       </div>
