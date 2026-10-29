@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, closeEarly, proposeOutcome, publishMarket, registerAdmin, registerTrader, saveDraft, snapshot, uniqueName } from './support/backend'
-import { boxOf, documentWidth, logIn, marketCard, overflowingScreens, selectTab, setPricesWeekAgo, setQueryParams, type Screen } from './support/browser'
+import { boxOf, documentWidth, logIn, marketCard, overflowingScreens, setPricesWeekAgo, setQueryParams, type Screen } from './support/browser'
 
 // [FE] #438. Every signed-in screen used to be two to three times the width
 // of a phone: the navbar was one row that never wrapped, and the create form
@@ -116,7 +116,6 @@ test('no list scrolls sideways with the longest username, an unbroken question o
   for (const viewport of [PHONE, DESKTOP]) {
     await page.setViewportSize(viewport)
     await page.goto('/admin/markets')
-    await selectTab(page, /^pending/i)
     await expect(marketCard(page, question)).toBeVisible()
     const adminList = await documentWidth(page)
     expect(adminList.scrollWidth, `/admin/markets at ${viewport.width}px`).toBeLessThanOrEqual(adminList.clientWidth)

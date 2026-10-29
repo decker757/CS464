@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, closeEarly, publishMarket, registerAdmin, registerTrader, uniqueName, voidMarket } from './support/backend'
-import { logIn, marketCard, selectTab, setQueryParams } from './support/browser'
+import { logIn, marketCard, setQueryParams } from './support/browser'
 
 // [FE] #526, across market_service and the ledger: the control reads
 // `voidable` from market_service's overview, the void itself is the ledger's
@@ -25,7 +25,6 @@ test('an admin voids a closed market, and a holder sees the refund in their port
   await logIn(page, admin)
   await setQueryParams(page, '/markets/overview', { q: market.question })
   await page.goto('/admin/markets')
-  await selectTab(page, /^closed/i)
   const card = marketCard(page, market.question)
   await card.getByRole('button', { name: /^void market$/i }).click()
 
