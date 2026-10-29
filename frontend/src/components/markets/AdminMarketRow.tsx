@@ -1,22 +1,24 @@
-import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { AdminAction } from '../../api/auditApi'
 import type { MarketOverviewRow } from '../../api/marketApi'
-import Button from '../ui/Button'
 import Card from '../ui/Card'
-import ConfirmModal from '../ui/ConfirmModal'
-import ReasonModal from '../ui/ReasonModal'
 import { buttonClass } from '../ui/buttonClass'
 import { useCloseMarket } from '../../hooks/useCloseMarket'
 import { useDisputeMarket } from '../../hooks/useDisputeMarket'
 import { usePublishMarket } from '../../hooks/usePublishMarket'
 import { useSettleMarket } from '../../hooks/useSettleMarket'
+import { useStatusAfterActions } from '../../hooks/useStatusAfterActions'
 import { useVoidMarket } from '../../hooks/useVoidMarket'
 import { useWindowOpen } from '../../hooks/useWindowOpen'
 import { disputeWindowLine } from '../../utils/formatCountdown'
 import { toApprovedResult } from '../../utils/proposals'
-import PublishConfirmModal from './PublishConfirmModal'
+import CloseMarketControl from './CloseMarketControl'
+import DisputeResultControl from './DisputeResultControl'
+import PublishMarketControl from './PublishMarketControl'
+import RowError from './RowError'
+import SettleMarketControl from './SettleMarketControl'
 import StatusBadge from './StatusBadge'
+import VoidMarketControl from './VoidMarketControl'
 import { formatCloseTime, tradingStopped } from './marketStatus'
 
 interface AdminMarketRowProps {
@@ -29,39 +31,8 @@ interface AdminMarketRowProps {
   approvalEntry?: AdminAction
 }
 
-function RowError({ message, onReload }: { message: string; onReload?: () => void }) {
-  return (
-    <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-danger">
-      <span>{message}</span>
-      {onReload && (
-        <Button variant="outline" size="xs" onClick={onReload}>
-          Reload
-        </Button>
-      )}
-    </div>
-  )
-}
-
-interface JustNow {
-  voidedJustNow: boolean
-  disputedJustNow: boolean
-  settledJustNow: boolean
-  closedJustNow: boolean
-  publishedJustNow: boolean
-}
-
-// A void is final, so it beats everything, a send-back from this row a moment
-// earlier included. A send-back returns the market to closed, which beats the
-// rest; after that settled wins over closed because a market is closed before
-// it is settled, and closed wins over published because a market published
-// from this row can be closed early from it a moment later.
-function statusAfter(market: MarketOverviewRow, { voidedJustNow, disputedJustNow, settledJustNow, closedJustNow, publishedJustNow }: JustNow) {
-  if (voidedJustNow) return 'voided'
-  if (disputedJustNow) return 'closed'
-  if (settledJustNow) return 'settled'
-  if (closedJustNow) return 'closed'
-  if (publishedJustNow) return 'open'
-  return market.status
+function reloadPage() {
+  window.location.reload()
 }
 
 // One market on the admin markets list ([2.1] #5). Only its creator can act on
@@ -70,55 +41,22 @@ function statusAfter(market: MarketOverviewRow, { voidedJustNow, disputedJustNow
 // administrator may use on anybody's market (market-service.md's notes for
 // #56, point 7), so they are driven from this row rather than the creator
 // check. The ledger refuses a void from an administrator who traded it.
+//
+// Each action's hook lives here rather than in its control, because its error
+// shows in this column, under the question, while its button and modal are in
+// the control beside the others.
 export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminMarketRowProps) {
-  // Set once the close succeeds, so the row repaints without waiting for the
-  // list's next fetch (market-service.md's notes for #56, point 5).
-  const [closedJustNow, setClosedJustNow] = useState(false)
-  const [settledJustNow, setSettledJustNow] = useState(false)
-  // Set once a send-back succeeds, same reasoning as closedJustNow/settledJustNow.
-  const [disputedJustNow, setDisputedJustNow] = useState(false)
-  // Set once a publish succeeds, same reasoning again.
-  const [publishedJustNow, setPublishedJustNow] = useState(false)
-  // Set once a void answers 200, same reasoning again.
-  const [voidedJustNow, setVoidedJustNow] = useState(false)
-  const {
-    showCloseModal, openCloseModal, closeCloseModal,
-    reason, setReason, closing, formError, reasonError, superseded,
-    canConfirmClose, handleClose,
-  } = useCloseMarket(market.id, () => setClosedJustNow(true))
-  const {
-    showSettleModal, openSettleModal, closeSettleModal,
-    settling, formError: settleError, superseded: settleSuperseded, needsReload: settleNeedsReload, handleSettle,
-  } = useSettleMarket(market.id, () => setSettledJustNow(true))
-  const {
-    showPublishModal, openPublishModal, closePublishModal,
-    publishing, formError: publishError, superseded: publishSuperseded, handlePublish,
-  } = usePublishMarket(market.id, () => setPublishedJustNow(true))
+  const { status, markClosed, markSettled, markDisputed, markPublished, markVoided } = useStatusAfterActions(market)
+  const closeAction = useCloseMarket(market.id, markClosed)
+  const settleAction = useSettleMarket(market.id, markSettled)
+  const publishAction = usePublishMarket(market.id, markPublished)
 
   // Only present on an approved row (AdminMarketsPage only looks this up for
   // those), so it also doubles as "is there anything to dispute here."
   const approvedResult = approvalEntry ? toApprovedResult({ id: market.id, question: market.question ?? '' }, approvalEntry) : null
-  const {
-    showDisputeModal, openDisputeModal, closeDisputeModal,
-    reason: disputeReason, setReason: setDisputeReason, submitting: disputing,
-    formError: disputeError, reasonError: disputeReasonError, superseded: disputeSuperseded,
-    canConfirm: canConfirmDispute, handleDispute,
-  } = useDisputeMarket(market.id, approvedResult?.proposalId ?? null, () => setDisputedJustNow(true))
+  const disputeAction = useDisputeMarket(market.id, approvedResult?.proposalId ?? null, markDisputed)
+  const voidAction = useVoidMarket(market.id, markVoided)
 
-  const {
-    showVoidModal, openVoidModal, closeVoidModal,
-    reason: voidReason, setReason: setVoidReason, submitting: voiding,
-    formError: voidError, reasonError: voidReasonError, superseded: voidSuperseded, withdrawn: voidWithdrawn,
-    awaitingFinish, refundsCut, canConfirm: canConfirmVoid, handleVoid,
-  } = useVoidMarket(market.id, () => setVoidedJustNow(true))
-
-  const status = statusAfter(market, { voidedJustNow, disputedJustNow, settledJustNow, closedJustNow, publishedJustNow })
-  // `voidable` is the server's answer, judged on the stored status, and the
-  // control never works it out (market-service.md's void-screen notes,
-  // point 1). A voided market can read voidable — one marked voided by a
-  // direct call to market_service — and still gets no control here: this
-  // screen builds no repeat but Finish (ADR 0025, "Known edges, accepted").
-  const canVoid = market.voidable && status !== 'voided' && !voidSuperseded && !voidWithdrawn && !awaitingFinish
   // Same derivation as everywhere else on this page: a market whose countdown
   // has hit zero has already closed, and cannot be closed again (market-service.md's
   // notes for #56, point 1).
@@ -154,25 +92,17 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
             {disputeWindowLine(market.dispute_window_ends_at, windowOpen)}
           </p>
         )}
-        {formError && (
-          <RowError message={formError} onReload={superseded ? () => window.location.reload() : undefined} />
-        )}
-        {settleError && (
+        {closeAction.formError && <RowError message={closeAction.formError} onReload={closeAction.superseded ? reloadPage : undefined} />}
+        {settleAction.formError && (
           <RowError
-            message={settleError}
-            onReload={(settleSuperseded || settleNeedsReload) ? () => window.location.reload() : undefined}
+            message={settleAction.formError}
+            onReload={(settleAction.superseded || settleAction.needsReload) ? reloadPage : undefined}
           />
         )}
-        {disputeError && (
-          <RowError message={disputeError} onReload={disputeSuperseded ? () => window.location.reload() : undefined} />
-        )}
-        {publishError && (
-          <RowError message={publishError} onReload={publishSuperseded ? () => window.location.reload() : undefined} />
-        )}
-        {voidError && (
-          <RowError message={voidError} onReload={voidSuperseded ? () => window.location.reload() : undefined} />
-        )}
-        {status === 'voided' && refundsCut && (
+        {disputeAction.formError && <RowError message={disputeAction.formError} onReload={disputeAction.superseded ? reloadPage : undefined} />}
+        {publishAction.formError && <RowError message={publishAction.formError} onReload={publishAction.superseded ? reloadPage : undefined} />}
+        {voidAction.formError && <RowError message={voidAction.formError} onReload={voidAction.superseded ? reloadPage : undefined} />}
+        {status === 'voided' && voidAction.refundsCut && (
           <p className="mt-1 text-xs text-subtle">The pool could not cover every refund, so each was cut by the same share.</p>
         )}
       </div>
@@ -187,11 +117,7 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
             Resume draft
           </Link>
         )}
-        {isMine && status === 'submitted' && !publishSuperseded && (
-          <Button variant="outline" size="xs" onClick={openPublishModal}>
-            Publish
-          </Button>
-        )}
+        <PublishMarketControl canPublish={isMine && status === 'submitted'} publishAction={publishAction} />
         {isMine && status === 'closed' && (
           <Link to={`/admin/markets/${market.id}/propose-outcome`} className={buttonClass('outline', 'xs')}>
             Propose Outcome
@@ -207,139 +133,12 @@ export default function AdminMarketRow({ market, isMine, approvalEntry }: AdminM
             </Link>
           </>
         )}
-        {canClose && !superseded && (
-          <Button variant="outline" size="xs" onClick={openCloseModal}>
-            Close
-          </Button>
-        )}
-        {market.settleable && status !== 'settled' && !settleSuperseded && (
-          <Button variant="outline" size="xs" onClick={openSettleModal}>
-            Settle
-          </Button>
-        )}
-        {windowOpen && approvedResult && !disputeSuperseded && (
-          <Button variant="outline" size="xs" onClick={openDisputeModal}>
-            Dispute result
-          </Button>
-        )}
-        {canVoid && (
-          <Button variant="outline" size="xs" onClick={openVoidModal}>
-            Void market
-          </Button>
-        )}
-        {awaitingFinish && status !== 'voided' && (
-          <Button variant="outline" size="xs" onClick={handleVoid} disabled={voiding}>
-            {voiding ? 'Finishing…' : 'Finish'}
-          </Button>
-        )}
+        <CloseMarketControl marketId={market.id} canClose={canClose} closeAction={closeAction} />
+        <SettleMarketControl canSettle={market.settleable && status !== 'settled'} settleAction={settleAction} />
+        <DisputeResultControl marketId={market.id} windowOpen={windowOpen} approvedResult={approvedResult} disputeAction={disputeAction} />
+        <VoidMarketControl marketId={market.id} voidable={market.voidable} isVoided={status === 'voided'} voidAction={voidAction} />
         <StatusBadge status={status} />
       </div>
-
-      {showCloseModal && (
-        <ReasonModal
-          ariaLabel="Close market"
-          title="Close this market early?"
-          description="Trading stops immediately and cannot be undone. The reason goes into the admin log and cannot be edited afterwards."
-          fieldId={`close-reason-${market.id}`}
-          reason={reason}
-          onReasonChange={setReason}
-          reasonError={reasonError}
-          placeholder="Explain why this market is being closed early."
-          canConfirm={canConfirmClose}
-          isSubmitting={closing}
-          confirmLabel="Confirm Close"
-          confirmingLabel="Closing…"
-          onCancel={closeCloseModal}
-          onConfirm={handleClose}
-        />
-      )}
-
-      {showPublishModal && (
-        <PublishConfirmModal isSubmitting={publishing} onCancel={closePublishModal} onConfirm={handlePublish} />
-      )}
-
-      {showSettleModal && (
-        <ConfirmModal
-          ariaLabel="Settle market"
-          title="Settle this market?"
-          description="Every winning holder is paid out immediately. This cannot be undone."
-          isSubmitting={settling}
-          confirmLabel="Confirm Settle"
-          confirmingLabel="Settling…"
-          onCancel={closeSettleModal}
-          onConfirm={handleSettle}
-        />
-      )}
-
-      {showVoidModal && (
-        <ReasonModal
-          ariaLabel="Void market"
-          title="Void this market?"
-          description="This cannot be undone. The market ends with no winner, and every holder is refunded what their remaining shares cost. The reason is shown to traders and goes into the admin log."
-          fieldId={`void-reason-${market.id}`}
-          reason={voidReason}
-          onReasonChange={setVoidReason}
-          reasonError={voidReasonError}
-          placeholder="Explain why this market has no correct answer."
-          canConfirm={canConfirmVoid}
-          isSubmitting={voiding}
-          confirmLabel="Confirm Void"
-          confirmingLabel="Voiding…"
-          onCancel={closeVoidModal}
-          onConfirm={handleVoid}
-        />
-      )}
-
-      {showDisputeModal && approvedResult && (
-        <ReasonModal
-          ariaLabel="Dispute result"
-          title="Dispute this result?"
-          description="The market goes back to closed. The outcome must be proposed and approved again. The reason goes into the admin log and cannot be edited afterwards."
-          details={
-            // market-service.md's dispute-screen notes, point 3: show what
-            // was approved, so an admin disputing one of several approved
-            // rows is not asked to overturn a result they cannot see.
-            <dl className="mb-4 flex flex-col gap-2 text-[13px]">
-              <div>
-                <dt className="text-[11px] font-semibold text-subtle uppercase">Winner</dt>
-                <dd className="text-smu-navy">{approvedResult.winningOutcome}</dd>
-              </div>
-              {(approvedResult.evidenceUrl || approvedResult.evidenceNote) && (
-                <div>
-                  <dt className="text-[11px] font-semibold text-subtle uppercase">Evidence</dt>
-                  {approvedResult.evidenceUrl && (
-                    <dd>
-                      <a href={approvedResult.evidenceUrl} target="_blank" rel="noreferrer" className="text-info underline">
-                        {approvedResult.evidenceUrl}
-                      </a>
-                    </dd>
-                  )}
-                  {approvedResult.evidenceNote && <dd className="text-smu-navy">{approvedResult.evidenceNote}</dd>}
-                </div>
-              )}
-              <div>
-                <dt className="text-[11px] font-semibold text-subtle uppercase">Proposed by</dt>
-                <dd className="text-smu-navy">{approvedResult.proposedByUsername}</dd>
-              </div>
-              <div>
-                <dt className="text-[11px] font-semibold text-subtle uppercase">Approved by</dt>
-                <dd className="text-smu-navy">{approvedResult.approvedByUsername}</dd>
-              </div>
-            </dl>
-          }
-          fieldId={`dispute-reason-${market.id}`}
-          reason={disputeReason}
-          onReasonChange={setDisputeReason}
-          reasonError={disputeReasonError}
-          placeholder="Explain why this approved result is being disputed."
-          canConfirm={canConfirmDispute}
-          isSubmitting={disputing}
-          confirmLabel="Confirm Dispute"
-          confirmingLabel="Disputing…"
-          onCancel={closeDisputeModal}
-          onConfirm={handleDispute}
-        />
-      )}
     </Card>
   )
 }
