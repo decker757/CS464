@@ -14,9 +14,9 @@
       }
     ],
     "typescript/no-floating-promises": "error",
-    "typescript/unbound-method": "off",
-    "typescript/await-thenable": "off",
-    "typescript/no-misused-spread": "off",
-    "typescript/no-useless-default-assignment": "off"
+    "typescript/unbound-method": "error",
+    "typescript/await-thenable": "error",
+    "typescript/no-misused-spread": "error",
+    "typescript/no-useless-default-assignment": "error"
   }
 }
