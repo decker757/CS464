@@ -94,12 +94,18 @@ export default function MarketDetailPage() {
   const now = useMarketClock(market)
 
   // The outcome the trading panel trades, chosen on the price blocks (#429):
-  // one choice, made where its price is shown, rather than a second toggle in
-  // the panel kept in step with it. Derived rather than seeded, so a move to
-  // another market, whose outcome ids differ, starts on its first outcome
-  // instead of an id it does not have.
-  const [chosenOutcomeId, setChosenOutcomeId] = useState<string | null>(null)
-  const tradedOutcomeId = market?.outcomes.find(o => o.id === chosenOutcomeId)?.id ?? market?.outcomes[0]?.id ?? ''
+  // one choice, made where its price is shown, and handed to the panel.
+  // Tagged with the market it was made on, like `loaded` and `held`, and
+  // dropped as soon as the route leaves that market — so the next market,
+  // and this one again after Back, opens on its first outcome rather than on
+  // a choice from an earlier visit.
+  const [choice, setChoice] = useState<{ marketId: string; outcomeId: string } | null>(null)
+  if (choice !== null && choice.marketId !== id) setChoice(null)
+  const choiceHere = choice !== null && choice.marketId === id ? choice.outcomeId : null
+  const tradedOutcomeId = choiceHere ?? market?.outcomes[0]?.id ?? ''
+  const handleChooseOutcome = (outcomeId: string) => {
+    if (id) setChoice({ marketId: id, outcomeId })
+  }
 
   // What the trader holds of each of this market's outcomes, for the sell
   // clamp ([T-2] #357): the whole position, and the part of it their own live
@@ -318,7 +324,7 @@ export default function MarketDetailPage() {
             prices={prices}
             isVoided={isVoided}
             winningOutcomeId={winningOutcome?.id ?? null}
-            choice={tradeable ? { outcomeId: tradedOutcomeId, onChoose: setChosenOutcomeId } : null}
+            choice={tradeable ? { outcomeId: tradedOutcomeId, onChoose: handleChooseOutcome } : null}
             className="mb-3"
           />
 

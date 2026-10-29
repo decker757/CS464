@@ -92,12 +92,16 @@ function OutcomeFace({ outcome, price, resultWord, isChosen }: OutcomeFaceProps)
  * Each outcome's price, and — while the market trades — the control that
  * picks which outcome the trading panel trades (#429). Polymarket and Kalshi
  * make the price the button, so choosing a side and seeing what it costs are
- * one control rather than a block nobody could click above an unpriced toggle.
+ * one control, not two.
  *
  * Native radios, under a covering input the whole block answers to: one tab
  * stop, the arrow keys and the checked state come with them, and only the
  * look is written here. The chosen block is filled, which is colour, and
  * also carries a tick where the others have an empty ring, which is not.
+ *
+ * The real radio is invisible, so the block draws the focus. An outline
+ * rather than a ring: a ring is a box-shadow, which forced-colours mode
+ * removes, and then nothing on the page would say where the focus is.
  */
 export default function OutcomePrices({ marketId, outcomes, prices, isVoided, winningOutcomeId, choice, className = '' }: OutcomePricesProps) {
   const hasWinner = winningOutcomeId !== null
@@ -131,7 +135,7 @@ export default function OutcomePrices({ marketId, outcomes, prices, isVoided, wi
         return (
           <div
             key={outcome.id}
-            className={`relative min-w-0 rounded-2xl border px-6 py-5 text-center shadow-card transition has-focus-visible:ring-3 has-focus-visible:ring-smu-gold/60 ${blockClass}`}
+            className={`relative min-w-0 rounded-2xl border px-6 py-5 text-center shadow-card transition has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-smu-navy ${blockClass}`}
           >
             <input
               type="radio"
@@ -150,7 +154,11 @@ export default function OutcomePrices({ marketId, outcomes, prices, isVoided, wi
             >
               {isChosen && <CheckIcon />}
             </span>
-            <OutcomeFace outcome={outcome} price={price} resultWord={null} isChosen={isChosen} />
+            {/* Hidden from a screen reader, which hears the label and the
+                price once, in the radio's name, rather than twice. */}
+            <div aria-hidden="true">
+              <OutcomeFace outcome={outcome} price={price} resultWord={null} isChosen={isChosen} />
+            </div>
           </div>
         )
       })}
