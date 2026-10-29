@@ -52,13 +52,12 @@ export function browseList(page: Page): Locator {
 /**
  * Sets `params` on every request the page sends to `pathname`, on its way out:
  * how a test shrinks the page size, or scopes a list to its own run, while
- * everything else stays real. Call it before the page is opened.
+ * everything else stays real. Call it before opening the page that sends
+ * the request.
  *
  * A spec that looks for its market on the admin markets list sets `q` on
- * `/markets/overview` to the market's question (#493). That list sorts the
- * soonest close first and a spec's market closes in thirty days, so unscoped
- * it sits behind everything earlier runs left, and paging down to it grew
- * with the database until specs hit the test timeout.
+ * `/markets/overview` to its own question, so the list holds that market
+ * whatever earlier runs left (#493).
  */
 export async function setQueryParams(page: Page, pathname: string, params: Record<string, string>): Promise<void> {
   await page.route(
