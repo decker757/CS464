@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -483,13 +483,175 @@ describe('TradingPanel', () => {
     await screen.findByLabelText('trade preview')
 
     await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
-    expect(await screen.findByText(/something went wrong/i)).toBeInTheDocument()
+    expect(await screen.findByText(/could not be confirmed/i)).toBeInTheDocument()
 
     await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
     expect(await screen.findByText(/bought/i)).toBeInTheDocument()
 
     expect(attempts).toBe(2)
     expect(keys[0]).toBe(keys[1])
+  })
+
+  it('keeps the key for a retry that writes the same quantity differently, which the ledger reads as the same trade', async () => {
+    // ledger-service.md compares quantity numerically, so 10 and 10.0 are
+    // one trade. A new key here would buy a second time if the first went
+    // through.
+    mockPreview(previewResponse())
+    const keys: unknown[] = []
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async ({ request }) => {
+        const body = await request.json() as Record<string, unknown>
+        keys.push(body.idempotency_key)
+        return HttpResponse.error()
+      }),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    await screen.findByText(/could not be confirmed/i)
+
+    await typeQuantity(actor, '.0')
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    await waitFor(() => expect(keys).toHaveLength(2))
+
+    expect(keys[0]).toBe(keys[1])
+  })
+
+  it('says a trade with no answer could not be confirmed, naming it, after the trader picked another outcome', async () => {
+    mockPreview(previewResponse())
+    let answerTrade: () => void = () => {}
+    const tradeAnswered = new Promise<void>(resolve => { answerTrade = resolve })
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async () => {
+        await tradeAnswered
+        return HttpResponse.error()
+      }),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { rerender } = renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    rerender(panel({ outcomeId: 'o-no' }))
+    answerTrade()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/buy of 10 Yes could not be confirmed/i)
+  })
+
+  it('says a buy with no answer could not be confirmed after the trader switched to Sell on an outcome they hold none of', async () => {
+    mockPreview(previewResponse())
+    let answerTrade: () => void = () => {}
+    const tradeAnswered = new Promise<void>(resolve => { answerTrade = resolve })
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async () => {
+        await tradeAnswered
+        return HttpResponse.error()
+      }),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ heldByOutcome: {} })
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    await actor.click(screen.getByRole('button', { name: 'Sell' }))
+    answerTrade()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/buy of 10 Yes could not be confirmed/i)
+  })
+
+  it('sends a sell of the same outcome and quantity with a new key, not the one a buy with no answer still holds', async () => {
+    mockPreview(previewResponse())
+    const sent: Record<string, unknown>[] = []
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async ({ request }) => {
+        sent.push(await request.json() as Record<string, unknown>)
+        return HttpResponse.error()
+      }),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    await screen.findByText(/could not be confirmed/i)
+
+    await actor.click(screen.getByRole('button', { name: 'Sell' }))
+    await act(() => vi.advanceTimersByTimeAsync(300))
+    await actor.click(await screen.findByRole('button', { name: /^sell yes$/i }))
+    await waitFor(() => expect(sent).toHaveLength(2))
+
+    expect(sent[1]).toMatchObject({ outcome_id: 'o-yes', side: 'sell' })
+    expect(sent[1].idempotency_key).not.toBe(sent[0].idempotency_key)
+  })
+
+  it('retries a buy with no answer under its own key, even after another trade went through in between', async () => {
+    // The message tells the trader that sending the same trade again will not
+    // make it twice. That has to hold whatever they traded since, or a buy
+    // that did commit is bought a second time under a new key.
+    mockPreview(previewResponse())
+    const sent: Record<string, unknown>[] = []
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async ({ request }) => {
+        const body = await request.json() as Record<string, unknown>
+        sent.push(body)
+        if (body.outcome_id === 'o-no') {
+          return HttpResponse.json({
+            transaction_id: 'tx-no', user_id: 'u1', market_id: MARKET_ID,
+            outcome_id: 'o-no', side: 'buy', quantity: '5.0000', total: '-2.5000', state_version: 2,
+          }, { status: 201 })
+        }
+        return HttpResponse.error()
+      }),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { rerender } = renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    await screen.findByText(/could not be confirmed/i)
+
+    rerender(panel({ outcomeId: 'o-no' }))
+    await actor.clear(screen.getByLabelText('Quantity (shares)'))
+    await typeQuantity(actor, '5')
+    await actor.click(await screen.findByRole('button', { name: /^buy no$/i }))
+    await screen.findByText(/bought/i)
+
+    rerender(panel({ outcomeId: 'o-yes' }))
+    await typeQuantity(actor, '10')
+    await actor.click(await screen.findByRole('button', { name: /^buy yes$/i }))
+    await waitFor(() => expect(sent).toHaveLength(3))
+
+    expect(sent[2]).toMatchObject({ outcome_id: 'o-yes', quantity: '10' })
+    expect(sent[2].idempotency_key).toBe(sent[0].idempotency_key)
+  })
+
+  it('sends a trade on another outcome with a new key, not the one a trade with no answer still holds', async () => {
+    mockPreview(previewResponse())
+    const sent: Record<string, unknown>[] = []
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async ({ request }) => {
+        sent.push(await request.json() as Record<string, unknown>)
+        return HttpResponse.error()
+      }),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { rerender } = renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    await screen.findByText(/could not be confirmed/i)
+
+    rerender(panel({ outcomeId: 'o-no' }))
+    await act(() => vi.advanceTimersByTimeAsync(300))
+    await actor.click(await screen.findByRole('button', { name: /^buy no$/i }))
+    await waitFor(() => expect(sent).toHaveLength(2))
+
+    expect(sent[1]).toMatchObject({ outcome_id: 'o-no' })
+    expect(sent[1].idempotency_key).not.toBe(sent[0].idempotency_key)
   })
 
   it('keeps the same idempotency key across a retry after a 500', async () => {
