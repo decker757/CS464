@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
-import { loadUntilShown, logIn } from './support/browser'
+import { logIn, marketCard, setQueryParams } from './support/browser'
 
 // [FE][2.4] #434, across two services in one browser. The trade log's rows
 // come from the ledger, which knows a trader only by the id in a signed token
@@ -15,8 +15,9 @@ test('an admin reads traders by name on the trade log and clicks through to one 
   await buy(trader, market, 'Yes', '5')
 
   await logIn(page, admin)
+  await setQueryParams(page, '/markets/overview', { q: market.question })
   await page.goto('/admin/markets')
-  const card = await loadUntilShown(page, market.question)
+  const card = marketCard(page, market.question)
   await card.getByRole('link', { name: 'Price History' }).click()
 
   // Newest first on the trade log; row 0 is the header. The User column is

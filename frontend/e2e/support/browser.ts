@@ -50,34 +50,14 @@ export function browseList(page: Page): Locator {
 }
 
 /**
- * The card for `question` on the admin markets list, clicking Load more until
- * it is shown or there is nothing left to load. The list is paged ([2.1] #210),
- * and a database earlier runs have filled holds more than one page. Call it
- * right after opening the page, or after `selectTab`, never after a bare tab
- * click (see `selectTab`).
- */
-export async function loadUntilShown(page: Page, question: string): Promise<Locator> {
-  const card = marketCard(page, question)
-  const loadMore = page.getByRole('button', { name: 'Load more' })
-  // While a page is on its way the button reads "Loading…", so "Load more"
-  // is briefly absent; wait it out rather than read that as the last page.
-  const loadingMore = page.getByRole('button', { name: 'Loading…' })
-  // On a fresh page the tabs render in the same pass as "Loading markets…", so
-  // once they are visible the first page is loading or loaded. After a tab
-  // change, selectTab has already waited for that tab's first page to answer.
-  await expect(page.getByRole('tablist')).toBeVisible()
-  await expect(page.getByText('Loading markets…')).toHaveCount(0)
-  while ((await card.count()) === 0 && (await loadMore.count()) > 0) {
-    await loadMore.click()
-    await expect(loadingMore).toHaveCount(0)
-  }
-  return card
-}
-
-/**
  * Sets `params` on every request the page sends to `pathname`, on its way out:
  * how a test shrinks the page size, or scopes a list to its own run, while
- * everything else stays real.
+ * everything else stays real. Call it before opening the page that sends
+ * the request.
+ *
+ * A spec that looks for its market on the admin markets list sets `q` on
+ * `/markets/overview` to its own question, so the list holds that market
+ * whatever earlier runs left (#493).
  */
 export async function setQueryParams(page: Page, pathname: string, params: Record<string, string>): Promise<void> {
   await page.route(
@@ -123,8 +103,8 @@ export async function setPricesWeekAgo(page: Page, marketId: string, pricesWeekA
  * to the old list. The new tab's request is sent by the same effect that
  * resets its list to "Loading markets…" (usePagedMarkets). That render is
  * queued before the request leaves, and the answer needs a round trip, so by
- * the time it has answered the old rows are gone and what loadUntilShown
- * reads is the new tab's list. A timing argument, not a strict ordering, but
+ * the time it has answered the old rows are gone and what the test reads is
+ * the new tab's list. A timing argument, not a strict ordering, but
  * one with a network round trip of margin.
  */
 export async function selectTab(page: Page, name: RegExp): Promise<void> {

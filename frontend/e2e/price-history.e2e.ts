@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
-import { loadUntilShown, logIn } from './support/browser'
+import { logIn, marketCard, setQueryParams } from './support/browser'
 
 // [FE][2.4] #8, through the real ledger's #63 endpoints. A unit test fakes
 // GET .../price-history and GET .../trades with MSW, so a renamed field
@@ -12,8 +12,9 @@ test('an admin sees a trade in the price history and the trade log', async ({ pa
   await buy(trader, market, 'Yes', '5')
 
   await logIn(page, admin)
+  await setQueryParams(page, '/markets/overview', { q: market.question })
   await page.goto('/admin/markets')
-  const card = await loadUntilShown(page, market.question)
+  const card = marketCard(page, market.question)
   await card.getByRole('link', { name: 'Price History' }).click()
 
   await expect(page.getByText(market.question)).toBeVisible()
