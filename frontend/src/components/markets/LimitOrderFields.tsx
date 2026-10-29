@@ -10,8 +10,9 @@ import { controlClass } from '../ui/controlClass'
 
 interface LimitOrderFieldsProps {
   marketId: string
-  // Chosen above, in the panel the two order types share, so a trader picks
-  // a side and an outcome once rather than twice.
+  // The side is chosen in the panel the two order types share, and the
+  // outcome on the market page's price blocks (#429), so a trader picks each
+  // once rather than once per order type.
   side: TradeSide
   outcomeId: string
   outcomeLabel: string
@@ -77,8 +78,8 @@ export default function LimitOrderFields({
   const [submitting, setSubmitting] = useState(false)
   // Each message is kept with the input it was written for, and shown only
   // while that input is still what the ticket holds — TradingPanel's
-  // `inputKey`, for the same reason. The side and the outcome are chosen in
-  // the panel above and arrive as props, so without this a refusal or a
+  // `inputKey`, for the same reason. The side and the outcome are chosen
+  // outside this ticket and arrive as props, so without this a refusal or a
   // "placed" line about a buy of Yes would sit under a sell of No.
   const inputKey = `${side}:${outcomeId}:${limitPrice}:${quantity}`
   const [submitErrorFor, setSubmitErrorFor] = useState('')

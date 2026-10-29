@@ -141,6 +141,28 @@ test('no list scrolls sideways with the longest username, an unbroken question o
   }
 })
 
+// [FE] #429. On an open market the outcome prices are the control that picks
+// what the panel trades, and a market may have ten outcomes of up to 120
+// characters each. The blocks wrap onto rows rather than drawing ten columns,
+// and a label breaks inside its block: the worst case is set up here rather
+// than left to whatever the database holds.
+test('an open market with ten unbroken outcomes does not scroll sideways', async ({ page }) => {
+  const admin = await registerAdmin('frame_outcomes')
+  const trader = await registerTrader('frame_chooser')
+  // The longest label market_service accepts, ten times over, and unique.
+  const labels = Array.from({ length: 10 }, (_, index) => `${'W'.repeat(119)}${index}`)
+  const market = await publishMarket(admin, `Do ten outcomes fit ${uniqueName('ten')}?`, labels)
+  const screens: Screen[] = [{ path: `/markets/${market.id}`, heading: market.question }]
+
+  await logIn(page, trader)
+
+  expect(await overflowingScreens(page, screens, PHONE)).toEqual([])
+  expect(await overflowingScreens(page, screens, DESKTOP)).toEqual([])
+  // Measured with the outcomes drawn as choices, which is the open market's
+  // layout, rather than as the figures a stopped one shows.
+  await expect(page.getByRole('radio')).toHaveCount(10)
+})
+
 test('on a phone the navigation sits behind a menu button, and on a desktop it is in the bar', async ({ page }) => {
   // What jsdom cannot show the unit tests: that the links really are out of
   // sight until the button is pressed, and in sight without it at 1440.

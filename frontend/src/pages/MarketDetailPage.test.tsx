@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, isInaccessible, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse, ws } from 'msw'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
@@ -231,6 +231,10 @@ describe('MarketDetailPage', () => {
     act(() => wsClient!.send(JSON.stringify({ type: 'price', ...priceFrame(6, '0.7000', '0.3000') })))
     await waitFor(() => expect(screen.getByLabelText('Yes price')).toHaveTextContent('70.0%'))
     expect(screen.getByLabelText('No price')).toHaveTextContent('30.0%')
+    // The price is also in the name of the control that picks the outcome
+    // (#429), so that follows the socket too.
+    expect(screen.getByRole('radio', { name: 'Yes, 70.0%' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'No, 30.0%' })).toBeInTheDocument()
   })
 
   // The card's words, not a future closing date (#429): the badge and the
@@ -255,6 +259,114 @@ describe('MarketDetailPage', () => {
     expect(screen.getByLabelText('Quantity (shares)')).toBeInTheDocument()
   })
 
+  // #429 point 2: choosing an outcome and seeing its price are one control,
+  // the price block, and the page owns the choice it hands the panel.
+  describe('choosing an outcome by its price', () => {
+    function serveSnapshot(yes: string, no: string) {
+      server.use(http.get(SNAPSHOT, () => HttpResponse.json(priceFrame(5, yes, no))))
+    }
+
+    it('trades and quotes the outcome whose price was clicked', async () => {
+      serveSnapshot('0.6000', '0.4000')
+      const quotedOutcomes: (string | null)[] = []
+      server.use(
+        http.get(PREVIEW, ({ request }) => {
+          quotedOutcomes.push(new URL(request.url).searchParams.get('outcome_id'))
+          return HttpResponse.json({ ...tradeQuote(), outcome_id: 'o2' })
+        }),
+      )
+      const actor = userEvent.setup()
+      renderPage()
+
+      const no = await screen.findByRole('radio', { name: 'No, 40.0%' })
+      await actor.click(no)
+
+      expect(no).toBeChecked()
+      expect(screen.getByRole('radio', { name: 'Yes, 60.0%' })).not.toBeChecked()
+      expect(screen.getByText(/^Trading/)).toHaveTextContent(/^Trading No/)
+      await actor.type(screen.getByLabelText('Quantity (shares)'), '10')
+      await waitFor(() => expect(quotedOutcomes).toContain('o2'))
+      expect(quotedOutcomes).not.toContain('o1')
+      expect(await screen.findByLabelText('trade preview')).toHaveTextContent('50.0% → 47.5%')
+      expect(screen.getByRole('button', { name: /^buy no$/i })).toBeInTheDocument()
+    })
+
+    // No price yet is not a price of zero, or of half: the control says it
+    // is still loading rather than naming a number nobody quoted.
+    it('starts on the first outcome, named without a price until one arrives', async () => {
+      renderPage()
+
+      expect(await screen.findByRole('radio', { name: 'Yes, price loading' })).toBeChecked()
+      expect(screen.getByRole('radio', { name: 'No, price loading' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /^buy yes$/i })).toBeInTheDocument()
+    })
+
+    // The control's name already says "No, 40.0%", so the label and figure
+    // drawn in the block are hidden from a screen reader, which would
+    // otherwise hear each outcome twice.
+    it('says each outcome and its price once to a screen reader, in its control\'s name', async () => {
+      serveSnapshot('0.6000', '0.4000')
+      renderPage()
+      expect(await screen.findByRole('radio', { name: 'No, 40.0%' })).toBeInTheDocument()
+
+      expect(isInaccessible(screen.getByLabelText('No price'))).toBe(true)
+      expect(isInaccessible(screen.getByText('No', { selector: 'p' }))).toBe(true)
+    })
+
+    // Outcome ids differ between markets, so the choice made on one cannot
+    // carry to the next: the panel would trade an id the market does not
+    // have, under no label at all. Nor does it wait for a return: Back opens
+    // the first market as any visit does, on its first outcome.
+    it('starts each market it opens on its first outcome, the one Back returns to included', async () => {
+      const otherMarket = {
+        ...baseMarket,
+        id: 'mkt-other',
+        question: 'Will the other market resolve yes?',
+        outcomes: [{ id: 'p1', position: 0, label: 'Up' }, { id: 'p2', position: 1, label: 'Down' }],
+      }
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, ({ params }) =>
+          HttpResponse.json(params.id === 'mkt-other' ? otherMarket : baseMarket),
+        ),
+      )
+      const actor = userEvent.setup()
+      const router = renderMovableRouter('mkt-abc')
+      await actor.click(await screen.findByRole('radio', { name: /^No,/ }))
+      expect(screen.getByRole('button', { name: /^buy no$/i })).toBeInTheDocument()
+
+      await act(() => router.navigate('/markets/mkt-other'))
+
+      expect(await screen.findByRole('radio', { name: /^Up,/ })).toBeChecked()
+      expect(screen.getByRole('button', { name: /^buy up$/i })).toBeInTheDocument()
+
+      await act(() => router.navigate(-1))
+
+      expect(await screen.findByRole('radio', { name: /^Yes,/ })).toBeChecked()
+      expect(screen.getByRole('button', { name: /^buy yes$/i })).toBeInTheDocument()
+    })
+
+    // A block that looks pickable on a market nobody can trade reads as a
+    // buy control that does nothing, so its price is shown as a figure and
+    // not as a choice. The clock is the authority (ADR 0011), so the open
+    // market past its close time is the sweep window, still `open` in the
+    // status column.
+    it.each([
+      { name: 'an admin closed', overrides: { status: 'closed' } },
+      { name: 'the clock has closed and the sweep has not', overrides: { close_time: '2025-08-09T12:00:00Z' } },
+    ])('shows the prices and offers no outcome to pick on a market $name', async ({ overrides }) => {
+      serveSnapshot('0.6000', '0.4000')
+      server.use(
+        http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...baseMarket, ...overrides })),
+      )
+      renderPage()
+      expect(await screen.findByText(/trading is closed/i)).toBeInTheDocument()
+
+      await waitFor(() => expect(screen.getByLabelText('Yes price')).toHaveTextContent('60.0%'))
+      expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
+      expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+    })
+  })
+
   // The panel's sell clamp needs the trader's position on *this* market and
   // outcome, and the portfolio route carries every market's (#357). The join
   // is this page's job, so only this test can catch it reading the wrong row.
@@ -273,7 +385,8 @@ describe('MarketDetailPage', () => {
 
     expect(await screen.findByText("You don't hold any Yes shares.")).toBeInTheDocument()
 
-    await actor.click(screen.getByRole('button', { name: 'No' }))
+    // No by its price block, which is where the outcome is chosen (#429).
+    await actor.click(screen.getByRole('radio', { name: /^No,/ }))
 
     expect(screen.getByText(/you hold 6\.0000 shares/i)).toBeInTheDocument()
   })
@@ -530,11 +643,14 @@ describe('MarketDetailPage', () => {
       )
       renderPage()
       expect(await screen.findByRole('button', { name: /buy yes/i })).toBeInTheDocument()
+      expect(screen.getByRole('radiogroup', { name: 'Outcome to trade' })).toBeInTheDocument()
 
       await act(() => vi.advanceTimersByTimeAsync(5000))
 
       expect(screen.getByText(/trading is closed/i)).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /buy/i })).not.toBeInTheDocument()
+      // The price blocks stop being choices at the same instant (#429).
+      expect(screen.queryByRole('radio')).not.toBeInTheDocument()
     })
   })
 

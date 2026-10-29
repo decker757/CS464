@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, startingGrant, uniqueName } from './support/backend'
-import { logIn } from './support/browser'
+import { logIn, outcomeChoice } from './support/browser'
 import { creditsLess, creditsPlus, formatPreciseCredits, formatRoundedCredits } from './support/credits'
 
 // [FE][T-2/T-3] #49, through the real ledger: the preview and trade routes,
@@ -27,7 +27,7 @@ test('a trader buys, then sells part of it, through the real trading panel', asy
 
   const balance = page.getByLabel('available balance')
 
-  await page.getByRole('button', { name: 'Yes', exact: true }).click()
+  await outcomeChoice(page, 'Yes').click()
   await page.getByLabel('Quantity (shares)').fill('10')
   const preview = page.getByLabel('trade preview')
   await expect(preview.getByText('8.8592 credits', { exact: true })).toBeVisible()
@@ -117,21 +117,21 @@ test('selling an outcome the trader holds none of offers to buy it instead', asy
   await page.goto(`/markets/${market.id}`)
 
   const buyToggle = page.getByRole('button', { name: 'Buy', exact: true })
-  const noToggle = page.getByRole('button', { name: 'No', exact: true })
+  const noChoice = outcomeChoice(page, 'No')
   const quantity = page.getByLabel('Quantity (shares)')
   // The panel's own live region, so the sentence is both in the panel and
   // announced.
   const holdsNone = page.getByRole('status').filter({ hasText: "You don't hold any No shares." })
 
   await page.getByRole('button', { name: 'Sell', exact: true }).click()
-  await noToggle.click()
+  await noChoice.click()
 
   await expect(holdsNone).toBeVisible()
   await expect(quantity).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Buy No instead' }).click()
   await expect(buyToggle).toHaveAttribute('aria-pressed', 'true')
-  await expect(noToggle).toHaveAttribute('aria-pressed', 'true')
+  await expect(noChoice).toBeChecked()
   await expect(quantity).toBeFocused()
 
   await quantity.fill('1')
@@ -142,4 +142,45 @@ test('selling an outcome the trader holds none of offers to buy it instead', asy
   await page.getByRole('button', { name: 'Sell', exact: true }).click()
   await expect(page.getByLabel('shares held')).toContainText('You hold 1.0000 shares')
   await expect(holdsNone).toHaveCount(0)
+})
+
+// #429 point 2, through the real ledger: the price a trader clicks is the
+// outcome the panel trades. The unit tests fake the snapshot and the preview
+// with MSW, so only this sees the ledger's own prices name the controls, and
+// the outcome chosen on one reach the real preview and trade routes.
+test("clicking an outcome's price makes it the outcome the panel trades and quotes", async ({ page }) => {
+  const admin = await registerAdmin('tc_admin')
+  const market = await publishMarket(admin, `Will ${uniqueName('choose')} happen?`)
+  const trader = await registerTrader('tc_trader')
+  // 50 Yes shares at b = 100 (support/backend.ts) move the book to Yes 62.3%
+  // and No 37.8%, so the two controls quote different prices.
+  const other = await registerTrader('tc_other')
+  await buy(other, market, 'Yes', '50.0000')
+
+  await logIn(page, trader)
+  await page.goto(`/markets/${market.id}`)
+
+  const yes = outcomeChoice(page, 'Yes')
+  const no = outcomeChoice(page, 'No')
+  // The price is part of the control, not beside it.
+  await expect(no).toHaveAccessibleName('No, 37.8%')
+  await expect(yes).toBeChecked()
+
+  await no.click()
+
+  await expect(no).toBeChecked()
+  await expect(yes).not.toBeChecked()
+  await expect(page.getByText(/^Trading No\./)).toBeVisible()
+  await page.getByLabel('Quantity (shares)').fill('10')
+  await expect(page.getByLabel('trade preview')).toContainText('37.8% → ')
+  await page.getByRole('button', { name: /^buy no$/i }).click()
+  await expect(page.getByText(/^Bought 10 No for /)).toBeVisible()
+
+  // A radio group, in the real browser under the styling that hides the
+  // native circle: the arrow keys move the choice, and the panel with it.
+  await no.focus()
+  await page.keyboard.press('ArrowLeft')
+  await expect(yes).toBeChecked()
+  await expect(yes).toBeFocused()
+  await expect(page.getByText(/^Trading Yes\./)).toBeVisible()
 })

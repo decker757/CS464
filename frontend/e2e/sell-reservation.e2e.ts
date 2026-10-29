@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
-import { logIn } from './support/browser'
+import { logIn, outcomeChoice } from './support/browser'
 
 // #410's frontend half (#494): the sell control offers
 // `quantity - reserved_shares`, and both come from `GET /ledger/portfolio/me`.
@@ -32,7 +32,7 @@ test('a resting sell order lowers what the panel offers to sell, and cancelling 
   // A sell well above the current price rests instead of filling, holding
   // back the shares it would sell.
   await page.getByRole('button', { name: 'Limit', exact: true }).click()
-  await page.getByRole('button', { name: 'Yes', exact: true }).click()
+  await outcomeChoice(page, 'Yes').click()
   await page.getByRole('button', { name: /^sell$/i }).click()
   await page.getByLabel('Limit price').fill('0.95')
   await page.getByLabel('Quantity (shares)').fill('20')
