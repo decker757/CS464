@@ -800,8 +800,8 @@ async def test_the_search_treats_like_wildcards_and_the_escape_as_text(
 ) -> None:
     """#555: "`%`, `_` and `\\` match as text", as on `/public/markets`. The
     overview's own wiring: a bare `ilike` passes the test above and fails
-    here. Unescaped, `2%` and `_` match every question below, and `\\T` is a
-    dangling escape that raises."""
+    here. Unescaped, `2%` and `_` match every question below, and `\\T`
+    matches a bare `T`, so the backslashed question is missed."""
     caller = actor()
     now = _injected_now()
     percent = await _open_until(
