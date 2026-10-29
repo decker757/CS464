@@ -9,10 +9,11 @@
 // week or two before the showcase is still open on the day. Names are SMU's
 // where they are certain, and generic ("the campus green") where they are not.
 //
-// The browse list puts the markets still trading first, soonest close first
-// (market_service's `_browse_order`). So the four `headline` markets, the
+// The full browse list puts the markets still trading first, soonest close
+// first (market_service's `_browse_order`). So the four `headline` markets, the
 // Yes/No ones that end furthest from 50/50 and the five-way one, close before
-// every other open market, and are the first screen a visitor sees.
+// every other open market, and lead the list below the featured market and
+// its bands (#448).
 
 export const ADMINS = { creator: 'admin_rachel', approver: 'admin_kumar' }
 

@@ -103,17 +103,19 @@ async function registerPromotedAdmin(promoter: Session, username: string): Promi
   return logInThroughApi(trader.username)
 }
 
-// Settlement is safe to repeat: a repeat writes nothing and answers the same
-// 200 (ledger-service.md, "A repeat writes nothing here"). The retry is for
-// `503 settlement_unconfirmed` — the winners are paid and only telling
-// market_service failed, and the same doc says to repeat the request.
-async function settle(admin: Session, marketId: string): Promise<void> {
+// Settlement and a void both move the money first and tell market_service
+// last, and both are safe to repeat: a repeat writes nothing (ledger-service.md,
+// "A repeat writes nothing here"). `503 settlement_unconfirmed` and `503
+// void_unconfirmed` mean only that last step failed, and the same doc says to
+// repeat the request. Without this, one blip ends a one-shot run that needs a
+// fresh database to start again.
+async function repeatOnceIfUnconfirmed(unconfirmedCode: string, request: () => Promise<void>): Promise<void> {
   try {
-    await settleMarket(admin, marketId)
+    await request()
   } catch (failure) {
-    const isUnconfirmed = failure instanceof Error && failure.message.includes('settlement_unconfirmed')
+    const isUnconfirmed = failure instanceof Error && failure.message.includes(unconfirmedCode)
     if (!isUnconfirmed) throw failure
-    await settleMarket(admin, marketId)
+    await request()
   }
 }
 
@@ -124,7 +126,7 @@ async function driveToItsEnd(demo: DemoMarket, market: Market, creator: Session,
   // A void needs a closed market and an administrator with no stake in it
   // (ADR 0025); the creator never trades.
   if (demo.endsAs === 'voided') {
-    await voidMarket(creator, market.id, demo.voidReason)
+    await repeatOnceIfUnconfirmed('void_unconfirmed', () => voidMarket(creator, market.id, demo.voidReason))
     return
   }
   // The proposer is always the market's creator, and the approver must be a
@@ -134,7 +136,7 @@ async function driveToItsEnd(demo: DemoMarket, market: Market, creator: Session,
   await approveOutcome(approver, market.id, proposed.proposal_id)
   if (demo.endsAs === 'approved') return
   await backdateDisputeWindow(market.id)
-  await settle(creator, market.id)
+  await repeatOnceIfUnconfirmed('settlement_unconfirmed', () => settleMarket(creator, market.id))
 }
 
 function priceLine(demo: DemoMarket, market: Market, prices: { outcome_id: string; price: string }[]): string {
