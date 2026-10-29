@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { getMyPortfolio, type Order } from '../api/ledgerApi'
+import { getMyPortfolio } from '../api/ledgerApi'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
+import PriceFeedStatus from '../components/markets/PriceFeedStatus'
 import { formatCloseCountdown, type MarketStatus } from '../components/markets/marketStatus'
 import OpenOrdersList from '../components/markets/OpenOrdersList'
 import PriceHistorySection from '../components/markets/PriceHistorySection'
@@ -20,7 +21,6 @@ import { type OrderFrame, useMarketPrices } from '../hooks/useMarketPrices'
 import { useMyOrders } from '../hooks/useMyOrders'
 import { useWindowOpen } from '../hooks/useWindowOpen'
 import { disputeWindowLine } from '../utils/formatCountdown'
-import { addCredits } from '../utils/formatCredits'
 import { formatDateTime } from '../utils/formatDateTime'
 import { formatPrice } from '../utils/formatPrice'
 
@@ -49,20 +49,6 @@ function outcomeResultWord({ isVoided, hasWinner, isWinner }: { isVoided: boolea
   if (isVoided) return 'Void'
   if (!hasWinner) return null
   return isWinner ? 'Won' : 'Lost'
-}
-
-// What the trader's own open sell orders hold back of each outcome, summed:
-// the ledger will not sell those shares a second time
-// (insufficient_shares_held, ledger-service.md), so the panel's sell check
-// stops short of them. A buy reserves credits, and carries null here.
-function reservedSharesByOutcomeOf(orders: Order[]): Record<string, string> {
-  const reserved: Record<string, string> = {}
-  for (const order of orders) {
-    if (order.reserved_shares === null) continue
-    const total = addCredits(reserved[order.outcome_id] ?? '0', order.reserved_shares)
-    if (total !== null) reserved[order.outcome_id] = total
-  }
-  return reserved
 }
 
 // A banner with a `label` is a named region, so a screen reader can jump to
@@ -117,16 +103,24 @@ export default function MarketDetailPage() {
   const now = useMarketClock(market)
 
   // What the trader holds of each of this market's outcomes, for the sell
-  // clamp ([T-2] #357). The portfolio route carries every market's positions
-  // and names no questions or labels (ledger-service.md), so picking out this
-  // market's is the page's own join.
+  // clamp ([T-2] #357): the whole position, and the part of it their own live
+  // sell orders hold back. Both come off the one portfolio read that already
+  // carries them (#410), so the two can never disagree. The route carries
+  // every market's positions and names no questions or labels
+  // (ledger-service.md), so picking out this market's is the page's own join.
   //
   // Tagged with the market it was read for, like `loaded` above: outcome ids
   // differ between markets, so an untagged map would read as "holds nothing"
   // on the next market until its own read landed, and clamp every sell on
   // that. Null says the holdings are unknown, which clamps nothing at all.
-  const [held, setHeld] = useState<{ id: string; byOutcome: Record<string, string> } | null>(null)
-  const heldByOutcome = held !== null && held.id === id ? held.byOutcome : null
+  const [held, setHeld] = useState<{
+    id: string
+    quantityByOutcome: Record<string, string>
+    reservedByOutcome: Record<string, string>
+  } | null>(null)
+  const heldHere = held !== null && held.id === id ? held : null
+  const heldByOutcome = heldHere?.quantityByOutcome ?? null
+  const reservedByOutcome = heldHere?.reservedByOutcome ?? {}
 
   // The most recent read's own number, so an answer that arrives after a
   // newer one is dropped instead of overwriting it. BalanceContext keeps the
@@ -148,7 +142,11 @@ export default function MarketDetailPage() {
       portfolio => {
         if (requestId !== latestHeldReadRef.current) return
         const mine = portfolio.positions.filter(position => position.market_id === id)
-        setHeld({ id, byOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.quantity])) })
+        setHeld({
+          id,
+          quantityByOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.quantity])),
+          reservedByOutcome: Object.fromEntries(mine.map(position => [position.outcome_id, position.reserved_shares])),
+        })
       },
       // Leave the last known holdings up rather than blanking them, the same
       // way BalanceContext keeps the last balance on a failed refetch.
@@ -156,18 +154,20 @@ export default function MarketDetailPage() {
     )
   }, [id, tradeable])
 
-  // The price history is read once, so the trader's own trade would leave it
-  // behind: on a fresh market it would go on saying nobody has traded. Each
-  // trade or limit placement here re-reads it (#453). Other traders' trades
-  // are not followed, nor a resting order's later fill (an order frame).
+  // Each trade or limit placement here re-reads the price history (#453).
+  // Other traders' trades reach the chart as price frames ([T-5] #495); the
+  // trader's own is read again as well, for the two cases a frame cannot
+  // cover, which the section's `key` below names.
   const [tradesMade, setTradesMade] = useState(0)
   const handleTraded = useCallback(() => {
     refetchHeld()
     setTradesMade(count => count + 1)
   }, [refetchHeld])
 
-  // A placement or a cancel moves credits, or what they reserve, and a
-  // placement that filled also changed the holdings the sell clamp reads.
+  // A placement or a cancel moves credits, or what they reserve. A sell's
+  // reservation is read off the portfolio row (#410), so every sell placement
+  // and cancel changes the holdings the sell clamp reads, not only one that
+  // filled.
   // The balance comes back through BalanceContext, as it does after a trade.
   // Every subscribe ack re-reads all three too, the first one included: a
   // fill whose frame was published before the socket was listening — while
@@ -175,7 +175,9 @@ export default function MarketDetailPage() {
   // (realtime-service.md, "Reconnecting": the orders and the balance again).
   const onOrdersChanged = useCallback(() => {
     refetchOrders()
-    refetchBalance()
+    // `void`: BalanceContext's refetch catches its own failure and settles
+    // either way, and this caller has nothing to do with the answer (#551).
+    void refetchBalance()
     refetchHeld()
   }, [refetchOrders, refetchBalance, refetchHeld])
 
@@ -198,16 +200,27 @@ export default function MarketDetailPage() {
   const onFrame = useCallback((frame: OrderFrame) => {
     applyFrame(frame)
     refetchOrders()
-    refetchBalance()
+    // `void`, as above.
+    void refetchBalance()
     refetchHeld()
   }, [applyFrame, refetchOrders, refetchBalance, refetchHeld])
 
   // One socket for the page: price frames keep the prices above current, and
   // order frames the list below it. Order frames need no subscribe, so they
   // arrive on this same connection (realtime-service.md, "Order updates").
-  const { prices, status: priceStatus } = useMarketPrices(market?.id ?? null, {
+  // Bumped on every `subscribed` ack, the first included: frames published
+  // while a dropped connection was away are gone (ADR 0010), so the price
+  // history has to be read again rather than caught up from frames ([T-5]
+  // #495). The first ack's read is a harmless repeat of the mount's.
+  const [subscribes, setSubscribes] = useState(0)
+  const onSubscribed = useCallback(() => {
+    onOrdersChanged()
+    setSubscribes(count => count + 1)
+  }, [onOrdersChanged])
+
+  const { prices, status: priceStatus, snapshot: livePrice } = useMarketPrices(market?.id ?? null, {
     onOrderFrame: onFrame,
-    onSubscribed: onOrdersChanged,
+    onSubscribed,
   })
   // Re-evaluates the instant the dispute window closes, rather than only at
   // whatever render happens to run next — an approved market has no trades
@@ -332,15 +345,7 @@ export default function MarketDetailPage() {
             })}
           </div>
 
-          {(priceStatus === 'reconnecting' || priceStatus === 'degraded') && (
-            <div
-              role="status"
-              className={`mb-6 flex items-center gap-2 text-xs font-medium ${priceStatus === 'degraded' ? 'text-danger' : 'text-warning-strong'}`}
-            >
-              <span className={`h-2 w-2 shrink-0 rounded-full ${priceStatus === 'degraded' ? 'bg-danger' : 'animate-pulse bg-warning'}`} />
-              {priceStatus === 'reconnecting' ? 'Reconnecting to live prices…' : 'Live prices unavailable.'}
-            </div>
-          )}
+          <PriceFeedStatus status={priceStatus} className="mb-6" />
 
           <Card className="mb-6 px-6 py-5">
             {tradeable ? (
@@ -349,7 +354,7 @@ export default function MarketDetailPage() {
                 outcomes={market.outcomes}
                 limitOrdersAllowed={!!binaryMarket}
                 heldByOutcome={heldByOutcome}
-                reservedSharesByOutcome={reservedSharesByOutcomeOf(ordersHere)}
+                reservedSharesByOutcome={reservedByOutcome}
                 onTraded={handleTraded}
                 onOrderPlaced={handleOrderPlaced}
               />
@@ -377,7 +382,18 @@ export default function MarketDetailPage() {
               them, so the history arriving after first paint never moves the
               controls a trader is reaching for (#453). Every status: a closed
               market's history still says how it got there. */}
-          <PriceHistorySection key={tradesMade} marketId={market.id} outcomes={market.outcomes} />
+          {/* The chart follows the socket, so another trader's trade reaches
+              it without a remount ([T-5] #495). `key` still restarts it on
+              the trader's own trade, for what a frame cannot carry: a socket
+              that is down or degraded sends none, and a trade that fills
+              resting orders makes a point per fill but one frame (ADR 0024). */}
+          <PriceHistorySection
+            key={tradesMade}
+            marketId={market.id}
+            outcomes={market.outcomes}
+            liveSnapshot={livePrice}
+            reconnects={subscribes}
+          />
 
           <SectionCard title="About this market">
             <ResolutionDetails market={market} />

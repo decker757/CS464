@@ -1,5 +1,5 @@
 import { expect, test } from './support/fixtures'
-import { buy, publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
+import { buy, publishMarket, registerAdmin, registerTrader, snapshot, uniqueName } from './support/backend'
 import { loadUntilShown, logIn } from './support/browser'
 
 // [FE][2.2] #55, through the real ledger: a unit test fakes #6's response
@@ -41,22 +41,22 @@ test('an admin sees shares outstanding for a traded outcome, with no flag', asyn
   expect(await page.getByRole('alert').count()).toBe(0)
 })
 
-test('a market nobody has traded shows no trades yet', async ({ page }) => {
+test('a market nobody has traded shows no trades yet, with its book open', async ({ page }) => {
   const admin = await registerAdmin('exp_empty_admin')
-  // Log in before publishing. logIn lands on /markets, which fetches a price
-  // snapshot for every market it lists, and the first snapshot opens the
-  // market's book. A market published first would reach the exposure page
-  // with a book and zero shares, not the "no book" state this test is about.
-  // Wait for that list to load, too, or a publish that beats the list's read
-  // gets listed and snapshotted anyway.
-  await logIn(page, admin)
-  await expect(page.getByRole('heading', { name: 'Markets' })).toBeVisible()
-  await expect(page.getByText('Loading markets…')).toHaveCount(0)
   const market = await publishMarket(admin, `Will ${uniqueName('untraded')} resolve yes?`)
+  // #517. A book opens on the market's first preview or snapshot, before
+  // anyone trades. Another worker's browse page reads a snapshot for every
+  // market it lists, so it may open this one before this test looks, or may
+  // not. Open it here, and every run checks the same state. With no book the
+  // page reads `outcomes: []`, which only a unit test can hold still.
+  await snapshot(admin, market.id)
 
+  await logIn(page, admin)
   await page.goto('/admin/markets')
   const card = await loadUntilShown(page, market.question)
   await card.getByRole('link', { name: 'Exposure' }).click()
 
+  // The book is open, and nothing has traded in it.
+  await expect(page.getByText(/state version 0$/i)).toBeVisible()
   await expect(page.getByText(/no trades yet/i)).toBeVisible()
 })

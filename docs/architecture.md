@@ -236,8 +236,11 @@ snapshotted terms and carries no status or closing time),
 worth), [ADR 0019](adr/0019-settlement-across-services.md) (`market_results`,
 one row per finished market),
 [ADR 0021](adr/0021-the-leaderboard-and-the-first-service-credential.md) (the
-leaderboard is a snapshot, with the username stored on it), and
-[ADR 0024](adr/0024-resting-orders-fill-inside-the-trade.md) (`orders`).
+leaderboard is a snapshot, with the username stored on it),
+[ADR 0024](adr/0024-resting-orders-fill-inside-the-trade.md) (`orders`), and
+[ADR 0025](adr/0025-voiding-a-flawed-market.md) (a void's `market_results` row,
+with its `reason` and `voided_by`, and the `void_refund` and `void_residue`
+kinds).
 
 ```mermaid
 erDiagram
