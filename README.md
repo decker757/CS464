@@ -114,8 +114,8 @@ Three things are there to show live (#570):
   library. The trade pulls the price past the limit, fills part of `nur_h`'s
   order inside that same trade, and leaves the price sitting at the limit
   (ADR 0024). Buy more and the order fills further. A trade that only just
-  reaches the limit fills nothing, because the sliver it would fill rounds
-  down to zero shares.
+  reaches the limit fills nothing: the sliver it could fill costs a tick more
+  than the limit once the cost is rounded, so the order waits.
 - **A voided market.** The campus café market was closed early and voided.
   Its page and card say so, and `marcus_tan`, `jun_hao` and `priya_s` see the
   refund in their history (ADR 0025).
@@ -124,8 +124,9 @@ Three things are there to show live (#570):
   until an administrator lifts it.
 
 The four liveliest open markets, the Yes/No ones that end furthest from 50/50
-and the five-way one, close soonest, so the browse list, which shows the
-soonest-closing market first, opens on them.
+and the five-way one, close soonest, so the full browse list, which shows the
+soonest-closing market first, opens on them below the featured market and the
+bands.
 
 The trades go in eight rounds, twenty seconds apart, so each market's price
 history has a shape. That is why it takes minutes: a trade's time is the
@@ -133,10 +134,10 @@ ledger's own clock, and no API backdates one. The open markets close three
 weeks or more after seeding; if you seeded long before the showcase, seed
 again.
 
-The browse list's "Biggest movers" band and each card's change over the week
-measure from the last trade at least seven days old, so a database seeded on
-the day shows neither. Seed one to two weeks before the showcase, then trade
-during it, and both appear.
+The browse list's "Biggest movers" band measures from the last trade at least
+seven days old, so a database seeded on the day shows none. Seed one to two
+weeks before the showcase, then trade during it, and it appears. #564 adds the
+same change to each card, measured the same way.
 
 It goes through the services' own APIs, using the end-to-end helpers in
 `frontend/e2e/support/backend.ts`, and takes the same two SQL steps they do,
