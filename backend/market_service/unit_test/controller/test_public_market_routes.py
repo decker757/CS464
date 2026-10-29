@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
 from model.entities import Market, MarketStatus
+from model.schemas import MAX_QUESTION_LENGTH
 from service.audit import Actor
 from unit_test.conftest import (
     SOURCE_URL,
@@ -213,6 +214,32 @@ async def test_a_nul_in_the_search_term_is_422_not_500(
         f"q={q!r} came back {response.status_code}; a NUL reaching asyncpg is "
         "an unhandled DBAPIError and a 500"
     )
+
+
+async def test_a_search_term_longer_than_a_question_is_422_on_q(
+    client: AsyncClient, trader_headers: dict[str, str]
+) -> None:
+    """The route's documented `422`: "`q` is too long". It could match no
+    question, which is at most `MAX_QUESTION_LENGTH` characters."""
+    response = await client.get(
+        _LIST,
+        params={"q": "x" * (MAX_QUESTION_LENGTH + 1)},
+        headers=trader_headers,
+    )
+
+    assert response.status_code == 422
+    assert any(error["loc"] == ["query", "q"] for error in response.json()["detail"])
+
+
+async def test_a_search_term_as_long_as_a_question_is_accepted(
+    client: AsyncClient, trader_headers: dict[str, str]
+) -> None:
+    """The other edge of the one above, so a ceiling one short also fails."""
+    response = await client.get(
+        _LIST, params={"q": "x" * MAX_QUESTION_LENGTH}, headers=trader_headers
+    )
+
+    assert response.status_code == 200
 
 
 async def test_an_ordinary_search_term_is_not_caught_by_the_nul_guard(

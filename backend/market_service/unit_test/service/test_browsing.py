@@ -286,6 +286,24 @@ async def test_the_question_search_ignores_case(session: AsyncSession) -> None:
     assert _ids(await _browse(session, query="INFLATION")) == [market.id]
 
 
+async def test_the_question_search_ignores_surrounding_whitespace(
+    session: AsyncSession,
+) -> None:
+    """The route's promise: "Surrounding whitespace is ignored". Unstripped,
+    the pattern is `%  inflation  %`, which no question with single spaces
+    matches."""
+    inflation = await _open_market(
+        session,
+        question="Will Singapore core inflation be below 2% in December 2026?",
+    )
+    await _open_market(
+        session,
+        question="Will the MRT Cross Island Line open before June 2027?",
+    )
+
+    assert _ids(await _browse(session, query="  inflation  ")) == [inflation.id]
+
+
 async def test_markets_can_be_filtered_by_status(session: AsyncSession) -> None:
     """[X-2] #35: "Users can filter markets by status"."""
     # Ids held as they are created; `closed_market` expires the session.
