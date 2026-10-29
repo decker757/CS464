@@ -11159,3 +11159,41 @@ price history would still answer them.
 **Notes.** Decided by Ihsan on 2026-10-25 (ADR 0025, "Decisions on the open
 questions"). For the [FE] sub-issue of #221; listed in the void screen's notes
 in `docs/api/market-service.md`.
+
+---
+
+### D-NEW — The browse list keeps soonest-close first; the bands above it are the answer to "what is worth trading"
+
+**Date:** 2026-10-29 · **Ticket:** #433 · **Status:** active
+
+**Decision.** The full browse list keeps its order: still trading first,
+soonest close first, then most recently stopped (`_browse_order`, and
+"Stopped markets sort by when trading stopped"). No sort parameter is added.
+What a new trader sees first is decided by what [X-1] #448 put above the list
+instead: the busiest market as the featured one, then the bands Closing soon
+(inside 24 hours), Trending (most credits traded) and Biggest movers (largest
+change over the week), each stating its rule.
+
+**Why.** #433 found the top of the list taken by markets with minutes left
+and no trades, because nothing carried an activity signal. #447 added
+`credits_traded` and #448 used it, which is #433's option 2 (keep the order,
+change the framing) with the volume ranking of option 4 placed above the
+list rather than replacing its order. The list stays a complete, stable,
+pageable index, the bands give the first screen an entry point, and every
+banded market is still in the list where the order puts it.
+
+**Rejected.** *A sort parameter defaulting to volume* (#433's option 3): the
+browse query is market_service's, and `credits_traded` is the ledger's
+("`credits_traded` is a counter on the book, raised in `write_trade` under the
+book lock"), so market_service cannot `ORDER BY` it without a cross-service
+read or a copied column, which ADR 0003's boundary rules out as a convenience.
+It would buy what the featured market and Trending already show, and a volume
+order would reshuffle the keyset pages between refreshes as trades land. *Leaving #433 open*: the first screen it described no longer
+renders that way.
+
+**Notes.** The bands rank only the markets the page has loaded, not every
+market on the server. On a database with more open markets than one page,
+a busy market that closes far in the future can miss Trending. That is
+acceptable at this project's scale. If it stops being, a server-side ranking
+is a cross-service design decision, not a change to `_browse_order`, for the
+reason under Rejected.
