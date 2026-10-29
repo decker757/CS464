@@ -4,9 +4,9 @@ Browse ([X-1] #34), search and filter ([X-2] #35), detail ([X-3] #36), and the
 per-status counts (D-020), which the admin overview ([2.1] #5) reuses, as it
 does the status filter and the question search (#555). Every filter, count
 and status here derives from the clock through `service/closing.py`, never
-from the status column alone (ADR 0011, D-022). No prices: `q` lives with the
-ledger (ADR 0005). Each browse card names its outcomes (#214), so a card never
-guesses a label.
+from the status column alone (ADR 0011, D-022). No prices: the share
+quantities `q` live with the ledger (ADR 0005). Each browse card names its
+outcomes (#214), so a card never guesses a label.
 """
 
 from __future__ import annotations
@@ -583,9 +583,9 @@ async def overview(
     searches the question as `browse`'s does (#555) and composes with
     `status`. At most `limit`; `next_cursor` is None on the last page. The
     counts cover every market the caller can see, whatever `query`, `status`
-    and `cursor` say. The page and the
-    counts are two statements in one REPEATABLE READ transaction, so they
-    describe one snapshot, and read one `now` (D-025). Raises `MalformedCursor`
+    and `cursor` say. The page and the counts are two statements in one
+    REPEATABLE READ transaction, so they describe one snapshot, and read one
+    `now` (D-025). Raises `MalformedCursor`
     for a cursor this service did not issue, and `InvalidRequestError` if the
     session already has a transaction open. Commits its own read-only
     transaction. DECISIONS.md, "The admin overview pages by keyset, settled
