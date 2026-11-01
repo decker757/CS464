@@ -19,6 +19,7 @@ on:
     branches: [ "dev", "staging", "main" ]
     paths:
       - "deploy/production/**"
+      - "infra/**"
       - "sql/02-schemas.sql"
       - "backend/*/core/config.py"
       - "backend/shared/config.py"
@@ -34,6 +35,7 @@ on:
   pull_request:
     paths:
       - "deploy/production/**"
+      - "infra/**"
       - "sql/02-schemas.sql"
       - "backend/*/core/config.py"
       - "backend/shared/config.py"
@@ -54,7 +56,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # shellcheck is preinstalled on GitHub's Ubuntu runners.
-      - run: shellcheck deploy/production/*.sh deploy/production/test/*.sh
+      - run: shellcheck deploy/production/*.sh deploy/production/test/*.sh infra/tf infra/push-secrets.sh
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Formatting, and every resource and attribute checked against the
+      # pinned providers. Needs no DigitalOcean account.
+      - run: infra/tf fmt -check -diff
+      - run: infra/tf init -backend=false -input=false
+      - run: infra/tf validate
 
   stack:
     runs-on: ubuntu-latest
@@ -64,7 +76,7 @@ jobs:
       - run: deploy/production/test/stack-test.sh
 
   notify:
-    needs: [shellcheck, stack]
+    needs: [shellcheck, terraform, stack]
     if: failure()
     uses: ./.github/workflows/notify-failure.yml
     with:
