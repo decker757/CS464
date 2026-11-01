@@ -29,8 +29,10 @@ system in the PDF.
 - Use the exact names from the code: `ledger_svc`, `market.price`,
   `/ws/prices`, `LEDGER_SERVICE_KEY`, `pending_resolution`. Do not invent
   friendlier names for things the code has named.
-- Readable at half an A4 page: if the PNG at 800 px wide needs a squint, cut
-  words or split the diagram.
+- Readable in print: `render.py` prints the size the text would print at
+  17 cm (full text width). Body text should be 6.5 pt or more at the width the
+  figure is placed at; a landscape page gives 24.6 cm. Below that, cut words,
+  narrow the layout or split the diagram.
 
 ## Lines
 
@@ -95,8 +97,9 @@ classDef ext      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
 - A bare `%%` line with nothing after it breaks the parser. Use `%% -` as a
   blank line in a comment block.
 - A per-file `%%{init: ...}%%` line after the comment block is fine for
-  layout only (`wrappingWidth`, ELK node order, lifeline CSS). Colours and
-  fonts stay in the shared config.
+  layout (`wrappingWidth`, ELK node order, lifeline CSS, sequence widths) and
+  for a larger `fontSize` where print size needs it. Colours and the font
+  family stay in the shared config.
 - A gantt lays itself out to the viewport width, which is why `render.py`
   passes the width when it draws the SVG as well as the PNG.
 
