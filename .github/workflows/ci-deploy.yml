@@ -1,0 +1,64 @@
+name: Deploy CI
+
+# [5.3] #19. Proves the production stack before it reaches a server:
+# deploy/production/test/stack-test.sh runs every app server's compose file,
+# gateway and scripts on the runner, against stand-ins for the managed
+# database and Redis, and checks routing, login, the websocket, draining, and
+# both ways a release can fail.
+#
+# Triggered by what that stack is made of. A service's config is on the list
+# because a new required setting missing from deploy/production/compose.yml
+# would stop that service starting in production; this is where that fails
+# first.
+#
+# Advisory for now, like the other workflows. If it becomes a required check,
+# require the JOB ("stack"), not the workflow: a pull request the paths filter
+# skips reports no status at all. Never mark `notify` required.
+on:
+  push:
+    branches: [ "dev", "staging", "main" ]
+    paths:
+      - "deploy/production/**"
+      - "sql/02-schemas.sql"
+      - "backend/*/core/config.py"
+      - "backend/shared/config.py"
+      - "backend/*/Dockerfile"
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
+      - "frontend/vite.config.ts"
+      - ".github/workflows/ci-deploy.yml"
+  pull_request:
+    paths:
+      - "deploy/production/**"
+      - "sql/02-schemas.sql"
+      - "backend/*/core/config.py"
+      - "backend/shared/config.py"
+      - "backend/*/Dockerfile"
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
+      - "frontend/vite.config.ts"
+      - ".github/workflows/ci-deploy.yml"
+  workflow_dispatch:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # shellcheck is preinstalled on GitHub's Ubuntu runners.
+      - run: shellcheck deploy/production/*.sh deploy/production/test/*.sh
+
+  stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - run: deploy/production/test/stack-test.sh
+
+  notify:
+    needs: [shellcheck, stack]
+    if: failure()
+    uses: ./.github/workflows/notify-failure.yml
+    with:
+      area: Deploy
+    secrets: inherit
