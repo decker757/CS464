@@ -1,0 +1,158 @@
+# [5.3] #19. What one app server runs in production. Every app server runs
+# this same file, and the DigitalOcean load balancer spreads requests across
+# them. Postgres and Redis are managed services outside this file, which is why
+# nothing here holds data: a server can be replaced at any time.
+# docs/deployment.md has the whole picture.
+#
+# Compared with ../../docker-compose.yml: images come from the registry instead
+# of being built here; there is no db or redis; nothing publishes a port except
+# the gateway; the migrate steps run only when the deploy asks for them (ADR
+# 0020); and the pool sizes are set (see below).
+#
+# Read by roll.sh and migrate.sh with two env files:
+#   app.env      secrets and this server's settings, written by the deploy
+#   release.env  IMAGE_TAG, the release this server is on
+
+name: cs464
+
+x-logging: &logging
+  # Rotated, so a busy server cannot fill its disk with logs.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-migrate: &migrate
+  # Run only when named: `docker compose run --rm auth-migrate`. Once per
+  # deploy, on one server, before any app is rolled. ADR 0020.
+  profiles: ["migrate"]
+  command: ["python", "migrate.py"]
+  # The image's HEALTHCHECK probes the API, which this container never serves.
+  healthcheck:
+    disable: true
+  restart: "no"
+  logging: *logging
+
+x-app: &app
+  restart: unless-stopped
+  logging: *logging
+
+x-app-environment: &app-environment
+  # Only the gateway can reach the services, so the forwarded headers it
+  # passes on can be trusted, and FastAPI builds https URLs from them.
+  FORWARDED_ALLOW_IPS: "*"
+  JWT_SECRET: ${JWT_SECRET:?}
+  CORS_ORIGINS: https://${DOMAIN:?}
+
+services:
+  auth-migrate:
+    <<: *migrate
+    image: ${IMAGE_REGISTRY:?}/cs464-auth:${IMAGE_TAG:?}
+    environment:
+      DATABASE_URL: ${AUTH_DATABASE_URL:?}
+
+  market-migrate:
+    <<: *migrate
+    image: ${IMAGE_REGISTRY:?}/cs464-market:${IMAGE_TAG:?}
+    environment:
+      DATABASE_URL: ${MARKET_DATABASE_URL:?}
+
+  ledger-migrate:
+    <<: *migrate
+    image: ${IMAGE_REGISTRY:?}/cs464-ledger:${IMAGE_TAG:?}
+    environment:
+      DATABASE_URL: ${LEDGER_DATABASE_URL:?}
+
+  # Pool sizes: every replica of every service, at full overflow, plus the
+  # three migrate steps, must fit under the managed database's connection
+  # limit. Per server: auth 3+1, market 3+2, ledger 6+3, audit 1+1 = 20.
+  # Two servers use 40, and the migrate steps add 3. A third server needs
+  # these lowered or a bigger database plan. DECISIONS.md, "Each service's
+  # connection pool is a setting, sized to the database's ceiling".
+  auth:
+    <<: *app
+    image: ${IMAGE_REGISTRY:?}/cs464-auth:${IMAGE_TAG:?}
+    environment:
+      <<: *app-environment
+      DATABASE_URL: ${AUTH_DATABASE_URL:?}
+      DATABASE_POOL_SIZE: 3
+      DATABASE_MAX_OVERFLOW: 1
+      LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
+      COOKIE_SECURE: "true"
+      # The cookie is set by auth.<domain> and read by market., ledger.,
+      # audit. and realtime.<domain>, so it names the parent domain. ADR 0002.
+      COOKIE_DOMAIN: ${DOMAIN:?}
+
+  market:
+    <<: *app
+    image: ${IMAGE_REGISTRY:?}/cs464-market:${IMAGE_TAG:?}
+    environment:
+      <<: *app-environment
+      DATABASE_URL: ${MARKET_DATABASE_URL:?}
+      DATABASE_POOL_SIZE: 3
+      DATABASE_MAX_OVERFLOW: 2
+      # Runs on every server. Two sweeps racing is safe: ADR 0011, and
+      # docs/horizontal-scaling.md ran it.
+      CLOSE_SWEEP_ENABLED: "true"
+
+  ledger:
+    <<: *app
+    image: ${IMAGE_REGISTRY:?}/cs464-ledger:${IMAGE_TAG:?}
+    environment:
+      <<: *app-environment
+      DATABASE_URL: ${LEDGER_DATABASE_URL:?}
+      DATABASE_POOL_SIZE: 6
+      DATABASE_MAX_OVERFLOW: 3
+      LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
+      REDIS_URL: ${REDIS_URL:?}
+      # true on one server only, set per server in app.env. ADR 0021.
+      LEADERBOARD_REFRESH_ENABLED: ${LEADERBOARD_REFRESH_ENABLED:?}
+      # No MARKET_SERVICE_URL or AUTH_SERVICE_URL: their defaults name the
+      # market and auth containers on this same server, which is right.
+
+  audit:
+    <<: *app
+    image: ${IMAGE_REGISTRY:?}/cs464-audit:${IMAGE_TAG:?}
+    environment:
+      <<: *app-environment
+      DATABASE_URL: ${AUDIT_DATABASE_URL:?}
+      DATABASE_POOL_SIZE: 1
+      DATABASE_MAX_OVERFLOW: 1
+
+  realtime:
+    <<: *app
+    image: ${IMAGE_REGISTRY:?}/cs464-realtime:${IMAGE_TAG:?}
+    environment:
+      <<: *app-environment
+      REDIS_URL: ${REDIS_URL:?}
+
+  # The only container the load balancer can reach. It serves the frontend on
+  # <domain>, and passes each service's subdomain on to that service.
+  gateway:
+    <<: *app
+    image: ${IMAGE_REGISTRY:?}/cs464-gateway:${IMAGE_TAG:?}
+    depends_on:
+      auth:
+        condition: service_healthy
+      market:
+        condition: service_healthy
+      ledger:
+        condition: service_healthy
+      audit:
+        condition: service_healthy
+      realtime:
+        condition: service_healthy
+    environment:
+      DOMAIN: ${DOMAIN:?}
+    ports:
+      # 80 on a server. The local test (test/stack-test.sh) picks a free port.
+      - "${GATEWAY_PORT:-80}:80"
+    volumes:
+      # roll.sh creates drain/on here to take this server out of the load
+      # balancer before it changes anything.
+      - ./drain:/etc/nginx/drain:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/gateway-health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
