@@ -18,7 +18,9 @@
 #   - draining makes /lb-health answer 503, and undraining brings it back
 #   - a release that cannot be pulled leaves the server untouched
 #   - a release that starts unhealthy is rolled back to the one before
-#   - a good release replaces the one before
+#   - a good release replaces the one before, which is kept, and nothing older
+#   - going back from a release that added a service runs the old release
+#     from its own files, without that service
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -51,13 +53,50 @@ status_of() {
   curl -s -o /dev/null -w '%{http_code}' -H "Host: $1" "$gateway$2"
 }
 
+status_becomes() {
+  # status_becomes <host> <path> <status>: within ten seconds. A file the
+  # test just created or removed can take a moment to reach the container.
+  local got
+  for _ in $(seq 1 20); do
+    got=$(status_of "$1" "$2")
+    if [ "$got" = "$3" ]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "        $1$2 answered $got, not $3" >&2
+  return 1
+}
+
 has_starting_grant() {
   curl -fsS -H "Host: ledger.$domain" -H "Authorization: Bearer $token" \
     "$gateway/ledger/portfolio/me" | grep -q starting_credits
 }
 
+install_release() {
+  # install_release <tag> [compose file]: lay a release out as the deploy
+  # does, in releases/<tag>/ with its own files and env.
+  local directory="$work/releases/$1"
+  mkdir -p "$directory/sql"
+  cp "$repo"/deploy/production/{roll.sh,migrate.sh,ensure-database.sh} "$directory/"
+  cp "${2:-$repo/deploy/production/compose.yml}" "$directory/compose.yml"
+  cp "$repo/deploy/production/sql/ensure-roles.sql" "$repo/sql/02-schemas.sql" "$directory/sql/"
+  cp "$repo/deploy/production/test/backing.yml" "$work/app.env" "$directory/"
+  echo "IMAGE_TAG=$1" > "$directory/release.env"
+}
+
+current_release() {
+  basename "$(cd -P "$work/current" && pwd)"
+}
+
 roll_is_refused() {
-  ! "$work/roll.sh" "$1"
+  # The script must exist, or "refused" would pass for the wrong reason.
+  test -x "$work/releases/$1/roll.sh" && ! "$work/releases/$1/roll.sh"
+}
+
+compose() {
+  # Compose, as the release the server is on.
+  (cd -P "$work/current" && docker compose --env-file app.env --env-file release.env "$@")
 }
 
 every_image_is_at() {
@@ -68,13 +107,29 @@ every_image_is_at() {
   test "$others" = 0
 }
 
-compose() {
-  (cd "$work" && docker compose --env-file app.env --env-file release.env "$@")
+no_container_runs_for() {
+  test -z "$(docker ps -q --filter "label=com.docker.compose.project=$project" \
+    --filter "label=com.docker.compose.service=$1")"
+}
+
+releases_kept_are() {
+  local names="" directory
+  for directory in "$work"/releases/*/; do
+    names+="$(basename "$directory") "
+  done
+  test "$names" = "$1 "
+}
+
+image_is_here() {
+  docker image inspect "$1" > /dev/null 2>&1
 }
 
 cleanup() {
   echo "cleaning up"
-  (cd "$work" && IMAGE_TAG=none docker compose --env-file app.env down -v --remove-orphans) > /dev/null 2>&1 || true
+  if [ -d "$work/releases/one" ]; then
+    (cd "$work/releases/one" && docker compose --env-file app.env --env-file release.env \
+      down -v --remove-orphans) > /dev/null 2>&1 || true
+  fi
   docker rm -f "$project-registry" > /dev/null 2>&1 || true
   rm -rf "$work"
 }
@@ -103,17 +158,24 @@ for service in auth market ledger audit realtime gateway; do
   push_as two "$service"
   push_as broken "$service"
 done
+publish() {
+  # publish <source image> <image to push>
+  docker tag "$1" "$2"
+  docker push -q "$2" > /dev/null
+}
 # "broken" is release one, except that auth's image is the realtime service,
 # which cannot start without REDIS_URL. Its health check never passes.
-docker tag "$registry/cs464-realtime:one" "$registry/cs464-auth:broken"
-docker push -q "$registry/cs464-auth:broken" > /dev/null
+publish "$registry/cs464-realtime:one" "$registry/cs464-auth:broken"
+# "three" is broken the same way, and also adds a service, `extra`, whose
+# image exists only at tag three. Going back to two with three's files would
+# look for cs464-extra:two, which nobody pushed.
+for service in market ledger audit realtime gateway; do
+  push_as three "$service"
+done
+publish "$registry/cs464-realtime:one" "$registry/cs464-auth:three"
+publish "$registry/cs464-realtime:one" "$registry/cs464-extra:three"
 
 # --- A server's directory, as the deploy lays it out --------------------
-
-cp "$repo"/deploy/production/{compose.yml,roll.sh,migrate.sh,ensure-database.sh} "$work/"
-mkdir -p "$work/sql"
-cp "$repo/deploy/production/sql/ensure-roles.sql" "$repo/sql/02-schemas.sql" "$work/sql/"
-cp "$repo/deploy/production/test/backing.yml" "$work/"
 
 admin_password=$(random_secret)
 export TEST_POSTGRES_PASSWORD
@@ -138,15 +200,35 @@ AUDIT_DATABASE_URL=postgresql+asyncpg://audit_svc:$AUDIT_DB_PASSWORD@postgres:54
 REDIS_URL=redis://redis:6379/0
 LEADERBOARD_REFRESH_ENABLED=true
 TEST_POSTGRES_PASSWORD=$TEST_POSTGRES_PASSWORD
+DRAIN_DIR=$work/drain
 EOF
-echo "IMAGE_TAG=none" > "$work/release.env"
+
+# Each release is installed just before it is rolled, as the deploy does:
+# a successful roll removes every release but itself and the one before.
+install_release one
+# Three's compose.yml: release one's, plus the extra service.
+cp "$repo/deploy/production/compose.yml" "$work/compose-three.yml"
+cat >> "$work/compose-three.yml" <<'YAML'
+
+  extra:
+    image: ${IMAGE_REGISTRY:?}/cs464-extra:${IMAGE_TAG:?}
+    environment:
+      REDIS_URL: ${REDIS_URL:?}
+      JWT_SECRET: ${JWT_SECRET:?}
+      CORS_ORIGINS: https://${DOMAIN:?}
+YAML
+
+backing() {
+  # The stand-ins, from release one's directory. They are not part of any
+  # release, but they share its compose project and network.
+  (cd "$work/releases/one" && docker compose --env-file app.env --env-file release.env "$@")
+}
 
 echo "starting the stand-in database and Redis"
-compose up -d --wait postgres redis > /dev/null
-compose exec -T postgres psql -q -U postgres -v ON_ERROR_STOP=1 \
+backing up -d --wait postgres redis > /dev/null
+backing exec -T postgres psql -q -U postgres -v ON_ERROR_STOP=1 \
   -c "CREATE ROLE doadmin LOGIN CREATEROLE PASSWORD '$admin_password'" \
   -c "CREATE DATABASE cs464 OWNER doadmin" > /dev/null
-rm "$work/release.env"   # a new server has no release yet
 
 # --- Deploy release one --------------------------------------------------
 
@@ -154,12 +236,12 @@ export DATABASE_ADMIN_URL="postgresql://doadmin:$admin_password@postgres:5432/cs
 export DOCKER_NETWORK="${project}_default"
 export DRAIN_SECONDS=1 WAIT_SECONDS=90
 
-echo "migrate.sh one"
-"$work/migrate.sh" one
-echo "migrate.sh one, again: it must be safe to repeat"
-"$work/migrate.sh" one
-echo "roll.sh one"
-"$work/roll.sh" one
+echo "migrate.sh, release one"
+"$work/releases/one/migrate.sh"
+echo "migrate.sh, release one, again: it must be safe to repeat"
+"$work/releases/one/migrate.sh"
+echo "roll.sh, release one"
+"$work/releases/one/roll.sh"
 
 echo "checks"
 
@@ -210,31 +292,43 @@ socket_refused_from() { ! socket_opens_from "$1"; }
 expect "the price websocket upgrades through the gateway" socket_opens_from "https://$domain"
 expect "another site's page cannot open the websocket" socket_refused_from "https://elsewhere.test"
 
-expect "/lb-health is 200 while serving" test "$(status_of 127.0.0.1 /lb-health)" = 200
+expect "/lb-health is 200 while serving" status_becomes 127.0.0.1 /lb-health 200
 touch "$work/drain/on"
-expect "/lb-health is 503 while drained" test "$(status_of 127.0.0.1 /lb-health)" = 503
+expect "/lb-health is 503 while drained" status_becomes 127.0.0.1 /lb-health 503
 rm "$work/drain/on"
-expect "/lb-health is 200 again once undrained" test "$(status_of 127.0.0.1 /lb-health)" = 200
+expect "/lb-health is 200 again once undrained" status_becomes 127.0.0.1 /lb-health 200
 
-# --- Releases that go wrong, and one that goes right ---------------------
+# --- Releases that go wrong, and ones that go right ----------------------
 
-echo "roll.sh to a tag nobody pushed"
+echo "roll.sh, a release nobody pushed"
+install_release missing
 expect "roll.sh refuses a release it cannot pull" roll_is_refused missing
-expect "and the server is still on one" grep -qx 'IMAGE_TAG=one' "$work/release.env"
-expect "and still serving" test "$(status_of 127.0.0.1 /lb-health)" = 200
+expect "and the server is still on one" test "$(current_release)" = one
+expect "and still serving" status_becomes 127.0.0.1 /lb-health 200
 
-echo "roll.sh to a release whose auth service never becomes healthy"
+echo "roll.sh, a release whose auth service never becomes healthy"
+install_release broken
 expect "roll.sh refuses a release that does not come up" roll_is_refused broken
-expect "and the server is back on one" grep -qx 'IMAGE_TAG=one' "$work/release.env"
+expect "and the server is back on one" test "$(current_release)" = one
 expect "and auth runs release one's image" \
   test "$(compose ps --format '{{.Image}}' auth)" = "$registry/cs464-auth:one"
-expect "and it is undrained and serving" test "$(status_of 127.0.0.1 /lb-health)" = 200
+expect "and it is undrained and serving" status_becomes 127.0.0.1 /lb-health 200
 
-echo "roll.sh two"
-expect "roll.sh moves to a good release" "$work/roll.sh" two
-expect "and the server is on two" grep -qx 'IMAGE_TAG=two' "$work/release.env"
+echo "roll.sh, release two"
+install_release two
+expect "roll.sh moves to a good release" "$work/releases/two/roll.sh"
+expect "and the server is on two" test "$(current_release)" = two
 expect "and every service runs release two" every_image_is_at two
-expect "and the trader's account survived the roll" has_starting_grant
+expect "and only two and the release before it are kept" releases_kept_are "one two"
+expect "and release one's images are kept, for going back" image_is_here "$registry/cs464-auth:one"
+
+echo "roll.sh, a release that adds a service and never becomes healthy"
+install_release three "$work/compose-three.yml"
+expect "roll.sh refuses it" roll_is_refused three
+expect "and the server is back on two" test "$(current_release)" = two
+expect "and every service runs release two" every_image_is_at two
+expect "and the service only three has is not running" no_container_runs_for extra
+expect "and it is serving" status_becomes 127.0.0.1 /lb-health 200
 
 echo
 if [ "$failures" -ne 0 ]; then
