@@ -7,6 +7,12 @@ each names the ADR or `DECISIONS.md` entry it was drawn from, and where a
 diagram and its source disagree, the source is right and the diagram is the
 bug.
 
+[The diagram set](#the-diagram-set), at the end, is a second set drawn for the
+final proposal: shorter labels that print at half or full A4 width, and the
+parts these three do not draw — the planned AWS deployment, CI/CD, security,
+the market lifecycle, settlement, scaling, the live-price fan-out and a
+delivery timeline.
+
 ## The services and what they own
 
 **Drawn from:** [ADR 0003](adr/0003-market-service-boundary.md) (the boundary
@@ -358,3 +364,161 @@ grants that file explains at length. No relationship in any of the four crosses
 a schema boundary, and the ids that look like they should —
 `market.markets.creator_id`, `ledger.accounts.owner_id`,
 `ledger.market_books.market_id` — are the cost ADR 0003 chose to pay.
+
+## The diagram set
+
+Twelve diagrams for the final proposal. Each `.mmd` in
+[`diagrams/`](diagrams/) is the source of truth and starts with the files and
+ADRs it was drawn from; the images below are its renders, made with
+`python docs/diagrams/render.py` (white background, 1600 px wide, one colour
+per service). [`diagrams/_conventions.md`](diagrams/_conventions.md) has the
+rules: solid for what exists, dashed and labelled "planned" for what does not.
+The three diagrams above stay the detailed reference; where these and the code
+disagree, the code is right.
+
+### 1. System architecture
+
+![System architecture](diagrams/rendered/01-system-architecture.svg)
+
+The browser reaches five FastAPI services through nginx in the scaled stack
+(an ALB on AWS); each service connects as its own Postgres role to its own
+schema, the ledger calls auth and market directly and publishes prices to
+Redis after every commit, and the close sweeper and leaderboard refresher run
+inside their services.
+**Drawn from:** ADR 0003, 0006, 0010, 0011, 0017, 0019, 0021, 0022, 0025;
+`docker-compose.yml`, `docker-compose.scale.yml`, `sql/`.
+[Source](diagrams/01-system-architecture.mmd)
+
+### 2. Cloud deployment (planned, #19)
+
+![Cloud deployment](diagrams/rendered/02-cloud-deployment.svg)
+
+Planned AWS deployment, not yet built: CloudFront and S3 serve the SPA, an
+ALB routes each host under one registrable domain to its own ECS Fargate
+service across two Availability Zones, and one RDS Postgres and one Redis node
+sit in private subnets behind a one-off bootstrap-and-migrate task that gates
+every rollout. Secrets Manager holds a `DATABASE_URL` per role and the
+`JWT_SECRET` all five share; auth's `COOKIE_DOMAIN` must name the parent
+domain for the other hosts to receive the `access_token` cookie.
+**Drawn from:** ADR 0002, 0010, 0011, 0020, 0021; issue #19; `sql/`,
+`backend/*/core/database.py`, `backend/auth_service/core/config.py`.
+[Source](diagrams/02-cloud-deployment.mmd)
+
+### 3. CI/CD
+
+![CI/CD](diagrams/rendered/03-cicd.svg)
+
+CI today (solid): path-filtered backend, frontend and end-to-end workflows on
+every pull request and on pushes to `dev`, `staging` and `main`. The planned
+deploy for `main` (dashed, #19) reruns the tests without a path filter, pushes
+images to ECR through OIDC, bootstraps and migrates once, then rolls ECS out
+behind a health check.
+**Drawn from:** `.github/workflows/*`, ADR 0020, issue #19.
+[Source](diagrams/03-cicd.mmd)
+
+### 4. Entity-relationship overview
+
+![ERD overview](diagrams/rendered/04-erd-overview.svg)
+
+Key columns of all sixteen tables across the four schemas. Solid lines are
+foreign keys, all within one schema; dotted lines labelled "no FK" and columns
+marked "→ auth.users" are ids that name a row in another table without a
+foreign key, because no service holds a grant on another's schema.
+Crow's-foot ends show what the constraints enforce; Mermaid's
+identifying/non-identifying distinction is not used.
+**Drawn from:** `backend/*/model/entities.py`, each service's
+`migrations/versions/`, `sql/02-schemas.sql`, ADR 0003.
+[Source](diagrams/04-erd-overview.mmd)
+
+### 5. Security
+
+![Security](diagrams/rendered/05-security.svg)
+
+Browsers hold a 15-minute JWT and a single-use, rotating refresh token in
+httpOnly cookies; every service verifies the token itself; the ledger checks
+the trader with auth on each trade and order, and names leaderboard holders
+with the one service key; Postgres grants confine each service to its own
+schema plus INSERT-only access to the append-only audit log.
+**Drawn from:** ADR 0001, 0002, 0006, 0007, 0021, 0022; `sql/`,
+`backend/shared/security.py`, `backend/auth_service/`.
+[Source](diagrams/05-security.mmd)
+
+### 6. A trade, print version
+
+![Trade sequence](diagrams/rendered/06-trade-sequence.svg)
+
+A replayed idempotency key is answered at once; otherwise the ledger confirms
+the trader with auth and the market's status with market, prices and commits
+under the `market_books` row lock, and publishes the new price through Redis
+to subscribed browsers. The detailed version is
+[above](#a-trade-end-to-end).
+**Drawn from:** ADR 0009, 0010, 0015, 0017, 0022, D-049;
+`backend/ledger_service/service/trading.py`.
+[Source](diagrams/06-trade-sequence.mmd)
+
+### 7. Delivery timeline
+
+![Timeline](diagrams/rendered/07-gantt.svg)
+
+297 merged pull requests, 13 September to 29 October 2026: one bar per epic
+from its first to its last merged PR (backend plain, frontend shaded), with
+the releases to `main` and the open deploy (#19) and load-test (#20) work.
+**Drawn from:** `gh pr list --state merged` and each PR's issue's `epic:`
+label. [Source](diagrams/07-gantt.mmd)
+
+### 8. Market lifecycle
+
+![Market lifecycle](diagrams/rendered/08-market-lifecycle.svg)
+
+The creator drafts, submits and publishes; the clock or an administrator
+closes trading; a second administrator approves or rejects the creator's
+proposed outcome; and the ledger settles or voids the market after moving the
+money. Trading stops at `close_time` whatever the status column says.
+**Drawn from:** `MarketStatus` in `backend/market_service/model/entities.py`,
+`service/market_service.py`; ADR 0008, 0011, 0013, 0014, 0016, 0023, 0025.
+[Source](diagrams/08-market-lifecycle.mmd)
+
+### 9. Settlement
+
+![Settlement sequence](diagrams/rendered/09-settlement-sequence.svg)
+
+The ledger confirms the market is approved and past its dispute window, pays
+the winning holders and records the result in one transaction under the book lock,
+then asks market to mark it settled, answering 503 for the administrator to
+repeat if that confirmation fails; a repeat is answered from the stored
+record.
+**Drawn from:** ADR 0019, 0023; `backend/ledger_service/service/settlement.py`.
+[Source](diagrams/09-settlement-sequence.mmd)
+
+### 10. Horizontal scaling, as run locally
+
+![Horizontal scaling](diagrams/rendered/10-horizontal-scaling.svg)
+
+One nginx listener per service round-robins across two replicas of each,
+both background jobs run safely on every replica, and each migrate step runs
+exactly once before its service starts.
+**Drawn from:** `docker-compose.scale.yml`, `deploy/nginx.conf`,
+[horizontal-scaling.md](horizontal-scaling.md), ADR 0011, 0020, 0021.
+[Source](diagrams/10-horizontal-scaling.mmd)
+
+### 11. Live-price fan-out
+
+![Realtime fan-out](diagrams/rendered/11-realtime-fanout.svg)
+
+The ledger publishes once to Redis after each commit, every realtime replica
+receives every frame and forwards it to its own subscribed sockets, and a
+browser reconciles against the ledger's snapshot on mount and on every
+subscription acknowledgement.
+**Drawn from:** ADR 0010, D-049; `backend/realtime_service/`,
+`docs/api/realtime-service.md`. [Source](diagrams/11-realtime-fanout.mmd)
+
+### 12. The `auth` and `audit` schemas
+
+![Auth and audit ERD](diagrams/rendered/12-erd-auth-audit.svg)
+
+Refresh tokens are stored only as SHA-256 hashes and rotated on every use;
+the append-only audit log records who acted on what, with no foreign keys,
+and only `audit_svc` may read it.
+**Drawn from:** `backend/auth_service/model/entities.py`,
+`sql/02-schemas.sql`, ADR 0001, 0002, 0006.
+[Source](diagrams/12-erd-auth-audit.mmd)
