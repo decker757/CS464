@@ -169,7 +169,9 @@ code runs against the new schema. And a release that fails is sent back
 without undoing its migration (ADR 0026). So add a column as nullable, or
 with a default, and drop or rename the old one a release later. A migration
 that breaks the release before it breaks the rollback too, and nothing tests
-that for you.
+that for you. Once a migration has reached production, undo its release by
+fixing forward, not by reverting it: the deploy migrates before it rolls, and
+Alembic refuses a database newer than the code. docs/deployment.md.
 
 The suites build their schema from the models, not from the migrations, and
 `test_migrations.py` is what holds the two together (ADR 0020). Market's and

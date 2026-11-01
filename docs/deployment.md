@@ -35,8 +35,9 @@ flowchart LR
 | `deploy/production/release.sh` | one deploy, run from GitHub: send files, migrate once, roll each server |
 | `deploy/production/migrate.sh`, `ensure-database.sh` | on a server: roles and grants, then the three migrate steps |
 | `deploy/production/roll.sh` | on a server: drain, start the new release, go back if it is unhealthy |
-| `/opt/cs464/releases/<commit>/` | on a server: one release's own compose.yml, scripts, `app.env` and `release.env`; the live one and the one before are kept |
+| `/opt/cs464/releases/<commit>/` | on a server: one release's own compose.yml, scripts and `release.env`; the live one and the one before are kept |
 | `/opt/cs464/current` | on a server: a link to the live release's directory |
+| `/opt/cs464/app.env` | on a server: the secrets and that server's settings, shared by every release and rewritten by every deploy |
 | `deploy/production/test/` | the two tests below, run by `ci-deploy.yml` |
 | `.github/workflows/deploy.yml` | push to `main`: build and push the images, then run `release.sh` |
 
@@ -92,7 +93,7 @@ admin of this repository.
 
    ```bash
    ssh deploy@<first app server> # its address: infra/tf output app_hosts
-   docker run --rm -it postgres:17-alpine psql "<infra/tf output -raw database_admin_url>" \
+   docker run --rm -it postgres:17.2-alpine psql "<infra/tf output -raw database_admin_url>" \
      -c "UPDATE auth.users SET role = 'admin' WHERE lower(username) = '<you>'"
    ```
 
@@ -125,6 +126,7 @@ The run goes red and says where. What state it left behind:
 | building the images | the old release; nothing was touched |
 | migrating | the old release; no server was rolled |
 | rolling a server | the old release, every one of them: the failed server went back by itself, and the ones before it were sent back |
+| rolling a server, which "could not go back" | the failed server serves nothing and stays drained; the ones before it stay on the new release, serving. Fix forward, or `roll.sh` the failed one by hand once you know why |
 | the public check | the new release, every one of them, all healthy behind the load balancer; look at DNS, the certificate and the load balancer |
 
 **A migration is not undone when its release is sent back.** So write every
@@ -132,16 +134,26 @@ migration to work with the release before it too: add a column, and drop the
 old one a release later. A migration that breaks the old release breaks the
 rollback. `CLAUDE.md` says the same, where backend changes are written.
 
-**Going back on purpose:** revert on `main`, which deploys again, or re-run an
-earlier Deploy run. To move one server by hand to the release before, which
-it still has: `ssh deploy@<server>`, then `/opt/cs464/releases/<commit>/roll.sh`.
+**Going back on purpose.** If the release you are undoing added no
+migration, revert it on `main`, which deploys again. If it did add one, that
+does not work: the deploy migrates first, and Alembic refuses a database
+already newer than the code it is given. Fix forward instead, keeping the
+migration, or go back on each server by hand, which does not migrate. A
+server keeps the release before, so: `ssh deploy@<server>`, then
+`/opt/cs464/releases/<commit>/roll.sh`, one server at a time.
 Its images may have been removed, and the server is logged out of GHCR after
 every deploy. So either make the `cs464-*` packages public once (each
 package's settings on GitHub; the repository already is), or log in first:
 `docker login ghcr.io -u <you>` with a token that can read packages.
 
+**Changing a secret or a setting in `app.env`:** apply it, run
+`infra/push-secrets.sh`, and deploy. Every release on a server reads the one
+`app.env`, so the release before picks up the change too. Never rename or
+remove a setting's name there, only add: the release before still reads the
+old name, and going back to it would start it without one.
+
 **Logs:** `ssh deploy@<server>`, `cd /opt/cs464/current`, then
-`docker compose --env-file app.env --env-file release.env logs -f ledger`.
+`docker compose --env-file ../../app.env --env-file release.env logs -f ledger`.
 The logs rotate at 50 MB per container. #599 adds a dashboard.
 
 ## Scaling
