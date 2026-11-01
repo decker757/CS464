@@ -9,8 +9,9 @@ name: Deploy
 # Main is only reached by promoting dev, where CI has already run. This does
 # not repeat the suites; ci-deploy.yml has already proven the stack.
 #
-# Reads the GitHub environment "production": its secrets and the variables
-# APP_HOSTS and PRODUCTION_DOMAIN, all written by infra/push-secrets.sh.
+# Reads the GitHub environment "production" (its secrets and APP_HOSTS) and
+# the repository variable PRODUCTION_DOMAIN, all written by
+# infra/push-secrets.sh.
 on:
   push:
     branches: [ "main" ]
@@ -32,7 +33,9 @@ jobs:
     # read its secrets either. ADR 0026.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: production
+    # No `environment`: this job holds a token that can push images, so it
+    # gets none of production's secrets. PRODUCTION_DOMAIN is a repository
+    # variable for that reason (infra/push-secrets.sh).
     permissions:
       contents: read
       packages: write
