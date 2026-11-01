@@ -17,10 +17,10 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | Voiding | #221, UI #526 | shipped, both sides: an admin voids a flawed market and every holder is refunded at cost (ADR 0025) |
 | Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60, #479 | shipped, both sides, including the suspend control and a users list that filters by role and by status; promoting an admin is an API call and has no screen yet |
 | Credits | [B-1] #32, [B-2] #33, [F-1] #41, UI #376, #443, #410 | shipped; every balance is derived from append-only entries, and the portfolio shows profit and loss and how many shares a live sell order holds back |
-| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61, #429, #495 | shipped, both sides: the price is the control that picks an outcome, a live price chart, and limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024) |
+| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61, #429, #495, #566, #580, #592 | shipped, both sides: the price is the control that picks an outcome, a live price chart, and limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024). A trade's confirmation, or the warning that it could not be confirmed, shows even after the trader picks another outcome, and a trade sent again after no answer is made once and says so |
 | Discovery | [X-1]–[X-4] #34–#37, #446, #447, UI #54, #126, #209, #441, #444, #448, #450, #564 | shipped: search and filters, live prices, the trader's own holdings, bands for closing soon, trending and biggest movers, and cards that show the odds as a split bar and each outcome's change over the week |
 | Leaderboard | [L-1]–[L-3] #38–#40, UI #58 | shipped, both sides |
-| Layout and accessibility | #380, #437, #438, #452 | every signed-in page fits a phone, with the navigation behind a menu button, and every text colour pair passes WCAG AA |
+| Layout and accessibility | #380, #437, #438, #452, #574 | every signed-in page fits a phone, with the navigation behind a menu button, and every text colour pair passes WCAG AA, including a browse chip's label while its price flashes |
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot, the ledger's price producer and its order frames |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
@@ -229,6 +229,7 @@ that drives the real frontend against the real stack:
 ```bash
 cd frontend && npm ci
 npm run test:run              # unit tests
+npm run lint                  # oxlint, type-aware, as CI runs it
 docker compose up -d --build --wait   # from the repo root, then:
 npm run e2e                   # end to end
 ```
