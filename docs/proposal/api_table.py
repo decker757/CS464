@@ -213,11 +213,6 @@ AMBIGUOUS_FOOTNOTE = (
     "are listed; the walk counts every branch, so some may never come back "
     "from this route."
 )
-AMBIGUOUS_UNLISTED_FOOTNOTE = (
-    "‡ The route declares this status in prose without naming a code, and "
-    "the code it can reach holds several errors with that status; the "
-    "appendix lists them."
-)
 CROSS_CHECK_INTRO = (
     "Generated alongside the table. For each route: error codes the code can "
     "reach that its `responses=` does not declare, codes it declares that the "
@@ -798,10 +793,7 @@ def _table_lines(
     if any(not row["declared_responses"] for row in rows):
         footnotes.append(WALK_ONLY_FOOTNOTE)
     if any(_ambiguous_statuses(row, error_codes_by_service[row["service"]]) for row in rows):
-        if list_ambiguous:
-            footnotes.append(AMBIGUOUS_FOOTNOTE)
-        else:
-            footnotes.append(AMBIGUOUS_UNLISTED_FOOTNOTE)
+        footnotes.append(AMBIGUOUS_FOOTNOTE)
     for footnote in footnotes:
         lines.extend(["", footnote])
     return lines
@@ -900,7 +892,9 @@ def _declaration_notes(row: dict, error_codes: dict) -> list[str]:
         notes.append(f"reachable but not declared: {_format_codes(undeclared)}")
 
     unreached = set()
-    walk_codes = {code for codes in walk.values() for code in codes}
+    walk_codes = set()
+    for codes in walk.values():
+        walk_codes.update(codes)
     for named in declared.values():
         unreached |= named - walk_codes
     if unreached:
@@ -969,7 +963,7 @@ def _full_document(rows: list[dict], conventions: str, error_codes_by_service: d
     for service in SERVICES:
         counts.append(f"{service} {sum(1 for row in rows if row['service'] == service)}")
     lines = [
-        "# API endpoints (appendix)",
+        "# API endpoints (full)",
         "",
         GENERATED_NOTICE,
         "",
