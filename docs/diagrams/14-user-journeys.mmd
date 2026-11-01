@@ -21,11 +21,10 @@ flowchart TB
         direction LR
         a1["Trader registers<br/>POST /auth/register"]:::auth
         a2["First balance read<br/>mints signup-grant"]:::ledger
-        a3["Opens a market,<br/>reads its terms"]:::market
-        a4["Subscribes on<br/>/ws/prices, reads<br/>a snapshot"]:::realtime
-        a5["Buys at the quote<br/>POST …/trades<br/>+ state_version"]:::ledger
-        a6["market.price frame<br/>via Redis: price<br/>moves on screen"]:::realtime
-        a1 --> a2 --> a3 --> a4 --> a5 --> a6
+        a3["Opens a market,<br/>reads its snapshot"]:::ledger
+        a4["Buys at the quote<br/>POST …/trades<br/>+ state_version"]:::ledger
+        a5["On /ws/prices, a<br/>market.price frame<br/>moves the price"]:::realtime
+        a1 --> a2 --> a3 --> a4 --> a5
     end
 
     subgraph j2["2 · An admin drafts, submits and publishes"]
@@ -43,16 +42,15 @@ flowchart TB
         c2["Creator proposes<br/>→ pending_resolution"]:::market
         c3["2nd admin approves<br/>its proposal_id<br/>→ approved"]:::market
         c4["24 h window:<br/>any admin may<br/>send it back"]:::market
-        c5["Admin settles,<br/>≥ window + 5 min:<br/>ledger pays out"]:::ledger
-        c6["Ledger calls<br/>…/settle → settled"]:::market
-        c1 --> c2 --> c3 --> c4 --> c5 --> c6
+        c5["Admin settles,<br/>≥ window + 5 min:<br/>ledger pays, then<br/>market → settled"]:::ledger
+        c1 --> c2 --> c3 --> c4 --> c5
     end
 
     subgraph j4["4 · Trader A's limit order fills inside B's trade"]
         direction LR
-        d1["A: POST …/orders<br/>binary only"]:::ledger
+        d1["A buys at a limit<br/>POST …/orders<br/>binary only"]:::ledger
         d2["Rests unfilled,<br/>budget reserved"]:::ledger
-        d3["Trader B buys,<br/>passes A's limit"]:::ledger
+        d3["B buys the other<br/>outcome: price falls<br/>past A's limit"]:::ledger
         d4["Cascade fills A<br/>in B's commit"]:::ledger
         d5["order.update to<br/>A's socket: fill<br/>shown on A's row"]:::realtime
         d1 --> d2 --> d3 --> d4 --> d5

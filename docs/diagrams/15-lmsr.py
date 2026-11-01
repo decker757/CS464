@@ -74,7 +74,7 @@ REFERENCE_STYLE = {"color": "#7a7a7a", "linestyle": ":", "linewidth": 1.1}
 TEXT_COLOUR = "#1A202C"
 GRID_COLOUR = "#e4e4e4"
 
-# Placed at full text width, 17 cm.
+# Placed at full text width, 15.9 cm.
 FIGURE_WIDTH_IN = 6.69
 FIGURE_HEIGHT_IN = 2.65
 PNG_WIDTH_PX = 1600

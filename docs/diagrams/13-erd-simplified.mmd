@@ -19,7 +19,7 @@
 %%                another's schema (sql/02-schemas.sql, ADR 0003). Its
 %%                cardinality is what the writing code guarantees.
 %%   "no FK" or "→ auth.users" on a column is the same kind of id, written
-%%                inline: owner_id names a user or a market by kind.
+%%                inline: owner_id names a user, a market or the platform by kind.
 %%   SUM = 0      a transaction's legs sum to zero, refused otherwise by
 %%                posting.py; not a database constraint.
 %%   SUM = balance  a balance is SUM(amount) over an account's entries and
@@ -32,7 +32,7 @@
 %%   and U+2011 in "append‑only" for the same reason. The init line keeps
 %%   ELK in declaration order, so the tables fall in three columns, and
 %%   enlarges text for print, as in 04-erd-overview.
-%%{init: {"elk": {"layeringStrategy": "DF_MODEL_ORDER"}, "themeVariables": {"fontSize": "28px"}, "themeCSS": ".edgeLabel .label, .edgeLabel p, .edgeLabel span { font-size: 24px !important; }"}}%%
+%%{init: {"elk": {"layeringStrategy": "DF_MODEL_ORDER"}, "themeVariables": {"fontSize": "36px"}, "themeCSS": ".edgeLabel .label, .edgeLabel p, .edgeLabel span { font-size: 30px !important; }"}}%%
 erDiagram
     direction LR
 
