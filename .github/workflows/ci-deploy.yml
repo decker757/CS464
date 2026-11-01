@@ -68,6 +68,13 @@ jobs:
       - run: infra/tf init -backend=false -input=false
       - run: infra/tf validate
 
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # release.sh's order of work and its failure paths, with fake servers.
+      - run: deploy/production/test/release-test.sh
+
   stack:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -76,7 +83,7 @@ jobs:
       - run: deploy/production/test/stack-test.sh
 
   notify:
-    needs: [shellcheck, terraform, stack]
+    needs: [shellcheck, terraform, release, stack]
     if: failure()
     uses: ./.github/workflows/notify-failure.yml
     with:
