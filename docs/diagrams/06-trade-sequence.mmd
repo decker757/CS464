@@ -27,7 +27,7 @@ sequenceDiagram
         A-->>L: 200 (suspended: ledger 403)
         L->>M: GET /public/<br/>markets/{id}
         M-->>L: status (not open: ledger 409)
-        L->>DB: lock book, re-check key, LMSR price, write, COMMIT
+        L->>DB: lock book, re-check key, LMSR price, fill orders, COMMIT
         L-)R: PUBLISH market.price<br/>(failure logged)
         L-->>B: 201, the trade result
         R-)RT: price frame

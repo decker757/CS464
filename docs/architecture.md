@@ -384,7 +384,8 @@ The browser reaches five FastAPI services through nginx in the scaled stack
 (an ALB on AWS); each service connects as its own Postgres role to its own
 schema, the ledger calls auth and market directly and publishes prices to
 Redis after every commit, and the close sweeper and leaderboard refresher run
-inside their services.
+inside their services. `audit_svc` holds INSERT as well as SELECT only so that
+its own suite can seed rows; the audit service has no write route.
 **Drawn from:** ADR 0003, 0006, 0010, 0011, 0017, 0019, 0021, 0022, 0025;
 `docker-compose.yml`, `docker-compose.scale.yml`, `sql/`.
 [Source](diagrams/01-system-architecture.mmd)
