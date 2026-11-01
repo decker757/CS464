@@ -1,0 +1,58 @@
+%% 07 — Delivery timeline by epic
+%% Drawn from: gh pr list --state merged (297 PRs into dev or a stack branch,
+%%   2026-09-13 to 2026-10-29), each PR's closing issue and its "epic:" label,
+%%   else the issue's parent, else the story tag in the title. 62 PRs with no
+%%   epic anywhere are the last lane; #221's void stack, unlabelled, is under
+%%   resolution. Releases are the [Release] PRs into main, named as their
+%%   titles name them. #19 and #20 are open with no target date, so they are a
+%%   marker on 1 Nov rather than a bar.
+%% A bar runs from an epic's first merged PR to its last. It is a span, not
+%% continuous work. FE bars are shaded (`active`), BE bars plain.
+%%{init: {"themeCSS": ".tick text { font-size: 15px; } .sectionTitle { font-size: 15px; } .taskText, .taskTextOutsideRight, .taskTextOutsideLeft { font-size: 14px; }"}}%%
+gantt
+    dateFormat YYYY-MM-DD
+    axisFormat %d %b
+    tickInterval 1week
+    todayMarker off
+    section Authentication
+    BE, 6 PRs :2026-09-13, 15d
+    FE, 3 PRs :active, 2026-09-20, 29d
+    section Market creation
+    BE, 3 PRs :2026-09-13, 3d
+    FE, 5 PRs :active, 2026-09-26, 30d
+    section Admin and audit
+    BE, 13 PRs :2026-09-15, 27d
+    FE, 2 PRs :active, 2026-10-11, 9d
+    section Infra and foundation
+    BE, 47 PRs :2026-09-15, 45d
+    FE, 7 PRs :active, 2026-09-27, 33d
+    section Resolution, settle, void
+    BE, 33 PRs :2026-09-16, 44d
+    FE, 11 PRs :active, 2026-09-28, 32d
+    section Credit balance
+    BE, 4 PRs :2026-09-16, 34d
+    FE, 3 PRs :active, 2026-10-19, 7d
+    section Market oversight
+    BE, 15 PRs :2026-09-16, 33d
+    FE, 10 PRs :active, 2026-09-28, 27d
+    section Market discovery
+    BE, 11 PRs :2026-09-21, 39d
+    FE, 19 PRs :active, 2026-09-26, 34d
+    section Trading
+    BE, 19 PRs :2026-09-24, 31d
+    FE, 12 PRs :active, 2026-10-05, 25d
+    section Leaderboard
+    BE, 10 PRs :2026-10-11, 6d
+    FE, 2 PRs :active, 2026-10-19, 1d
+    section Fixes, refactors, docs
+    BE, 35 PRs :2026-09-13, 47d
+    FE, 27 PRs :active, 2026-09-27, 33d
+    section Releases to main
+    Sprint 2, #206    :milestone, 2026-10-04, 0d
+    Iteration 3, #327 :milestone, 2026-10-17, 0d
+    Iteration 4, #398 :milestone, 2026-10-19, 0d
+    Iteration 5, #427 :milestone, 2026-10-20, 0d
+    Iteration 6, #504 :milestone, 2026-10-24, 0d
+    Iteration 7, #577 :milestone, 2026-10-29, 0d
+    section Still open
+    #19 deploy, #20 load test, no date set :crit, milestone, 2026-11-01, 0d

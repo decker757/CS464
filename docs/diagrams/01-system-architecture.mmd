@@ -1,0 +1,61 @@
+%% 01 — System architecture
+%% Drawn from: ADR 0003, ADR 0006, ADR 0010, ADR 0011, ADR 0017, ADR 0019,
+%%   ADR 0021, ADR 0022, ADR 0025, docker-compose.yml, docker-compose.scale.yml,
+%%   deploy/nginx.conf, sql/01-roles.sql, sql/02-schemas.sql,
+%%   backend/ledger_service/service/{account_status,market_terms,user_directory,bus}.py,
+%%   backend/market_service/service/sweeper.py,
+%%   backend/ledger_service/service/leaderboard_refresher.py
+%% nginx fronts the scale stack (docker-compose.scale.yml), an ALB fronts AWS (02);
+%% the dev stack publishes each service port directly. Grants per schema: 05.
+%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
+flowchart TB
+    browser["Browser<br/>React SPA"]:::browser
+    nginx["nginx, scale stack<br/>(ALB on AWS)"]:::edge
+    browser -->|"HTTP + WebSocket<br/>cookie auth"| nginx
+
+    subgraph svc["FastAPI services"]
+        direction LR
+        audit["audit :8002<br/>reads audit log"]:::audit
+        subgraph mk["market :8001"]
+            direction TB
+            market["market<br/>lifecycle, resolution"]:::market
+            sweeper(["close sweeper, 10 s<br/>open → closed"]):::job
+        end
+        auth["auth :8000<br/>users, sessions"]:::auth
+        subgraph lg["ledger :8003"]
+            direction TB
+            ledger["ledger<br/>credits, trades, LMSR"]:::ledger
+            refresher(["leaderboard<br/>refresher, 60 s"]):::job
+        end
+        realtime["realtime :8004<br/>WebSocket relay"]:::realtime
+    end
+
+    nginx -->|"a port per service;<br/>/ws/prices to realtime"| svc
+
+    ledger -->|"GET /auth/me<br/>per trade and order"| auth
+    refresher -->|"POST /internal/users/lookup<br/>X-Service-Key"| auth
+    ledger -->|"GET /public/markets/{id}<br/>then POST settle, void"| market
+
+    pg[("Postgres 17: a schema and role<br/>per service, no cross grants;<br/>writers INSERT the audit log")]:::pg
+    redis[("Redis pub/sub<br/>market.price, order.update")]:::redis
+
+    auth -->|"auth_svc"| pg
+    market -->|"market_svc"| pg
+    ledger -->|"ledger_svc"| pg
+    audit -->|"audit_svc: SELECT, INSERT"| pg
+
+    ledger -->|"PUBLISH after commit"| redis
+    realtime -->|"SUBSCRIBE"| redis
+
+    classDef browser  fill:#F2F2F2,stroke:#555555,color:#1A202C
+    classDef edge     fill:#FFF4CC,stroke:#9A7B00,color:#1A202C
+    classDef auth     fill:#DCEBFA,stroke:#2F6DB5,color:#1A202C
+    classDef market   fill:#DFF2E1,stroke:#2E8B47,color:#1A202C
+    classDef ledger   fill:#FCEBCF,stroke:#C27C0E,color:#1A202C
+    classDef audit    fill:#ECE3F7,stroke:#7048A8,color:#1A202C
+    classDef realtime fill:#DDF3F3,stroke:#1F8A8A,color:#1A202C
+    classDef pg       fill:#E6EBF2,stroke:#3B5068,color:#1A202C
+    classDef redis    fill:#FBE0DE,stroke:#C0392B,color:#1A202C
+    classDef job      fill:#FFFFFF,stroke:#4A5568,color:#1A202C,stroke-dasharray:2 2
+    style mk fill:#F9FDF9,stroke:#2E8B47
+    style lg fill:#FFFDF7,stroke:#C27C0E
