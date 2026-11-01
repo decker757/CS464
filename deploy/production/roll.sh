@@ -5,21 +5,28 @@
 #
 #   /opt/cs464/releases/<tag>/roll.sh
 #
-# Each release has its own directory: its compose.yml, its scripts, its
-# app.env and its release.env (IMAGE_TAG). `current` links to the release
-# the server runs. A release is always started from its own directory, so
-# going back runs the old release exactly as it was, even if the new one
-# added a service or renamed a setting.
+# Each release has its own directory: its compose.yml, its scripts and its
+# release.env (IMAGE_TAG). `current` links to the release the server runs. A
+# release is always started from its own directory, so going back runs the
+# old release exactly as it was, even if the new one added a service.
+#
+# The secrets are not the release's. /opt/cs464/app.env is shared by every
+# release and rewritten by every deploy, so a release gone back to gets
+# today's passwords and addresses, not the ones it was deployed with.
 #
 # 1. Pull the new images. If that fails, nothing has changed: stop.
 # 2. Drain: /lb-health answers 503, and the load balancer stops sending
 #    requests here. Wait long enough for it to notice.
 # 3. Start the new release and wait for every health check.
 # 4. If that fails, start the old release again from its own directory,
-#    undrain, and exit 1.
+#    undrain, and exit 1. If the old release will not start either, the
+#    server stays drained, because it cannot serve, and exits 2.
 # 5. Point `current` at the new release. From here the server is on it, so
 #    nothing after this step can fail the roll.
 # 6. Undrain, wait for the load balancer to send traffic again, and tidy up.
+#
+# Exit status: 0 on the new release; 1 failed, and on the old release (or
+# none, on a first deploy); 2 failed, and serving nothing.
 set -euo pipefail
 
 release_dir=$(cd "$(dirname "$0")" && pwd)
@@ -41,9 +48,14 @@ drain_seconds=${DRAIN_SECONDS:-15}
 wait_seconds=${WAIT_SECONDS:-180}
 gateway=http://127.0.0.1:${GATEWAY_PORT:-80}
 
+# One folder for every release, and always absolute: compose.yml mounts it,
+# and a relative path would resolve inside the release's own directory. The
+# shell's value wins over any in an env file.
+export DRAIN_DIR="$root/drain"
+
 compose_in() {
   # compose_in <release directory> <compose arguments...>
-  (cd "$1" && docker compose --env-file app.env --env-file release.env "${@:2}")
+  (cd "$1" && docker compose --env-file "$root/app.env" --env-file release.env "${@:2}")
 }
 
 wait_for_lb_health() {
@@ -81,10 +93,10 @@ if ! compose_in "$release_dir" pull --quiet; then
   exit 1
 fi
 
-mkdir -p "$root/drain"
+mkdir -p "$DRAIN_DIR"
 if [ -n "$previous_dir" ]; then
   echo "roll: draining for ${drain_seconds}s"
-  touch "$root/drain/on"
+  touch "$DRAIN_DIR/on"
   sleep "$drain_seconds"
 fi
 
@@ -94,9 +106,12 @@ if ! compose_in "$release_dir" up -d --wait --wait-timeout "$wait_seconds" --rem
   compose_in "$release_dir" ps >&2 || true
   if [ -n "$previous_dir" ]; then
     echo "roll: going back to $previous_tag" >&2
-    compose_in "$previous_dir" up -d --wait --wait-timeout "$wait_seconds" --remove-orphans
-    rm -f "$root/drain/on"
-    wait_for_lb_health
+    if ! compose_in "$previous_dir" up -d --wait --wait-timeout "$wait_seconds" --remove-orphans; then
+      echo "roll: COULD NOT go back to $previous_tag; this server is serving nothing, and stays drained" >&2
+      exit 2
+    fi
+    rm -f "$DRAIN_DIR/on"
+    wait_for_lb_health || echo "roll: WARNING: back on $previous_tag, but /lb-health is not answering" >&2
   fi
   exit 1
 fi
@@ -106,11 +121,15 @@ echo "roll: this server is on $new_tag"
 
 # Warnings from here on, not failures: the server is already on the new
 # release, and saying otherwise would send the deploy the wrong way.
-rm -f "$root/drain/on"
+rm -f "$DRAIN_DIR/on"
 if wait_for_lb_health; then
   echo "roll: waiting ${drain_seconds}s for the load balancer to send traffic here"
   sleep "$drain_seconds"
 else
   echo "roll: WARNING: $new_tag is running, but /lb-health is not answering" >&2
 fi
-remove_other_releases || echo "roll: WARNING: could not remove old releases" >&2
+# Rolling the release it was already on leaves nothing to tidy, and tidying
+# would remove the release before, which a deploy may still go back to.
+if [ "$new_tag" != "$previous_tag" ]; then
+  remove_other_releases || echo "roll: WARNING: could not remove old releases" >&2
+fi

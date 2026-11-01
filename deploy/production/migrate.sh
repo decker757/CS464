@@ -7,17 +7,20 @@
 #
 #   /opt/cs464/releases/<tag>/migrate.sh
 #
-# Needs ensure-database.sh's environment. Reads app.env and release.env
-# beside it, as roll.sh does.
+# Needs ensure-database.sh's environment. Reads the shared app.env and the
+# release.env beside it, as roll.sh does.
 set -euo pipefail
 
 cd "$(dirname "$0")"
+root=$(cd ../.. && pwd)
+# compose.yml requires it; the migrate steps never mount it.
+export DRAIN_DIR="$root/drain"
 
 ./ensure-database.sh
 
 for service in auth market ledger; do
   echo "migrate: $service"
-  docker compose --env-file app.env --env-file release.env pull --quiet "$service-migrate"
-  docker compose --env-file app.env --env-file release.env run --rm "$service-migrate"
+  docker compose --env-file "$root/app.env" --env-file release.env pull --quiet "$service-migrate"
+  docker compose --env-file "$root/app.env" --env-file release.env run --rm "$service-migrate"
 done
 echo "migrate: done"
