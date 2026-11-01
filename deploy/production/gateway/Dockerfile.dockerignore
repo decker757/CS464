@@ -1,0 +1,9 @@
+# The gateway builds from the repository root, which holds far more than it
+# needs. Only these reach the build.
+*
+!frontend/
+!deploy/production/gateway/
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/

@@ -19,6 +19,13 @@ class Settings(ServiceSettings):
     # A SecretStr for the password in it (#307).
     database_url: SecretStr = Field(min_length=1)
 
+    # How many connections this process keeps open, and how many more it may
+    # open under load. Settings, because a managed Postgres has one connection
+    # ceiling shared by every replica of every service. DECISIONS.md, "Each
+    # service's connection pool is a setting, sized to the database's ceiling".
+    database_pool_size: int = Field(default=10, ge=1)
+    database_max_overflow: int = Field(default=10, ge=0)
+
     # --- Tokens and cookies ---------------------------------------------
     # The signing key itself is in ServiceSettings, required with no default.
     # HS256 means any service that can verify a token can also mint one; ADR

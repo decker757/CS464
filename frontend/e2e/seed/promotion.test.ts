@@ -16,12 +16,12 @@ describe('refuseUnlessAdmin', () => {
   it('accepts a token whose role is admin', () => {
     const token = tokenWithClaims({ sub: 'u1', username: 'admin_rachel', role: 'admin' })
 
-    expect(() => refuseUnlessAdmin(token, 'cs464-demo')).not.toThrow()
+    expect(() => refuseUnlessAdmin(token, 'the compose project "cs464-demo"', 'Set COMPOSE_PROJECT_NAME.')).not.toThrow()
   })
 
   it('refuses a token that is still a trader, naming the compose project the SQL step reached', () => {
     const token = tokenWithClaims({ sub: 'u1', username: 'admin_rachel', role: 'trader' })
 
-    expect(() => refuseUnlessAdmin(token, 'cs464-demo')).toThrow('cs464-demo')
+    expect(() => refuseUnlessAdmin(token, 'the compose project "cs464-demo"', 'Set COMPOSE_PROJECT_NAME.')).toThrow('cs464-demo')
   })
 })

@@ -1,0 +1,131 @@
+# [5.3] #19. The gateway on every app server. The load balancer ends TLS and
+# sends plain HTTP here; this file routes by host name:
+#
+#   <domain>             the built frontend
+#   auth.<domain>        the auth service       (and market., ledger., audit.)
+#   realtime.<domain>    the price websocket
+#
+# One subdomain per service, rather than one host with path prefixes, for the
+# reason in ../../nginx.conf: the services do not namespace their paths, and
+# the frontend already addresses each by its own URL. The login cookie names
+# the parent domain, so it reaches every subdomain. ADR 0002.
+#
+# The nginx image fills in ${DOMAIN} when the container starts. nginx's own
+# $variables are left alone, because DOMAIN is the only one it is given.
+
+# Docker's own DNS, re-asked every 10 seconds. A service recreated by a deploy
+# comes back on a new address, and nginx would otherwise keep the old one
+# until it restarted. That only works when proxy_pass is a variable.
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+# The load balancer's health check arrives by IP address, not by one of our
+# names, so it lands here.
+server {
+    listen 80 default_server;
+
+    # What the load balancer asks. 503 while roll.sh is draining this server,
+    # so the balancer stops sending it traffic before anything restarts.
+    # Otherwise the ledger's answer: a server that cannot trade should not
+    # get traffic. #599 makes /health check the database.
+    location = /lb-health {
+        if (-f /etc/nginx/drain/on) {
+            return 503;
+        }
+        set $ledger http://ledger:8000;
+        proxy_pass $ledger/health;
+    }
+
+    # The container's own health check. Separate from /lb-health so that
+    # draining does not make Docker think the gateway itself is broken.
+    location = /gateway-health {
+        return 200;
+    }
+
+    location / {
+        return 404;
+    }
+}
+
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    root /usr/share/nginx/html;
+
+    # Vite fingerprints everything under assets/, so it can be cached for good.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # A client-side route (/markets/…) is the app's, not a file.
+    location / {
+        try_files $uri /index.html;
+    }
+
+    # index.html names the current assets, so it is never cached.
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+}
+
+server {
+    listen 80;
+    server_name auth.${DOMAIN};
+    location / {
+        set $upstream http://auth:8000;
+        proxy_pass $upstream;
+        include /etc/nginx/conf.d/proxy-headers.inc;
+    }
+}
+
+server {
+    listen 80;
+    server_name market.${DOMAIN};
+    location / {
+        set $upstream http://market:8000;
+        proxy_pass $upstream;
+        include /etc/nginx/conf.d/proxy-headers.inc;
+    }
+}
+
+server {
+    listen 80;
+    server_name ledger.${DOMAIN};
+    location / {
+        set $upstream http://ledger:8000;
+        proxy_pass $upstream;
+        include /etc/nginx/conf.d/proxy-headers.inc;
+    }
+}
+
+server {
+    listen 80;
+    server_name audit.${DOMAIN};
+    location / {
+        set $upstream http://audit:8000;
+        proxy_pass $upstream;
+        include /etc/nginx/conf.d/proxy-headers.inc;
+    }
+}
+
+server {
+    listen 80;
+    server_name realtime.${DOMAIN};
+    location / {
+        set $upstream http://realtime:8000;
+        proxy_pass $upstream;
+        include /etc/nginx/conf.d/proxy-headers.inc;
+        # A websocket: pass the upgrade on, and let a quiet socket stay open
+        # for an hour instead of nginx's default minute.
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+}
