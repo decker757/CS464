@@ -23,7 +23,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot and the ledger's price producer |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
-| Deployment | [5.1] #17, [5.2] #18, [5.4] #440 | containers, CI and the replicated stack shipped; the deploy pipeline [5.3] #19 and the load test [5.4] #20 are open |
+| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440 | containers, CI and the replicated stack shipped; every push to `main` deploys to DigitalOcean (ADR 0026); staging (#19), the load test [5.4] #20 and monitoring #599 are open |
 
 ## Running it
 
@@ -193,6 +193,22 @@ ADR 0020's step runs once per deploy, never once per replica.
 what was executed, which replica answered which request, and what [5.3] #19's
 pipeline has to get right.
 
+### Production
+
+Every push to `main` deploys to DigitalOcean, in Singapore: two app servers
+behind a load balancer, with managed Postgres and Valkey, all described in
+Terraform under `infra/terraform/`. The servers are updated one at a time,
+and a release that fails on any server is taken back off every server. It
+costs about US$81 a month at list prices.
+
+[`docs/deployment.md`](docs/deployment.md) covers first-time setup, what a
+deploy does, rollback, scaling and the cost breakdown.
+[ADR 0026](docs/adr/0026-production-on-digitalocean.md) is why.
+
+```bash
+deploy/production/test/stack-test.sh   # the production stack on this machine; needs only Docker
+```
+
 ## Tests
 
 ```bash
@@ -345,3 +361,6 @@ to make and would be expensive to reverse.
   fill against the AMM inside the trade that moved the price
 - [0025](docs/adr/0025-voiding-a-flawed-market.md) voiding a flawed market, by
   any admin without a stake, refunded at cost
+- [0026](docs/adr/0026-production-on-digitalocean.md) production on
+  DigitalOcean, two or more app servers behind a load balancer, deployed from
+  `main`
