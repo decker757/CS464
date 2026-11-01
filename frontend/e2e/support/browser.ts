@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from '@playwright/test'
 import { PASSWORD, type Session } from './backend'
+import type { Colour } from '../../src/test/contrast'
 
 /** Logs in through the login form, which sets the session cookies for every service. */
 export async function logIn(page: Page, session: Session): Promise<void> {
@@ -34,6 +35,30 @@ export async function logOut(page: Page, session: Session): Promise<void> {
  */
 export function marketCard(page: Page, question: string): Locator {
   return page.getByText(question, { exact: true }).locator('xpath=../..').last()
+}
+
+/**
+ * The colours of one outcome's chip on a browse card, label and background,
+ * each painted over the white card the chip sits in and read back as the
+ * pixel a reader sees: a tint is a colour-mix, not a plain rgb().
+ */
+export async function chipColours(card: Locator, outcomeLabel: string): Promise<{ text: Colour; background: Colour }> {
+  return card.getByTitle(outcomeLabel, { exact: true }).evaluate(label => {
+    const chip = label.parentElement as HTMLElement
+    const paintOverWhite = (colour: string): [number, number, number] => {
+      const canvas = document.createElement('canvas')
+      canvas.width = 1
+      canvas.height = 1
+      const context = canvas.getContext('2d') as CanvasRenderingContext2D
+      context.fillStyle = '#ffffff'
+      context.fillRect(0, 0, 1, 1)
+      context.fillStyle = colour
+      context.fillRect(0, 0, 1, 1)
+      const [red, green, blue] = context.getImageData(0, 0, 1, 1).data
+      return [red / 255, green / 255, blue / 255]
+    }
+    return { text: paintOverWhite(getComputedStyle(label).color), background: paintOverWhite(getComputedStyle(chip).backgroundColor) }
+  })
 }
 
 /**

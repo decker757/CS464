@@ -1,6 +1,7 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, snapshot, uniqueName, type Market } from './support/backend'
-import { logIn, marketCard } from './support/browser'
+import { chipColours, logIn, marketCard } from './support/browser'
+import { AA_SMALL_TEXT, contrastRatio } from '../src/test/contrast'
 
 /** What the ledger quotes for one outcome of `market`, by its id. */
 function priceOf(market: Market, prices: { outcome_id: string; price: string }[], label: string): string | undefined {
@@ -73,4 +74,48 @@ test('a browse card moves when someone else buys, without a reload', async ({ pa
 
   // And the cue is temporary: the price stays, the movement mark does not.
   await expect(card.getByLabel('Lakers price')).toHaveText('73.1%')
+})
+
+// [FE] #574, in the real browser: while a chip is tinted for a move, its label
+// still reads at AA. index.css.test.ts measures the token pair; only this sees
+// the chip actually use it, and the tint Tailwind actually paints. Three
+// outcomes, because a two-outcome card draws a split bar with no chips.
+test("a browse chip's label stays AA on the tint that marks its price as moved", async ({ page }) => {
+  const admin = await registerAdmin('bct_admin')
+  const market = await publishMarket(
+    admin,
+    `Will ${uniqueName('bct')} move live?`,
+    ['Red', 'Green', 'Blue'],
+    { closesInHours: 1 },
+  )
+  const watcher = await registerTrader('bct_watch')
+  const buyer = await registerTrader('bct_buy')
+  // Traded once before the page opens: an untraded card shows no prices.
+  await buy(buyer, market, 'Red', '50.0000')
+
+  // No fade, so the tint is fully there the moment the cue is.
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await logIn(page, watcher)
+  await page.goto('/markets')
+  const card = marketCard(page, market.question)
+  await expect(card.getByLabel('Red price')).toBeVisible()
+
+  // One buy of Red: Red rises onto the green tint, and Green and Blue fall
+  // onto the red one, so both tints are on screen at once.
+  await buy(buyer, market, 'Red', '50.0000')
+  await expect(card.getByLabel('Red price rose')).toBeVisible({ timeout: 10_000 })
+  await expect(card.getByLabel('Green price fell')).toBeVisible()
+  const rose = await chipColours(card, 'Red')
+  const fell = await chipColours(card, 'Green')
+
+  expect(contrastRatio(rose.text, rose.background)).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
+  expect(contrastRatio(fell.text, fell.background)).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
+
+  // Both reads were of a tint: once the cue is over, each chip is back on a
+  // different colour. Otherwise a read that came too late would pass on the
+  // resting chip, which index.css.test.ts already measures.
+  await expect(card.getByLabel('Red price', { exact: true })).toBeVisible()
+  await expect(card.getByLabel('Green price', { exact: true })).toBeVisible()
+  expect((await chipColours(card, 'Red')).background).not.toEqual(rose.background)
+  expect((await chipColours(card, 'Green')).background).not.toEqual(fell.background)
 })
