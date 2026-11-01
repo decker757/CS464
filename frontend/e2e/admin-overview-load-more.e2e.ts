@@ -3,10 +3,10 @@ import { registerAdmin, saveDraft, submitMarket, uniqueName } from './support/ba
 import { logIn, marketCard, setQueryParams } from './support/browser'
 
 // [2.1] #210, #235: Load more on the admin markets page against the real keyset
-// paging. The overview has no search, so the test isolates itself another way:
-// a fresh admin's Draft and Submitted tabs list only that admin's own markets,
-// so they hold exactly what this test made, whatever else the database holds.
-// One thing is added to each request on the way out, a page size of two.
+// paging. A fresh admin's Draft and Submitted tabs list only that admin's own
+// markets, so they hold exactly what this test made, whatever else the
+// database holds. One thing is added to each request on the way out, a page
+// size of two.
 // Everything else is real.
 const PAGE_SIZE = 2
 
