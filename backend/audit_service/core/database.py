@@ -34,9 +34,11 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
+        settings = get_settings()
         _engine = create_async_engine(
-            get_settings().database_url.get_secret_value(),
-            pool_size=10,
+            settings.database_url.get_secret_value(),
+            pool_size=settings.database_pool_size,
+            max_overflow=settings.database_max_overflow,
             # Replace a connection Postgres closed rather than hand it out.
             pool_pre_ping=True,
         )
