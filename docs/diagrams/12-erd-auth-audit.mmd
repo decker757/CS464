@@ -18,9 +18,12 @@
 %% Layout: every quoted label uses non-breaking spaces (U+00A0) so it does not wrap
 %%   (and U+2011 non-breaking hyphens, for the same reason),
 %%   and the init line enlarges text for print, as in 04-erd-overview.
-%%{init: {"themeVariables": {"fontSize": "24px"}, "themeCSS": ".edgeLabel .label, .edgeLabel p, .edgeLabel span { font-size: 22px !important; }"}}%%
+%%   TB, not LR: auth.users above its two children keeps the figure narrow
+%%   enough for a portrait column (17 cm) at 26px text. The init line also
+%%   makes edge labels opaque, since both lines run through their labels.
+%%{init: {"themeVariables": {"fontSize": "26px"}, "themeCSS": ".edgeLabel .label, .edgeLabel p, .edgeLabel span { font-size: 26px !important; } .labelBkg { background-color: #FFFFFF !important; }"}}%%
 erDiagram
-    direction LR
+    direction TB
 
     auth_users["auth.users"] {
         uuid id PK

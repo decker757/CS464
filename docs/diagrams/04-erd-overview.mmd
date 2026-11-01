@@ -22,17 +22,23 @@
 %%                bare by choice (market entities.py:334). Its cardinality
 %%                is what the writing code guarantees, not the database.
 %%   "→ auth.users" on a column stands in for a dotted line to auth.users:
-%%                seven such lines met in a hub unreadable in print. Like every
+%%                eight such lines met in a hub unreadable in print. Like every
 %%                column not marked FK, it is an id with no foreign key.
 %%   "composite FK" is (market_id, outcome_id) into ledger.market_outcomes.
-%%   Layout: LR, because Mermaid stacks the unlinked groups (auth, the
-%%                leaderboard, audit) vertically that way; TB lays them side
-%%                by side and doubles the width.
 %% -
-%% Layout: edge labels and column comments use non-breaking spaces (U+00A0) so they do not wrap; type
-%%   a plain space and the label breaks over two lines. The init line
-%%   enlarges text for print: ER edge labels are 14px in Mermaid's own CSS.
-%%{init: {"themeVariables": {"fontSize": "28px"}, "themeCSS": ".edgeLabel .label, .edgeLabel p, .edgeLabel span { font-size: 24px !important; }"}}%%
+%% Layout: it goes on a landscape page (24.6 x 15.9 cm), so it is drawn
+%%   three columns wide rather than four. ELK puts the first-written entity
+%%   of a relationship to the left of the second, so six relationships are
+%%   written child first (}o--|| for ||--o{, |o..|| for ||..o|). The
+%%   crow's feet and the meaning are the same either way round; only the
+%%   column changes. LINEAR_SEGMENTS placement packs the columns closer
+%%   than ELK's default, which leaves tall gaps beside the long edges.
+%%   Edge labels and column comments use non-breaking spaces (U+00A0) so they
+%%   do not wrap; type a plain space and the label breaks over two lines.
+%%   The init line enlarges text for print (ER edge labels are 14px in
+%%   Mermaid's own CSS) and makes the edge label background opaque: Mermaid
+%%   draws it at 50% white, and a line running through a label showed.
+%%{init: {"elk": {"nodePlacementStrategy": "LINEAR_SEGMENTS"}, "themeVariables": {"fontSize": "32px"}, "themeCSS": ".edgeLabel .label, .edgeLabel p, .edgeLabel span { font-size: 32px !important; } .labelBkg { background-color: #FFFFFF !important; }"}}%%
 erDiagram
     direction LR
 
@@ -62,7 +68,7 @@ erDiagram
 
     ledger_accounts["ledger.accounts"] {
         uuid id PK
-        uuid owner_id "user, market or platform; no FK"
+        uuid owner_id "user, market or<br/>platform; no FK"
     }
     ledger_transactions["ledger.transactions"] {
         uuid id PK
@@ -112,20 +118,20 @@ erDiagram
     }
 
     %% Real foreign keys, all inside one schema
-    auth_users ||--o{ auth_refresh_tokens : "user_id"
-    market_markets ||--o{ market_market_outcomes : "market_id"
+    auth_refresh_tokens }o--|| auth_users : "user_id"
+    market_market_outcomes }o--|| market_markets : "market_id"
     market_markets ||--o{ market_resolution_sources : "market_id"
     ledger_transactions ||--o{ ledger_entries : "transaction_id"
     ledger_accounts ||--o{ ledger_entries : "account_id"
-    ledger_accounts ||--o{ ledger_market_books : "pool_account_id"
+    ledger_market_books }o--|| ledger_accounts : "pool_account_id"
     ledger_market_books ||--o{ ledger_market_outcomes : "market_id"
     ledger_market_books ||--o| ledger_market_results : "market_id"
     ledger_market_outcomes ||--o{ ledger_positions : "composite FK"
     ledger_market_outcomes ||--o{ ledger_orders : "composite FK"
     ledger_market_outcomes |o--o| ledger_market_results : "winner"
-    ledger_leaderboard_generations ||--o{ ledger_leaderboard_entries : "generation_id"
+    ledger_leaderboard_entries }o--|| ledger_leaderboard_generations : "generation_id"
 
     %% Ids with no foreign key
-    market_markets |o..o| market_market_outcomes : "no FK"
-    market_markets ||..o| ledger_market_books : "no FK"
+    market_market_outcomes |o..o| market_markets : "no FK"
+    ledger_market_books |o..|| market_markets : "no FK"
     market_market_outcomes ||..o| ledger_market_outcomes : "no FK"

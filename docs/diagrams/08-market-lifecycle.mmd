@@ -17,6 +17,10 @@
 %% commit (ADR 0019, ADR 0025); market itself pays nobody.
 %% approved --> voided is the ledger asking `voidable`, inside the window (voiding.py:162,
 %% settling.py:is_voidable); market's own /void step tolerates window end + 5 min.
+%% Layout: drawn for a landscape page (24.6 x 15.9 cm). The init line sets
+%%   22px text; Mermaid wraps an edge label at 200px whatever the font size,
+%%   so a guard longer than that is broken by hand with <br/>.
+%%{init: {"themeVariables": {"fontSize": "22px"}}}%%
 stateDiagram-v2
     direction LR
 
@@ -36,7 +40,7 @@ stateDiagram-v2
         pending_resolution --> approved : approve<br/>[not proposer]
         pending_resolution --> closed : reject<br/>[not proposer]
         approved --> closed : send-back<br/>[before window end]
-        approved --> settled : settle (ledger,<br/>after payout)<br/>[≥ window end + 5 min]
+        approved --> settled : settle (ledger,<br/>after payout)<br/>[≥ window end<br/>+ 5 min]
         closed --> voided : void (ledger,<br/>after refunds)
         pending_resolution --> voided : void (ledger)<br/>/ clears proposal
         approved --> voided : void (ledger)<br/>[before window end]
