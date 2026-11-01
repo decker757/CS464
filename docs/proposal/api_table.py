@@ -27,7 +27,10 @@ lazily or in the lifespan, which never runs here. Each subprocess prints JSON;
 this process renders the markdown and writes:
 
     docs/proposal/api-endpoints.md       every route, grouped by service
-    docs/proposal/api-endpoints-body.md  the routes named in BODY_ROUTES
+    docs/proposal/api-endpoints-body.md  the routes named in BODY_ROUTES, with
+                                         every status and its first codes
+    docs/proposal/api-endpoints-appendix.md  every route with error statuses
+                                         only, to fit one page
 
 How each column is derived
 --------------------------
@@ -78,7 +81,10 @@ Idempotent (the first rule that applies)
     4. The operation's own OpenAPI description says what a repeat does (regex
        `REPEAT_PATTERN`): "repeat-safe (route doc)". The route's documented
        promise, read from the app, not a key the server checks.
-    5. Otherwise "no". The socket is "n/a".
+    5. Otherwise "no key": the route takes no idempotency key and its doc
+       promises nothing about a repeat. That is not a claim that a repeat
+       does harm: a second `publish` is refused, a second `logout` is a
+       no-op. The socket is "n/a".
 
 Main error codes
     Where the route declares `responses=` (read from the route object, so
@@ -100,9 +106,10 @@ Main error codes
     service's base error is answered in band as an error frame and closes
     nothing, so it is shown as "error frame".
 
-    The full table's cross-check section lists every disagreement between
-    the declaration and the walk: codes the walk reaches that the route does
-    not declare, and declared codes the walk did not reach.
+    The full table's cross-check section lists disagreements between the
+    declaration and the walk: codes the walk reaches that the route does not
+    declare, and declared codes the walk did not reach. A status declared
+    with no code named is not compared.
 
 No entry in either table comes from `docs/api/*.md`. Those files are only
 read for the cross-check section: routes with no `METHOD /path` heading
@@ -123,6 +130,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+from collections.abc import Callable
 from pathlib import Path
 
 PROPOSAL_DIR = Path(__file__).resolve().parent
@@ -132,6 +140,17 @@ API_DOCS_DIR = REPO_ROOT / "docs" / "api"
 
 FULL_TABLE_PATH = PROPOSAL_DIR / "api-endpoints.md"
 BODY_TABLE_PATH = PROPOSAL_DIR / "api-endpoints-body.md"
+APPENDIX_TABLE_PATH = PROPOSAL_DIR / "api-endpoints-appendix.md"
+BODY_ERRORS_LIMIT = 60
+
+SHORT_CONVENTIONS = (
+    "A token is the access JWT, as a Bearer header or an `httpOnly` cookie. A "
+    "refusal is `{\"error\": {\"code\", \"message\"}}`; a bad token is 401 "
+    "(4401 on the socket), a trader on an admin route 403. \"No key\" means no "
+    "idempotency key and no stated promise about a repeat. A GET marked \"can "
+    "write\" does so once: a first balance read mints the signup grant (ADR "
+    "0009), a first snapshot opens the market's book."
+)
 
 # Table order: identity, then the market's life, then money, then the two readers.
 SERVICES = ["auth", "market", "ledger", "audit", "realtime"]
@@ -166,17 +185,13 @@ TOKEN_REFUSAL_CODE = "invalid_token"
 BODY_ROUTES = [
     ("POST", "/auth/register"),
     ("POST", "/auth/login"),
-    ("POST", "/auth/refresh"),
     ("POST", "/markets"),
     ("POST", "/markets/{market_id}/publish"),
-    ("GET", "/public/markets"),
     ("GET", "/ledger/balances/me"),
     ("POST", "/ledger/markets/{market_id}/trades"),
     ("POST", "/ledger/markets/{market_id}/orders"),
     ("GET", "/ledger/markets/{market_id}/snapshot"),
     ("WS", "/ws/prices"),
-    ("POST", "/markets/{market_id}/close"),
-    ("POST", "/markets/{market_id}/propose-outcome"),
     ("POST", "/markets/{market_id}/approve-outcome"),
     ("POST", "/ledger/markets/{market_id}/settlement"),
 ]
@@ -602,7 +617,7 @@ def _idempotency_label(row: dict) -> str:
         return "yes (writes nothing)"
     if REPEAT_PATTERN.search(row["description"]):
         return "repeat-safe (route doc)"
-    return "no"
+    return "no key"
 
 
 # --- Error codes --------------------------------------------------------------
@@ -736,8 +751,33 @@ def _errors_label(row: dict, error_codes: dict, *, list_ambiguous: bool) -> str:
 # --- Tables -------------------------------------------------------------------
 
 
+def _statuses_only(errors: str) -> str:
+    """`404 `x`; 409 `a`, `b`` becomes `404, 409`, for the one-page appendix."""
+    statuses = re.findall(r"(?:^|; )(\d{3,4}|error frame)", errors)
+    return ", ".join(statuses) or "—"
+
+
+def _first_codes(errors: str) -> str:
+    """Every status, with its codes while BODY_ERRORS_LIMIT lasts, for the body."""
+    cleaned = re.sub(r" [†‡]", "", errors)
+    shown = []
+    used = 0
+    for section in cleaned.split("; "):
+        if used + len(section) <= BODY_ERRORS_LIMIT:
+            shown.append(section)
+            used += len(section)
+        else:
+            status = section.partition(" `")[0]
+            shown.append(f"{status} …")
+    return "; ".join(shown)
+
+
 def _table_lines(
-    rows: list[dict], error_codes_by_service: dict, *, list_ambiguous: bool
+    rows: list[dict],
+    error_codes_by_service: dict,
+    *,
+    list_ambiguous: bool,
+    shorten_errors: Callable[[str], str] | None = None,
 ) -> list[str]:
     lines = [
         "| Service | Method | Path | Auth | Idempotent | Main error codes |",
@@ -745,11 +785,15 @@ def _table_lines(
     ]
     for row in rows:
         error_codes = error_codes_by_service[row["service"]]
+        errors = _errors_label(row, error_codes, list_ambiguous=list_ambiguous)
+        if shorten_errors is not None:
+            errors = shorten_errors(errors)
         lines.append(
             f"| {row['service']} | {row['method']} | `{row['path']}` | "
-            f"{_auth_label(row)} | {_idempotency_label(row)} | "
-            f"{_errors_label(row, error_codes, list_ambiguous=list_ambiguous)} |"
+            f"{_auth_label(row)} | {_idempotency_label(row)} | {errors} |"
         )
+    if shorten_errors is not None:
+        return lines
     footnotes = []
     if any(not row["declared_responses"] for row in rows):
         footnotes.append(WALK_ONLY_FOOTNOTE)
@@ -794,11 +838,12 @@ def _conventions(all_rows: list[dict], services_wrapping_422: list[str]) -> str:
         "on a WebSocket. A *refresh token* is the `refresh_token` cookie or an "
         "`X-Refresh-Token` header. Every domain refusal is "
         "`{\"error\": {\"code\", \"message\"}}`, plus `details` when it "
-        "names fields: a missing or bad token is `401 invalid_token`, a trader "
+        "names fields: a missing or bad token is `401 invalid_token` (the socket closes 4401), a trader "
         "on an admin route `403 not_an_administrator` (auth checks the role on "
         "its own user row, the other services in the token's claim). A "
         f"malformed request is FastAPI's `422 {{\"detail\": [...]}}`{validation}. "
-        f"{health}"
+        f"{health} \"No key\" means no idempotency key and no stated promise "
+        "about a repeat: a repeat may be refused, run again or do nothing."
     )
 
 
@@ -943,7 +988,24 @@ def _full_document(rows: list[dict], conventions: str, error_codes_by_service: d
     return "\n".join(lines)
 
 
-def _body_document(rows: list[dict], conventions: str, error_codes_by_service: dict) -> str:
+def _appendix_document(rows: list[dict], error_codes_by_service: dict) -> str:
+    lines = [
+        GENERATED_NOTICE,
+        "",
+        f"All {len(rows)} endpoints, with the error statuses each can answer. "
+        f"{SHORT_CONVENTIONS}",
+        "",
+    ]
+    lines.extend(
+        _table_lines(
+            rows, error_codes_by_service, list_ambiguous=False, shorten_errors=_statuses_only
+        )
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _body_document(rows: list[dict], error_codes_by_service: dict) -> str:
     rows_by_key = {(row["method"], row["path"]): row for row in rows}
     chosen = []
     for key in BODY_ROUTES:
@@ -955,12 +1017,14 @@ def _body_document(rows: list[dict], conventions: str, error_codes_by_service: d
         GENERATED_NOTICE,
         "",
         f"{len(chosen)} of the {len(rows)} endpoints, following a market from "
-        "creation to payout; the full table is in the appendix.",
-        "",
-        conventions,
+        f"creation to payout; all of them are in the appendix. {SHORT_CONVENTIONS}",
         "",
     ]
-    lines.extend(_table_lines(chosen, error_codes_by_service, list_ambiguous=False))
+    lines.extend(
+        _table_lines(
+            chosen, error_codes_by_service, list_ambiguous=False, shorten_errors=_first_codes
+        )
+    )
     lines.append("")
     return "\n".join(lines)
 
@@ -996,10 +1060,14 @@ def main() -> None:
         _full_document(rows, conventions, error_codes_by_service), encoding="utf-8"
     )
     BODY_TABLE_PATH.write_text(
-        _body_document(rows, conventions, error_codes_by_service), encoding="utf-8"
+        _body_document(rows, error_codes_by_service), encoding="utf-8"
+    )
+    APPENDIX_TABLE_PATH.write_text(
+        _appendix_document(rows, error_codes_by_service), encoding="utf-8"
     )
     print(f"{FULL_TABLE_PATH.name}: {len(rows)} rows")
     print(f"{BODY_TABLE_PATH.name}: {len(BODY_ROUTES)} rows")
+    print(f"{APPENDIX_TABLE_PATH.name}: {len(rows)} rows")
 
 
 if __name__ == "__main__":

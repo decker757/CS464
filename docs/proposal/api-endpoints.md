@@ -4,27 +4,27 @@
 
 45 endpoints across five services (auth 10, market 14, ledger 19, audit 1, realtime 1), generated from each service's `app.openapi()` and its routes. How each column is derived is in the docstring of `docs/proposal/api_table.py`.
 
-**Conventions shared by every route.** A *token* is the access JWT: a service sends `Authorization: Bearer <jwt>`, a browser the `httpOnly` `access_token` cookie, and the header wins. The socket reads the same two, in practice the cookie, since a browser cannot set headers on a WebSocket. A *refresh token* is the `refresh_token` cookie or an `X-Refresh-Token` header. Every domain refusal is `{"error": {"code", "message"}}`, plus `details` when it names fields: a missing or bad token is `401 invalid_token`, a trader on an admin route `403 not_an_administrator` (auth checks the role on its own user row, the other services in the token's claim). A malformed request is FastAPI's `422 {"detail": [...]}`, except on ledger, which answers it in the same envelope as `invalid_request`. Every service also serves an unauthenticated `GET /health`.
+**Conventions shared by every route.** A *token* is the access JWT: a service sends `Authorization: Bearer <jwt>`, a browser the `httpOnly` `access_token` cookie, and the header wins. The socket reads the same two, in practice the cookie, since a browser cannot set headers on a WebSocket. A *refresh token* is the `refresh_token` cookie or an `X-Refresh-Token` header. Every domain refusal is `{"error": {"code", "message"}}`, plus `details` when it names fields: a missing or bad token is `401 invalid_token` (the socket closes 4401), a trader on an admin route `403 not_an_administrator` (auth checks the role on its own user row, the other services in the token's claim). A malformed request is FastAPI's `422 {"detail": [...]}`, except on ledger, which answers it in the same envelope as `invalid_request`. Every service also serves an unauthenticated `GET /health`. "No key" means no idempotency key and no stated promise about a repeat: a repeat may be refused, run again or do nothing.
 
 | Service | Method | Path | Auth | Idempotent | Main error codes |
 | --- | --- | --- | --- | --- | --- |
-| auth | POST | `/auth/register` | none | no | 409 `duplicate_user` † |
-| auth | POST | `/auth/login` | none | no | 401 `invalid_credentials`; 403 `account_suspended` † |
-| auth | POST | `/auth/refresh` | refresh token | no | — |
-| auth | POST | `/auth/logout` | refresh token (optional) | no | — |
+| auth | POST | `/auth/register` | none | no key | 409 `duplicate_user` † |
+| auth | POST | `/auth/login` | none | no key | 401 `invalid_credentials`; 403 `account_suspended` † |
+| auth | POST | `/auth/refresh` | refresh token | no key | — |
+| auth | POST | `/auth/logout` | refresh token (optional) | no key | — |
 | auth | GET | `/auth/me` | token, any role | yes (HTTP GET) | 403 `account_suspended` † |
 | auth | GET | `/admin/users` | admin token | yes (HTTP GET) | 400 `malformed_cursor`; 403 `account_suspended` |
 | auth | POST | `/admin/users/lookup` | admin token | yes (writes nothing) | 403 `account_suspended` |
-| auth | PATCH | `/admin/users/{user_id}/role` | admin token | no | 403 `account_suspended`, `cannot_change_own_role` ‡; 404 `user_not_found`; 409 `last_administrator` |
+| auth | PATCH | `/admin/users/{user_id}/role` | admin token | no key | 403 `account_suspended`, `cannot_change_own_role` ‡; 404 `user_not_found`; 409 `last_administrator` |
 | auth | PATCH | `/admin/users/{user_id}/suspension` | admin token | repeat-safe (route doc) | 403 `account_suspended`, `cannot_suspend_self` ‡; 404 `user_not_found`; 409 `last_administrator`; 422 `suspension_incomplete` |
 | auth | POST | `/internal/users/lookup` | `X-Service-Key` | yes (writes nothing) | 401 `invalid_service_key` |
 | market | POST | `/markets` | admin token | yes, by `draft_key` | 409 `market_already_approved`, `market_already_open`, `market_already_settled`, `market_already_voided`, `market_closed`, `market_not_editable`, `market_pending_resolution` ‡; 422 `draft_incomplete` |
-| market | POST | `/markets/{market_id}/publish` | admin token | no | 404 `market_not_found`; 409 `market_already_open`, `market_not_submitted`; 422 `draft_incomplete` |
-| market | POST | `/markets/{market_id}/close` | admin token | no | 404 `market_not_found`; 409 `market_already_approved`, `market_closed`, `market_not_open`, `market_pending_resolution`; 422 `close_incomplete` |
-| market | POST | `/markets/{market_id}/propose-outcome` | admin token | no | 404 `market_not_found`; 409 `market_already_approved`, `market_not_closed`, `market_pending_resolution`; 422 `proposal_incomplete` |
-| market | POST | `/markets/{market_id}/approve-outcome` | admin token | no | 403 `second_administrator_required`; 404 `market_not_found`; 409 `market_already_approved`, `market_not_pending_resolution`, `proposal_superseded` |
-| market | POST | `/markets/{market_id}/reject-outcome` | admin token | no | 403 `second_administrator_required`; 404 `market_not_found`; 409 `market_already_approved`, `market_not_pending_resolution`, `proposal_superseded`; 422 `rejection_incomplete` |
-| market | POST | `/markets/{market_id}/send-back-outcome` | admin token | no | 404 `market_not_found`; 409 `dispute_window_closed`, `market_already_settled`, `market_already_voided`, `market_not_approved`, `market_pending_resolution`, `proposal_superseded`; 422 `send_back_incomplete` |
+| market | POST | `/markets/{market_id}/publish` | admin token | no key | 404 `market_not_found`; 409 `market_already_open`, `market_not_submitted`; 422 `draft_incomplete` |
+| market | POST | `/markets/{market_id}/close` | admin token | no key | 404 `market_not_found`; 409 `market_already_approved`, `market_closed`, `market_not_open`, `market_pending_resolution`; 422 `close_incomplete` |
+| market | POST | `/markets/{market_id}/propose-outcome` | admin token | no key | 404 `market_not_found`; 409 `market_already_approved`, `market_not_closed`, `market_pending_resolution`; 422 `proposal_incomplete` |
+| market | POST | `/markets/{market_id}/approve-outcome` | admin token | no key | 403 `second_administrator_required`; 404 `market_not_found`; 409 `market_already_approved`, `market_not_pending_resolution`, `proposal_superseded` |
+| market | POST | `/markets/{market_id}/reject-outcome` | admin token | no key | 403 `second_administrator_required`; 404 `market_not_found`; 409 `market_already_approved`, `market_not_pending_resolution`, `proposal_superseded`; 422 `rejection_incomplete` |
+| market | POST | `/markets/{market_id}/send-back-outcome` | admin token | no key | 404 `market_not_found`; 409 `dispute_window_closed`, `market_already_settled`, `market_already_voided`, `market_not_approved`, `market_pending_resolution`, `proposal_superseded`; 422 `send_back_incomplete` |
 | market | POST | `/markets/{market_id}/settle` | admin token | repeat-safe (route doc) | 404 `market_not_found`; 409 `dispute_window_open`, `market_already_voided`, `market_not_approved` |
 | market | POST | `/markets/{market_id}/void` | admin token | repeat-safe (route doc) | 404 `market_not_found`; 409 `market_already_settled`, `market_not_voidable` |
 | market | GET | `/markets` | admin token | yes (HTTP GET) | — |
@@ -44,8 +44,8 @@
 | ledger | POST | `/ledger/markets/{market_id}/trades` | token, any role | yes, by `idempotency_key` | 403 `account_suspended`; 404 `market_not_found`; 409 `idempotency_key_reused`, `insufficient_funds`, `insufficient_shares_held`, `market_closed`, `quote_stale`; 422 `cost_below_tick`, `proceeds_below_tick`, `quantity_too_large`, `unknown_outcome`; 503 `auth_unavailable`, `market_terms_unavailable` |
 | ledger | POST | `/ledger/markets/{market_id}/orders` | token, any role | yes, by `idempotency_key` | 403 `account_suspended`; 404 `market_not_found`; 409 `idempotency_key_reused`, `insufficient_funds`, `insufficient_shares_held`, `market_closed`, `market_not_binary`, `order_crosses_book`; 422 `quantity_too_large`, `unknown_outcome`; 503 `auth_unavailable`, `market_terms_unavailable` |
 | ledger | GET | `/ledger/orders/me` | token, any role | yes (HTTP GET) | — |
-| ledger | POST | `/ledger/orders/{order_id}/cancel` | token, any role | no | 404 `order_not_found`; 409 `order_already_cancelled`, `order_already_filled`, `order_released` |
-| ledger | POST | `/ledger/admin/orders/{order_id}/cancel` | admin token | no | 404 `order_not_found`; 409 `order_already_cancelled`, `order_already_filled`, `order_released`; 422 `cancellation_incomplete` |
+| ledger | POST | `/ledger/orders/{order_id}/cancel` | token, any role | no key | 404 `order_not_found`; 409 `order_already_cancelled`, `order_already_filled`, `order_released` |
+| ledger | POST | `/ledger/admin/orders/{order_id}/cancel` | admin token | no key | 404 `order_not_found`; 409 `order_already_cancelled`, `order_already_filled`, `order_released`; 422 `cancellation_incomplete` |
 | ledger | GET | `/ledger/markets/{market_id}/trades` | admin token | yes (HTTP GET) | 400 `malformed_cursor` |
 | ledger | GET | `/ledger/leaderboard` | token, any role | yes (HTTP GET) | 400 `malformed_cursor`; 409 `leaderboard_refreshed` |
 | ledger | GET | `/ledger/markets/{market_id}/price-history` | token, any role | yes (HTTP GET) | — |
