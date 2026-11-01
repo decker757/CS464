@@ -13,20 +13,21 @@
 %% 320 at peak, under db.t4g.medium (~450 by the RDS formula, somewhat less in
 %% practice). #19 also asks for staging
 %% from push to staging, with its own database: the same stack, so not drawn twice.
+%% The outer title is in the note node because a centred title sat under the CloudFront arrow.
 %% Mermaid 12 redraws a dashed edge solid where it hops another line; no hops here.
-%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 420}, "themeVariables": {"fontSize": "22px"}}}%%
+%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 420}, "themeVariables": {"fontSize": "24px"}}}%%
 flowchart TB
     browser["Browser"]
 
-    subgraph aws["PLANNED (#19): nothing deployed yet. Production, from main;<br/>staging is the same stack with its own RDS, from staging"]
+    subgraph aws[" "]
         cdn["CloudFront + S3<br/>app.cs464.dev"]
 
-        subgraph pub["Public subnets, 2 AZs"]
+        subgraph pub["Public subnets,<br/>2 AZs"]
             alb["ALB<br/>host per service<br/>no /internal/*"]
             nat["NAT gateway<br/>one, 1 AZ"]
         end
 
-        subgraph priv["Private subnets, 2 AZs"]
+        subgraph priv["Private subnets, 2 AZs: ECS tasks"]
             mig["bootstrap: roles once, 02-schemas<br/>each deploy; migrate × 3; on-demand"]
             ledger["ledger + refresher<br/>on-demand + Spot"]
             realtime["realtime<br/>Spot"]
@@ -38,7 +39,7 @@ flowchart TB
         end
 
         shared["Route 53, ACM<br/>ECR, CloudWatch<br/>Secrets Manager:<br/>DATABASE_URL per role,<br/>JWT_SECRET shared by 5,<br/>LEDGER_SERVICE_KEY"]
-        note["2–3 tasks each, CPU target;<br/>rollout maxPercent 150.<br/>Spot: ALB drains the task;<br/>a manual retry is safe<br/>(idempotency keys)."]
+        note["<b>PLANNED (#19): nothing deployed yet.</b><br/>Production from main; staging: same<br/>stack, own RDS, from staging.<br/>2–3 tasks each, CPU target; rollout<br/>maxPercent 150. Spot: ALB drains the<br/>task; a manual retry is safe<br/>(idempotency keys)."]
     end
 
     browser --> cdn
