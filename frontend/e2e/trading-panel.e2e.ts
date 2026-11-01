@@ -2,6 +2,7 @@ import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, startingGrant, uniqueName } from './support/backend'
 import { logIn, outcomeChoice } from './support/browser'
 import { creditsLess, creditsPlus, formatPreciseCredits, formatRoundedCredits } from './support/credits'
+import { holdUntilReleased } from '../src/test/holdUntilReleased'
 
 // [FE][T-2/T-3] #49, through the real ledger: the preview and trade routes,
 // against a real book. Exactly what unit tests against MSW mocks can't
@@ -183,4 +184,40 @@ test("clicking an outcome's price makes it the outcome the panel trades and quot
   await expect(yes).toBeChecked()
   await expect(yes).toBeFocused()
   await expect(page.getByText(/^Trading Yes\./)).toBeVisible()
+})
+
+// [FE][T-2] #566, through the real ledger: a buy that commits while the trader
+// has moved on to another outcome still says so. The unit test fakes the
+// trade reply with MSW; this holds the real request in the browser, switches
+// outcome, then lets it reach the real ledger.
+test('a buy confirms even if the trader picked another outcome while it was in flight', async ({ page }) => {
+  const admin = await registerAdmin('tf_admin')
+  const market = await publishMarket(admin, `Will ${uniqueName('flight')} happen?`)
+  const trader = await registerTrader('tf_trader')
+
+  const tradeInFlight = holdUntilReleased()
+  const traderMovedOn = holdUntilReleased()
+  // The same path also lists a market's trades (GET), which must pass.
+  await page.route('**/ledger/markets/*/trades', async route => {
+    if (route.request().method() !== 'POST') return route.fallback()
+    tradeInFlight.release()
+    await traderMovedOn.held
+    await route.continue()
+  })
+
+  await logIn(page, trader)
+  await page.goto(`/markets/${market.id}`)
+
+  await expect(outcomeChoice(page, 'Yes')).toBeChecked()
+  await page.getByLabel('Quantity (shares)').fill('10')
+  await expect(page.getByLabel('trade preview')).toBeVisible()
+  await page.getByRole('button', { name: /^buy yes$/i }).click()
+  await tradeInFlight.held
+
+  await outcomeChoice(page, 'No').click()
+  await expect(page.getByText(/^Trading No\./)).toBeVisible()
+  traderMovedOn.release()
+
+  await expect(page.getByText(/^Bought 10 Yes for /)).toBeVisible()
+  await expect(outcomeChoice(page, 'No')).toBeChecked()
 })
