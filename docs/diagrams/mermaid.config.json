@@ -1,0 +1,84 @@
+{
+  "theme": "base",
+  "fontFamily": "Helvetica, Arial, sans-serif",
+  "themeVariables": {
+    "fontFamily": "Helvetica, Arial, sans-serif",
+    "fontSize": "16px",
+    "background": "#FFFFFF",
+    "primaryColor": "#F4F6F8",
+    "primaryBorderColor": "#4A5568",
+    "primaryTextColor": "#1A202C",
+    "secondaryColor": "#EDF2F7",
+    "tertiaryColor": "#FFFFFF",
+    "lineColor": "#4A5568",
+    "textColor": "#1A202C",
+    "clusterBkg": "#FAFBFC",
+    "clusterBorder": "#A0AEC0",
+    "edgeLabelBackground": "#FFFFFF",
+    "noteBkgColor": "#FFF8DC",
+    "noteBorderColor": "#B7950B",
+    "noteTextColor": "#1A202C",
+    "actorBkg": "#F4F6F8",
+    "actorBorder": "#4A5568",
+    "actorTextColor": "#1A202C",
+    "signalColor": "#2D3748",
+    "signalTextColor": "#1A202C",
+    "labelBoxBkgColor": "#EDF2F7",
+    "labelBoxBorderColor": "#4A5568",
+    "activationBkgColor": "#E2E8F0",
+    "activationBorderColor": "#4A5568",
+    "sequenceNumberColor": "#FFFFFF",
+    "taskBkgColor": "#E2E8F0",
+    "taskBorderColor": "#4A5568",
+    "taskTextColor": "#1A202C",
+    "taskTextDarkColor": "#1A202C",
+    "taskTextOutsideColor": "#1A202C",
+    "taskTextLightColor": "#1A202C",
+    "activeTaskBkgColor": "#BEE3F8",
+    "activeTaskBorderColor": "#2B6CB0",
+    "gridColor": "#CBD5E0",
+    "sectionBkgColor": "#F7FAFC",
+    "altSectionBkgColor": "#FFFFFF",
+    "sectionBkgColor2": "#F7FAFC"
+  },
+  "flowchart": {
+    "htmlLabels": true,
+    "curve": "basis",
+    "nodeSpacing": 40,
+    "rankSpacing": 55,
+    "padding": 12,
+    "useMaxWidth": false
+  },
+  "sequence": {
+    "mirrorActors": false,
+    "showSequenceNumbers": true,
+    "actorMargin": 60,
+    "messageMargin": 30,
+    "noteMargin": 10,
+    "wrap": true,
+    "width": 170,
+    "useMaxWidth": false
+  },
+  "er": {
+    "layoutDirection": "TB",
+    "entityPadding": 12,
+    "useMaxWidth": false
+  },
+  "state": {
+    "useMaxWidth": false
+  },
+  "gantt": {
+    "barHeight": 22,
+    "barGap": 6,
+    "fontSize": 13,
+    "sectionFontSize": 14,
+    "leftPadding": 170,
+    "useMaxWidth": false
+  },
+  "architecture": {
+    "useMaxWidth": false
+  },
+  "elk": {
+    "lineHops": false
+  }
+}
