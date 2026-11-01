@@ -25,6 +25,7 @@ import {
   LEDGER_URL,
   logInThroughApi,
   MARKET_URL,
+  PASSWORD,
   placeLimitBuy,
   promoteToAdmin,
   proposeOutcome,
@@ -65,7 +66,7 @@ function composeProject(): string {
 
 async function registerTraderUnlessSeeded(username: string): Promise<Session> {
   try {
-    return await registerNamedTrader(username)
+    return await registerNamedTrader(username, PASSWORD)
   } catch (refusal) {
     // The auth service's `409 duplicate_user`, carried in the helper's message.
     if (refusal instanceof Error && refusal.message.includes('duplicate_user')) {
@@ -87,7 +88,11 @@ async function registerFirstAdmin(username: string, project: string): Promise<Se
   const trader = await registerTraderUnlessSeeded(username)
   await promoteToAdmin(trader.username)
   const admin = await logInThroughApi(trader.username)
-  refuseUnlessAdmin(admin.accessToken, project)
+  refuseUnlessAdmin(
+    admin.accessToken,
+    `the compose project "${project}"`,
+    'Set COMPOSE_PROJECT_NAME to the project whose services the VITE_*_URL variables point at.',
+  )
   return admin
 }
 
