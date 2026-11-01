@@ -486,7 +486,11 @@ describe('TradingPanel', () => {
     expect(await screen.findByText(/could not be confirmed/i)).toBeInTheDocument()
 
     await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
-    expect(await screen.findByText(/bought/i)).toBeInTheDocument()
+    // One trade under one key, whichever attempt committed. "Bought" here
+    // would tell a trader who meant to buy again that they hold twice what
+    // they do (#580).
+    expect(await screen.findByText(/^your buy of .* Yes went through once, for 5\.1250 credits\. It was sent more than once, but only one trade was made\.$/i)).toBeInTheDocument()
+    expect(screen.queryByText(/^bought /i)).not.toBeInTheDocument()
 
     expect(attempts).toBe(2)
     expect(keys[0]).toBe(keys[1])
@@ -680,7 +684,7 @@ describe('TradingPanel', () => {
     await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
     await screen.findByRole('alert')
     await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
-    expect(await screen.findByText(/bought/i)).toBeInTheDocument()
+    expect(await screen.findByText(/went through once/i)).toBeInTheDocument()
 
     expect(attempts).toBe(2)
     expect(keys[0]).toBe(keys[1])
