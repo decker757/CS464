@@ -1,7 +1,9 @@
 // #454. Seeds a demo database: real-sounding SMU markets, traded apart over a
 // few minutes, with one market at each later stage of its life, a voided one,
 // a few resting limit orders and a suspended trader (#570). `npm run
-// seed:demo`, against a stack on this machine; README.md says how.
+// seed:demo`, against a stack on this machine; README.md says how. `npm run
+// seed:production` seeds the production site the same way (#609), with a
+// generated password per account; production.ts says what differs.
 //
 // It runs as a Playwright test only to use the runtime the e2e helpers already
 // run under, and it makes everything through those helpers: the services' own
@@ -25,22 +27,36 @@ import {
   LEDGER_URL,
   logInThroughApi,
   MARKET_URL,
-  PASSWORD,
   placeLimitBuy,
+  PASSWORD,
   promoteToAdmin,
   proposeOutcome,
   publishMarket,
   registerNamedTrader,
   REPO_ROOT,
+  runSqlLocally,
   settleMarket,
   snapshot,
   suspend,
   voidMarket,
   type Market,
   type Session,
+  type SqlRunner,
 } from '../support/backend'
 import { ADMINS, DEMO_MARKETS, ORDER_TRADER, SUSPENDED, TRADERS, type DemoMarket, type DemoTrade } from './demoMarkets'
 import { refuseDevComposeProject, refuseUnlessLocal } from './localTarget'
+import {
+  countOf,
+  preflightSql,
+  productionTargetFromEnvironment,
+  refuseIfAccountsExist,
+  refuseIfMarketsExist,
+  refuseInsideRepository,
+  refuseUnlessConfirmed,
+  refuseUnlessOnDomain,
+  SeededAccounts,
+  sqlRunnerFor,
+} from './production'
 import { refuseUnlessAdmin } from './promotion'
 import { inRounds } from './rounds'
 
@@ -48,6 +64,15 @@ import { inRounds } from './rounds'
 // enough that the whole seed takes a few minutes. A trade cannot be backdated
 // through the API, so real time is the only honest way to spread them.
 const PAUSE_BETWEEN_ROUNDS_MS = 20_000
+
+/** What differs between seeding a local stack and the production site (#609). */
+interface Seeding {
+  runSql: SqlRunner
+  passwordFor: (username: string) => string
+  /** Where the SQL steps run, and what to do if they reached the wrong database. */
+  sqlRanIn: string
+  fixIfWrongDatabase: string
+}
 
 /** The engine `docker compose exec` will reach: DOCKER_HOST if set, otherwise the current context's. */
 function dockerEndpoint(): string {
@@ -64,9 +89,41 @@ function composeProject(): string {
   return JSON.parse(config).name
 }
 
-async function registerTraderUnlessSeeded(username: string): Promise<Session> {
+function prepareLocalSeeding(): Seeding {
+  refuseUnlessLocal({ serviceUrls: [AUTH_URL, MARKET_URL, LEDGER_URL], dockerEndpoint: dockerEndpoint() })
+  const project = composeProject()
+  refuseDevComposeProject(project)
+  return {
+    runSql: runSqlLocally,
+    passwordFor: () => PASSWORD,
+    sqlRanIn: `the compose project "${project}"`,
+    fixIfWrongDatabase: 'Set COMPOSE_PROJECT_NAME to the project whose services the VITE_*_URL variables point at.',
+  }
+}
+
+/** Checks everything before writing anything: the accounts file is made last. */
+async function prepareProductionSeeding(): Promise<Seeding> {
+  const target = productionTargetFromEnvironment(process.env, [AUTH_URL, MARKET_URL, LEDGER_URL])
+  refuseUnlessConfirmed(target.domain, target.confirmedDomain)
+  refuseUnlessOnDomain(target.serviceUrls, target.domain)
+  refuseInsideRepository(target.accountsFile, REPO_ROOT)
+  const runSql = sqlRunnerFor(target)
+  const preflight = await runSql(preflightSql([ADMINS.creator, ADMINS.approver, ...TRADERS]))
+  refuseIfMarketsExist(countOf('markets', preflight))
+  refuseIfAccountsExist(countOf('seeded_names', preflight), countOf('administrators', preflight))
+  const accounts = new SeededAccounts(target.accountsFile)
+  console.log(`Seeding https://${target.domain}. Each account's password is in ${target.accountsFile}.`)
+  return {
+    runSql,
+    passwordFor: username => accounts.passwordFor(username),
+    sqlRanIn: `production's database, from ${target.sqlHost}`,
+    fixIfWrongDatabase: 'Check that infra/tf and the domain describe the same deployment.',
+  }
+}
+
+async function registerTraderUnlessSeeded(username: string, seeding: Seeding): Promise<Session> {
   try {
-    return await registerNamedTrader(username, PASSWORD)
+    return await registerNamedTrader(username, seeding.passwordFor(username))
   } catch (refusal) {
     // The auth service's `409 duplicate_user`, carried in the helper's message.
     if (refusal instanceof Error && refusal.message.includes('duplicate_user')) {
@@ -84,15 +141,11 @@ async function registerTraderUnlessSeeded(username: string): Promise<Session> {
  * logs in again. Then checks the new token really is an admin's: the SQL step
  * may have reached another compose project than the URLs.
  */
-async function registerFirstAdmin(username: string, project: string): Promise<Session> {
-  const trader = await registerTraderUnlessSeeded(username)
-  await promoteToAdmin(trader.username)
-  const admin = await logInThroughApi(trader.username)
-  refuseUnlessAdmin(
-    admin.accessToken,
-    `the compose project "${project}"`,
-    'Set COMPOSE_PROJECT_NAME to the project whose services the VITE_*_URL variables point at.',
-  )
+async function registerFirstAdmin(username: string, seeding: Seeding): Promise<Session> {
+  const trader = await registerTraderUnlessSeeded(username, seeding)
+  await promoteToAdmin(trader.username, seeding.runSql)
+  const admin = await logInThroughApi(trader.username, seeding.passwordFor(trader.username))
+  refuseUnlessAdmin(admin.accessToken, seeding.sqlRanIn, seeding.fixIfWrongDatabase)
   return admin
 }
 
@@ -102,10 +155,10 @@ async function registerFirstAdmin(username: string, project: string): Promise<Se
  * 0007), so the audit log names who made them one. Then logs in again: the
  * role rides in the token.
  */
-async function registerPromotedAdmin(promoter: Session, username: string): Promise<Session> {
-  const trader = await registerTraderUnlessSeeded(username)
+async function registerPromotedAdmin(promoter: Session, username: string, seeding: Seeding): Promise<Session> {
+  const trader = await registerTraderUnlessSeeded(username, seeding)
   await changeRole(promoter, trader.id, 'admin', 'Second administrator for the showcase, to approve proposed outcomes.')
-  return logInThroughApi(trader.username)
+  return logInThroughApi(trader.username, seeding.passwordFor(trader.username))
 }
 
 // Settlement and a void both move the money first and tell market_service
@@ -124,7 +177,13 @@ async function repeatOnceIfUnconfirmed(unconfirmedCode: string, request: () => P
   }
 }
 
-async function driveToItsEnd(demo: DemoMarket, market: Market, creator: Session, approver: Session): Promise<void> {
+async function driveToItsEnd(
+  demo: DemoMarket,
+  market: Market,
+  admins: { creator: Session; approver: Session },
+  runSql: SqlRunner,
+): Promise<void> {
+  const { creator, approver } = admins
   if (demo.endsAs === 'open') return
   await closeEarly(creator, market.id, demo.closeReason)
   if (demo.endsAs === 'closed') return
@@ -140,7 +199,7 @@ async function driveToItsEnd(demo: DemoMarket, market: Market, creator: Session,
   if (demo.endsAs === 'pending_resolution') return
   await approveOutcome(approver, market.id, proposed.proposal_id)
   if (demo.endsAs === 'approved') return
-  await backdateDisputeWindow(market.id)
+  await backdateDisputeWindow(market.id, runSql)
   await repeatOnceIfUnconfirmed('settlement_unconfirmed', () => settleMarket(creator, market.id))
 }
 
@@ -155,14 +214,12 @@ function priceLine(demo: DemoMarket, market: Market, prices: { outcome_id: strin
 
 test('seed the demo database', async () => {
   test.setTimeout(30 * 60 * 1000)
-  refuseUnlessLocal({ serviceUrls: [AUTH_URL, MARKET_URL, LEDGER_URL], dockerEndpoint: dockerEndpoint() })
-  const project = composeProject()
-  refuseDevComposeProject(project)
+  const seeding = process.env.SEED_TARGET === 'production' ? await prepareProductionSeeding() : prepareLocalSeeding()
 
-  const creator = await registerFirstAdmin(ADMINS.creator, project)
-  const approver = await registerPromotedAdmin(creator, ADMINS.approver)
+  const creator = await registerFirstAdmin(ADMINS.creator, seeding)
+  const approver = await registerPromotedAdmin(creator, ADMINS.approver, seeding)
   const traders = new Map<string, Session>()
-  for (const username of TRADERS) traders.set(username, await registerTraderUnlessSeeded(username))
+  for (const username of TRADERS) traders.set(username, await registerTraderUnlessSeeded(username, seeding))
   console.log(
     `Registered ${ADMINS.creator} (admin, by hand), ${ADMINS.approver} (admin, promoted by ${ADMINS.creator}) ` +
       `and ${TRADERS.length} traders.`,
@@ -212,7 +269,7 @@ test('seed the demo database', async () => {
   }
 
   for (const [index, demo] of DEMO_MARKETS.entries()) {
-    await driveToItsEnd(demo, markets[index], creator, approver)
+    await driveToItsEnd(demo, markets[index], { creator, approver }, seeding.runSql)
   }
 
   // Last, so the account has traded and been paid like any other first.
