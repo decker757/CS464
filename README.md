@@ -24,7 +24,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot, the ledger's price producer and its order frames |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
-| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440 | containers, CI and the replicated stack shipped; every push to `main` deploys to DigitalOcean (ADR 0026); staging (#19), the load test [5.4] #20 and monitoring #599 are open |
+| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440, #609 | live at **https://predictsmu.xyz**: every push to `main` deploys to DigitalOcean, two app servers behind a load balancer (ADR 0026), and `npm run seed:production` seeds it with the demo markets; staging (#19), the load test [5.4] #20 and monitoring #599 are open |
 
 ## Running it
 
