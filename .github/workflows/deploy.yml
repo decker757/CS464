@@ -22,14 +22,20 @@ concurrency:
   group: deploy-production
   cancel-in-progress: false
 
-permissions:
-  contents: read
-  packages: write
+# Nothing by default; each job asks for what it needs.
+permissions: {}
 
 jobs:
   images:
+    # Main only, even when started by hand. The production environment says
+    # the same (infra/push-secrets.sh), so a run on another branch cannot
+    # read its secrets either. ADR 0026.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         include:
@@ -71,7 +77,13 @@ jobs:
 
   release:
     needs: images
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # This job's token is the one the servers pull with, so it can read
+    # images and nothing else.
+    permissions:
+      contents: read
+      packages: read
     environment:
       name: production
       url: https://${{ vars.PRODUCTION_DOMAIN }}
