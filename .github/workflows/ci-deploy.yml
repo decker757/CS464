@@ -26,6 +26,10 @@ on:
       - "frontend/package.json"
       - "frontend/package-lock.json"
       - "frontend/vite.config.ts"
+      # Where the frontend reads its service URLs, which stack-test.sh checks
+      # the gateway image was built with.
+      - "frontend/src/api/**"
+      - "frontend/src/hooks/usePriceSocket.ts"
       - ".github/workflows/ci-deploy.yml"
   pull_request:
     paths:
@@ -37,6 +41,10 @@ on:
       - "frontend/package.json"
       - "frontend/package-lock.json"
       - "frontend/vite.config.ts"
+      # Where the frontend reads its service URLs, which stack-test.sh checks
+      # the gateway image was built with.
+      - "frontend/src/api/**"
+      - "frontend/src/hooks/usePriceSocket.ts"
       - ".github/workflows/ci-deploy.yml"
   workflow_dispatch:
 
