@@ -1,0 +1,92 @@
+%% 02 — Cloud deployment on AWS (PLANNED, [5.3] #19 — nothing is deployed yet)
+%% Drawn from: ADR 0002, ADR 0010, ADR 0011, ADR 0020, ADR 0021, issue #19,
+%%   docker-compose.yml, sql/01-roles.sql, sql/02-schemas.sql, .github/workflows/ci-backend.yml,
+%%   backend/*/core/database.py (pool 10 + overflow 10), backend/auth_service/core/config.py,
+%%   backend/auth_service/controller/transport.py, backend/auth_service/controller/internal_routes.py,
+%%   backend/ledger_service/core/config.py, backend/realtime_service/Dockerfile,
+%%   frontend/src/hooks/usePriceSocket.ts
+%% Every AWS box is dashed because none of it exists. Lines are solid except the
+%% migrate gate, which is dotted to set it apart from request paths.
+%% Connections: pool 10 + overflow 10 per task x 4 DB services. At most 3 tasks
+%% each, and a rolling update at maxPercent 150, is 5 tasks x 4 x 20 = 400 at
+%% peak, under db.t4g.medium (~450 by the RDS formula). Staging is not in #19.
+%% Mermaid 12 redraws a dashed edge solid where it hops another line; no hops here.
+%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 320}}}%%
+flowchart TB
+    browser["Browser"]
+
+    subgraph aws["PLANNED (#19): nothing deployed yet — main only"]
+        cdn["CloudFront + S3<br/>app.cs464.dev"]
+
+        subgraph pub["Public subnets, 2 AZs"]
+            alb["ALB<br/>host per service<br/>no /internal/*"]
+            nat["NAT gateway<br/>one, 1 AZ"]
+        end
+
+        subgraph priv["Private subnets, 2 AZs"]
+            mig["bootstrap: roles once,<br/>02-schemas each deploy;<br/>migrate × 3; on-demand"]
+            ledger["ledger<br/>+ refresher<br/>on-demand + Spot"]
+            realtime["realtime<br/>Spot"]
+            audit["audit<br/>Spot"]
+            auth["auth<br/>COOKIE_DOMAIN<br/>on-demand + Spot"]
+            market["market<br/>+ sweeper<br/>on-demand + Spot"]
+            rds[("RDS Postgres 17<br/>db.t4g.medium, 1 AZ<br/>≤ 400 conns at peak")]
+            redis[("ElastiCache Redis<br/>1 node")]
+        end
+
+        shared["Route 53, ACM<br/>ECR, CloudWatch<br/>Secrets Manager:<br/>DATABASE_URL per role,<br/>JWT_SECRET shared by 5"]
+        note["2–3 tasks each, CPU target;<br/>rollout maxPercent 150.<br/>Spot: ALB drains the task;<br/>a manual retry is safe<br/>(idempotency keys)."]
+    end
+
+    browser --> cdn
+    browser -->|"cookie, wss"| alb
+
+    mig -.->|"gates rollout"| ledger
+    mig -.-> auth
+    mig -.-> market
+
+    alb --> ledger
+    alb --> realtime
+    alb --> audit
+    alb --> auth
+    alb --> market
+    ledger -->|"Service Connect"| auth
+    ledger -->|"Service Connect"| market
+
+
+    auth --> rds
+    market --> rds
+    ledger --> rds
+    audit --> rds
+    ledger -->|"PUBLISH"| redis
+    realtime -->|"SUBSCRIBE"| redis
+    browser ~~~ shared
+    browser ~~~ note
+
+    classDef browser  fill:#F2F2F2,stroke:#555555,color:#1A202C
+    classDef edge     fill:#FFF4CC,stroke:#9A7B00,color:#1A202C
+    classDef auth     fill:#DCEBFA,stroke:#2F6DB5,color:#1A202C
+    classDef market   fill:#DFF2E1,stroke:#2E8B47,color:#1A202C
+    classDef ledger   fill:#FCEBCF,stroke:#C27C0E,color:#1A202C
+    classDef audit    fill:#ECE3F7,stroke:#7048A8,color:#1A202C
+    classDef realtime fill:#DDF3F3,stroke:#1F8A8A,color:#1A202C
+    classDef pg       fill:#E6EBF2,stroke:#3B5068,color:#1A202C
+    classDef redis    fill:#FBE0DE,stroke:#C0392B,color:#1A202C
+    classDef job      fill:#FFFFFF,stroke:#4A5568,color:#1A202C,stroke-dasharray:2 2
+    classDef planned  fill:#FFFFFF,stroke:#888888,color:#555555,stroke-dasharray:6 4
+    classDef ext      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
+    %% Not one of the shared colours: only adds the planned dash to a service colour.
+    classDef notBuilt stroke-dasharray:6 4
+
+    class browser browser
+    class cdn,alb,nat edge
+    class auth auth
+    class market market
+    class ledger ledger
+    class audit audit
+    class realtime realtime
+    class rds pg
+    class redis redis
+    class mig,shared planned
+    class note ext
+    class cdn,alb,nat,auth,market,ledger,audit,realtime,rds,redis notBuilt

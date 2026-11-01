@@ -1,0 +1,56 @@
+%% 03 — CI today, and the planned deploy ([5.3] #19)
+%% Drawn from: ADR 0020, issue #19, CLAUDE.md "Branches",
+%%   .github/workflows/ci-backend.yml, .github/workflows/ci-frontend.yml,
+%%   .github/workflows/e2e.yml, .github/workflows/notify-failure.yml,
+%%   docs/horizontal-scaling.md
+%% Solid: what the workflows do today. Dashed and "planned": #19, not built.
+%% The deploy reruns the tests itself because a path-filtered workflow it
+%% skipped would report no status for `needs:` to wait on (ci-backend.yml:6-14).
+%% Mermaid 12 redraws a dashed edge solid where it hops another line; no hops here.
+%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 320}}}%%
+flowchart TB
+    pr["pull_request<br/>any base branch"]
+    push["push<br/>dev, staging, main"]
+
+    subgraph ci["CI today — path-filtered"]
+        direction LR
+        be["ci-backend.yml<br/>pytest × 6<br/>dead code"]
+        fe["ci-frontend.yml<br/>lint, vitest,<br/>build"]
+        e2e["e2e.yml<br/>compose up,<br/>Playwright"]
+    end
+
+    notify["notify-failure.yml<br/>Telegram"]
+
+    subgraph deploy["PLANNED (#19) — deploy.yml, on push to main"]
+        direction LR
+        tests["the same tests<br/>no path filter"]
+        image["OIDC role:<br/>main only<br/>images to ECR"]
+        mig["bootstrap: roles once,<br/>02-schemas each deploy;<br/>migrate × 3, expand/contract"]
+        roll["ECS rolling<br/>update, health<br/>check, rollback"]
+    end
+
+    pr --> ci
+    push --> ci
+    ci -->|"failed"| notify
+
+    push -.->|"planned: main only"| deploy
+    tests -.->|"needs: green"| image
+    image -.-> mig
+    mig -.->|"exit 0"| roll
+    deploy -.->|"planned: failed"| notify
+
+    classDef browser  fill:#F2F2F2,stroke:#555555,color:#1A202C
+    classDef edge     fill:#FFF4CC,stroke:#9A7B00,color:#1A202C
+    classDef auth     fill:#DCEBFA,stroke:#2F6DB5,color:#1A202C
+    classDef market   fill:#DFF2E1,stroke:#2E8B47,color:#1A202C
+    classDef ledger   fill:#FCEBCF,stroke:#C27C0E,color:#1A202C
+    classDef audit    fill:#ECE3F7,stroke:#7048A8,color:#1A202C
+    classDef realtime fill:#DDF3F3,stroke:#1F8A8A,color:#1A202C
+    classDef pg       fill:#E6EBF2,stroke:#3B5068,color:#1A202C
+    classDef redis    fill:#FBE0DE,stroke:#C0392B,color:#1A202C
+    classDef job      fill:#FFFFFF,stroke:#4A5568,color:#1A202C,stroke-dasharray:2 2
+    classDef planned  fill:#FFFFFF,stroke:#888888,color:#555555,stroke-dasharray:6 4
+    classDef ext      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
+
+    class pr,push,be,fe,e2e,notify ext
+    class tests,image,mig,roll planned
