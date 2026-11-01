@@ -11231,3 +11231,32 @@ moves the same ceiling.
 not fit at the production sizes until the database plan or the pool sizes
 change, and `docs/deployment.md` says so. That is the trade made here: the
 app servers scale out, and the one database scales up.
+
+---
+
+### D-NEW — The production site is seeded by its own command, with a generated password per account
+
+**Date:** 2026-11-01 · **Ticket:** #609 · **Status:** active
+
+**Decision.** `npm run seed:production` seeds the production site with the
+same markets, traders and scenarios as `npm run seed:demo`. `seed:demo` keeps
+its local-only guard with no override (#454). The production command is a
+separate path with its own checks:
+- the person running it types the domain;
+- it refuses a site that already has a market, any of its accounts, or an
+  administrator, because it makes the first one by hand (ADR 0007);
+- every account gets a generated password, written to a file outside the
+  repository;
+- its two SQL steps run over SSH on an app server, with the admin URL off
+  every command line.
+
+**Why.** The showcase is on the production site, and an empty site shows
+nothing. The local seed cannot simply be pointed at it. Its one password is
+in the repository, so on a public site anyone could log in as a seeded admin.
+And its SQL steps need a local `docker compose exec db`.
+
+**Rejected.** *An override for the local guard*: it would bring the
+repository's password to production, and the guard's whole point is that a
+seed cannot be undone. *Copying a seeded local database into production*: it
+would carry over test trades, needs care with sequences and the audit log,
+and still leaves the passwords to reset by hand.
