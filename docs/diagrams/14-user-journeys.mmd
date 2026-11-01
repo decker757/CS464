@@ -1,0 +1,74 @@
+%% 14 — Four user journeys, step by step
+%% Drawn from: ADR 0008, ADR 0009, ADR 0010, ADR 0011, ADR 0013, ADR 0014,
+%%   ADR 0016, ADR 0019, ADR 0023, ADR 0024,
+%%   backend/auth_service/controller/routes.py,
+%%   backend/ledger_service/controller/routes.py,
+%%   backend/ledger_service/service/ledger_service.py, service/grants.py,
+%%   service/trading.py, service/orders.py, service/settlement.py, service/bus.py,
+%%   backend/market_service/controller/routes.py,
+%%   backend/market_service/service/market_service.py, service/closing.py,
+%%   backend/market_service/core/settling.py, core/config.py,
+%%   backend/realtime_service/controller/routes.py, service/subscriptions.py,
+%%   frontend/src/context/BalanceContext.tsx, frontend/src/hooks/useMarketPrices.ts,
+%%   frontend/src/hooks/useMyOrders.ts, frontend/src/pages/admin/CreateMarketPage.tsx
+%% -
+%% Box colour = the service that handles the step. "…" stands for the
+%% service's market prefix: /ledger/markets/{id} on a ledger box,
+%% /markets/{id} on a market box. Every step exists in the code today.
+%%{init: {"flowchart": {"wrappingWidth": 200, "nodeSpacing": 14, "rankSpacing": 20, "padding": 8}}}%%
+flowchart TB
+    subgraph j1["1 · A new trader's first trade"]
+        direction LR
+        a1["Trader registers<br/>POST /auth/register"]:::auth
+        a2["First balance read<br/>mints signup-grant"]:::ledger
+        a3["Opens a market,<br/>reads its terms"]:::market
+        a4["Subscribes on<br/>/ws/prices, reads<br/>a snapshot"]:::realtime
+        a5["Buys at the quote<br/>POST …/trades<br/>+ state_version"]:::ledger
+        a6["market.price frame<br/>via Redis: price<br/>moves on screen"]:::realtime
+        a1 --> a2 --> a3 --> a4 --> a5 --> a6
+    end
+
+    subgraph j2["2 · An admin drafts, submits and publishes"]
+        direction LR
+        b1["Autosave every 3 s<br/>POST /markets, draft"]:::market
+        b2["Submit: 422 unless<br/>every rule passes"]:::market
+        b3["Creator publishes<br/>POST …/publish<br/>rules re-run now"]:::market
+        b4["open: terms frozen,<br/>any save is 409"]:::market
+        b1 --> b2 --> b3 --> b4
+    end
+
+    subgraph j3["3 · Two admins resolve, the ledger pays"]
+        direction LR
+        c1["Clock or admin<br/>closes → closed"]:::market
+        c2["Creator proposes<br/>→ pending_resolution"]:::market
+        c3["2nd admin approves<br/>its proposal_id<br/>→ approved"]:::market
+        c4["24 h window:<br/>any admin may<br/>send it back"]:::market
+        c5["Admin settles,<br/>≥ window + 5 min:<br/>ledger pays out"]:::ledger
+        c6["Ledger calls<br/>…/settle → settled"]:::market
+        c1 --> c2 --> c3 --> c4 --> c5 --> c6
+    end
+
+    subgraph j4["4 · Trader A's limit order fills inside B's trade"]
+        direction LR
+        d1["A: POST …/orders<br/>binary only"]:::ledger
+        d2["Rests unfilled,<br/>budget reserved"]:::ledger
+        d3["Trader B buys,<br/>passes A's limit"]:::ledger
+        d4["Cascade fills A<br/>in B's commit"]:::ledger
+        d5["order.update to<br/>A's socket: fill<br/>shown on A's row"]:::realtime
+        d1 --> d2 --> d3 --> d4 --> d5
+    end
+
+    j1 ~~~ j2 ~~~ j3 ~~~ j4
+
+    classDef browser  fill:#F2F2F2,stroke:#555555,color:#1A202C
+    classDef edge     fill:#FFF4CC,stroke:#9A7B00,color:#1A202C
+    classDef auth     fill:#DCEBFA,stroke:#2F6DB5,color:#1A202C
+    classDef market   fill:#DFF2E1,stroke:#2E8B47,color:#1A202C
+    classDef ledger   fill:#FCEBCF,stroke:#C27C0E,color:#1A202C
+    classDef audit    fill:#ECE3F7,stroke:#7048A8,color:#1A202C
+    classDef realtime fill:#DDF3F3,stroke:#1F8A8A,color:#1A202C
+    classDef pg       fill:#E6EBF2,stroke:#3B5068,color:#1A202C
+    classDef redis    fill:#FBE0DE,stroke:#C0392B,color:#1A202C
+    classDef job      fill:#FFFFFF,stroke:#4A5568,color:#1A202C,stroke-dasharray:2 2
+    classDef planned  fill:#FFFFFF,stroke:#888888,color:#555555,stroke-dasharray:6 4
+    classDef ext      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
