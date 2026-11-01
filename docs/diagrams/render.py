@@ -9,10 +9,10 @@ size passed is worked out from the SVG's own proportions, and Pillow corrects
 the last few pixels of rounding.
 
 Afterwards it prints how large each diagram's text would print if the SVG
-were placed at full A4 text width. 17 cm is the width the proposal is laid out
-at; 15.9 cm is A4 less the guidelines' 1-inch margins. "body" is the size most
-of the text is set in, "min" the smallest any text uses (measure.cjs). A
-landscape page has 24.6 cm, so multiply by 24.6 / 17 for one placed there.
+were placed at full A4 text width: 15.9 cm, which is A4 less the guidelines'
+1-inch margins. "body" is the size most of the text is set in, "min" the
+smallest any text uses (measure.cjs). A landscape page has 24.6 cm, so multiply
+by 24.6 / 15.9 for one placed there.
 """
 
 import json
@@ -34,7 +34,7 @@ WIDTH = 1600
 # at the same viewport and scaled up, so the two renders match.
 GANTT_VIEWPORTS = {"07-gantt": 1000}
 
-PRINT_WIDTHS_CM = (17.0, 15.9)
+PRINT_WIDTH_CM = 15.9
 POINTS_PER_CM = 72 / 2.54
 
 # architecture-beta diagrams draw AWS icons from this Iconify pack.
@@ -108,18 +108,14 @@ def print_sizes(names: list[str]) -> None:
         env={**os.environ, "NODE_PATH": node_path()},
     ).stdout
 
-    header = "".join(f"  at {cm:g} cm: body / min" for cm in PRINT_WIDTHS_CM)
     print()
-    print(f"{'diagram':<26}{header}")
+    print(f"{'diagram':<26}  at {PRINT_WIDTH_CM:g} cm: body / min")
     for line in measured.splitlines():
         result = json.loads(line)
-        row = ""
-        for cm in PRINT_WIDTHS_CM:
-            points_per_unit = cm * POINTS_PER_CM / result["viewBoxWidth"]
-            body = result["body"] * points_per_unit
-            smallest = result["min"] * points_per_unit
-            row += f"  {body:13.1f} / {smallest:3.1f} pt"
-        print(f"{Path(result['file']).stem:<26}{row}")
+        points_per_unit = PRINT_WIDTH_CM * POINTS_PER_CM / result["viewBoxWidth"]
+        body = result["body"] * points_per_unit
+        smallest = result["min"] * points_per_unit
+        print(f"{Path(result['file']).stem:<26}  {body:15.1f} / {smallest:3.1f} pt")
 
 
 def main() -> None:
