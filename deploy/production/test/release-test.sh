@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# [5.3] #19. Checks release.sh's order of work and what it does when a step
+# fails, without any servers. A fake `ssh` runs each command in a local
+# directory standing in for one server, where roll.sh and migrate.sh are stubs
+# that record what they were asked and fail when told to. stack-test.sh is
+# what proves the real roll.sh and migrate.sh; this proves the deploy that
+# drives them across servers:
+#
+#   - every server gets the release's files in the release's own directory,
+#     its own app.env shared by every release, and a registry login
+#   - only the first server rebuilds the leaderboard
+#   - the database is migrated once, from the first server, before any roll
+#   - a failed migration rolls no server
+#   - a server that fails to roll sends every server rolled before it back,
+#     each with its old release's own roll.sh
+#   - a server that switched to the release and then failed is sent back too
+#   - a server that cannot be sent back is reported, loudly
+#   - a server that could not go back stops the deploy without draining the
+#     others to send them back
+#   - a first deploy that fails says there was nothing to go back to
+#
+#   deploy/production/test/release-test.sh
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+release="$here/../release.sh"
+root=$(mktemp -d)
+trap 'rm -rf "$root"' EXIT
+failures=0
+
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1" >&2; failures=$((failures + 1)); }
+expect() {
+  local description=$1
+  shift
+  if "$@"; then pass "$description"; else fail "$description"; fi
+}
+
+# --- The fakes ---------------------------------------------------------------
+
+mkdir -p "$root/bin" "$root/stubs"
+
+# ssh: skip the options, take the host from deploy@<host>, and run the
+# command in that host's directory. A release upload puts the stubs below
+# where the release's real scripts would be, instead of unpacking them.
+cat > "$root/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+while [ $# -gt 0 ] && [[ $1 != deploy@* ]]; do shift; done
+host=${1#deploy@}
+shift
+cd "$FAKE_ROOT/$host"
+if [[ $* == *"tar -xzf -"* ]]; then
+  cat > /dev/null
+  directory=${*##*-C }
+  mkdir -p "$directory"
+  cp "$FAKE_ROOT/stubs/"* "$directory/"
+  exit 0
+fi
+exec bash -c "$*"
+EOF
+
+# docker: only `login` and `logout` reach it; record them. Login reads the
+# token from stdin, as the real one does.
+cat > "$root/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = login ]; then cat > /dev/null; fi
+echo "$1" >> docker-calls
+EOF
+
+# roll.sh: the release is the directory it sits in. Record it, then fail
+# before switching, switch, or switch and then fail, as the server's
+# fail-roll-on and fail-after-switch-on files say. down-on: fail, and could
+# not go back either, as the real roll.sh reports with exit status 2.
+cat > "$root/stubs/roll.sh" <<'EOF'
+#!/usr/bin/env bash
+release=$(basename "$(cd "$(dirname "$0")" && pwd)")
+cd "$(dirname "$0")/../.."
+echo "$release" >> roll-calls
+if [ "$release" = "$(cat down-on 2>/dev/null)" ]; then exit 2; fi
+if [ "$release" = "$(cat fail-roll-on 2>/dev/null)" ]; then exit 1; fi
+ln -sfn "releases/$release" current
+if [ "$release" = "$(cat fail-after-switch-on 2>/dev/null)" ]; then exit 1; fi
+EOF
+
+# migrate.sh: record the release and whether the admin URL arrived.
+cat > "$root/stubs/migrate.sh" <<'EOF'
+#!/usr/bin/env bash
+release=$(basename "$(cd "$(dirname "$0")" && pwd)")
+cd "$(dirname "$0")/../.."
+echo "$release ${DATABASE_ADMIN_URL:+with-admin-url}" >> migrate-calls
+if [ "$release" = "$(cat fail-migrate-on 2>/dev/null)" ]; then exit 1; fi
+EOF
+chmod +x "$root/bin/"* "$root/stubs/"*
+
+servers=(server-a server-b)
+
+reset_servers() {
+  # Every server on release `old`, with no record of anything else.
+  local server
+  for server in "${servers[@]}"; do
+    rm -rf "${root:?}/$server"
+    mkdir -p "$root/$server/releases/old"
+    cp "$root/stubs/"* "$root/$server/releases/old/"
+    ln -s releases/old "$root/$server/current"
+  done
+}
+
+new_servers() {
+  # Servers that have never had a release.
+  local server
+  for server in "${servers[@]}"; do
+    rm -rf "${root:?}/$server"
+    mkdir -p "$root/$server"
+  done
+}
+
+deploy() {
+  FAKE_ROOT=$root PATH="$root/bin:$PATH" DEPLOY_SSH="$root/bin/ssh" \
+    APP_DIR=. SKIP_PUBLIC_CHECK=1 APP_HOSTS="${servers[*]}" \
+    PRODUCTION_DOMAIN=cs464.test IMAGE_REGISTRY=ghcr.io/example \
+    REGISTRY_USER=bot REGISTRY_TOKEN=token DEPLOY_SSH_KEY=key DEPLOY_KNOWN_HOSTS=hosts \
+    DATABASE_ADMIN_URL=postgresql://admin REDIS_URL=rediss://cache \
+    JWT_SECRET=jwt LEDGER_SERVICE_KEY=key AUTH_DATABASE_URL=a MARKET_DATABASE_URL=m \
+    LEDGER_DATABASE_URL=l AUDIT_DATABASE_URL=u AUTH_DB_PASSWORD=1 MARKET_DB_PASSWORD=2 \
+    LEDGER_DB_PASSWORD=3 AUDIT_DB_PASSWORD=4 \
+    "$release" "$1" > "$root/deploy.log" 2>&1
+}
+
+deploy_fails() { ! deploy "$1"; }
+
+release_of() { basename "$(readlink "$root/$1/current")"; }
+calls() { tr '\n' ' ' < "$root/$1/$2" 2>/dev/null | sed 's/ $//'; }
+never_called() { test ! -e "$root/$1/$2"; }
+mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+app_env_of() { echo "$root/$1/app.env"; }
+log_says() { grep -q "$1" "$root/deploy.log"; }
+
+admin_url_in_no_app_env() {
+  ! grep -q DATABASE_ADMIN_URL "$(app_env_of server-a)" "$(app_env_of server-b)"
+}
+
+# --- A good release ------------------------------------------------------------
+
+echo "a good release"
+reset_servers
+expect "the deploy succeeds" deploy new
+for server in "${servers[@]}"; do
+  expect "$server is on new" test "$(release_of "$server")" = new
+  expect "$server has new's files in new's own directory" test -x "$root/$server/releases/new/roll.sh"
+  expect "$server logged in to the registry and out again" test "$(calls "$server" docker-calls)" = "login logout"
+  expect "$server's app.env is readable by its owner only" test "$(mode_of "$(app_env_of "$server")")" = 600
+done
+expect "only the first server rebuilds the leaderboard" \
+  grep -qx LEADERBOARD_REFRESH_ENABLED=true "$(app_env_of server-a)"
+expect "the second does not" grep -qx LEADERBOARD_REFRESH_ENABLED=false "$(app_env_of server-b)"
+expect "the database is migrated once, from the first server, with the admin URL" \
+  test "$(calls server-a migrate-calls)" = "new with-admin-url"
+expect "and not from the second" never_called server-b migrate-calls
+expect "the admin URL is in no server's app.env" admin_url_in_no_app_env
+
+# --- A migration that fails ---------------------------------------------------
+
+echo "a release whose migration fails"
+reset_servers
+echo bad > "$root/server-a/fail-migrate-on"
+expect "the deploy fails" deploy_fails bad
+for server in "${servers[@]}"; do
+  expect "$server was never rolled" never_called "$server" roll-calls
+  expect "$server is still on old" test "$(release_of "$server")" = old
+done
+
+# --- A server that fails to roll ----------------------------------------------
+
+echo "a release the second server cannot start"
+reset_servers
+echo broken > "$root/server-b/fail-roll-on"
+expect "the deploy fails" deploy_fails broken
+expect "the first server was rolled, then sent back" test "$(calls server-a roll-calls)" = "broken old"
+expect "so it is on old again" test "$(release_of server-a)" = old
+expect "the second server stayed on old" test "$(release_of server-b)" = old
+expect "and was not rolled again" test "$(calls server-b roll-calls)" = "broken"
+
+# --- A server that switches, then fails ---------------------------------------
+
+echo "a release the second server switches to, then fails"
+reset_servers
+echo half > "$root/server-b/fail-after-switch-on"
+expect "the deploy fails" deploy_fails half
+expect "the second server is sent back as well" test "$(calls server-b roll-calls)" = "half old"
+expect "so both are on old" test "$(release_of server-a) $(release_of server-b)" = "old old"
+
+# --- A server that cannot be sent back ----------------------------------------
+
+echo "a release whose first server then cannot go back"
+reset_servers
+echo broken > "$root/server-b/fail-roll-on"
+echo old > "$root/server-a/fail-roll-on"
+expect "the deploy fails" deploy_fails broken
+expect "and says the first server could not be sent back" \
+  log_says "COULD NOT send server-a back to old"
+
+# --- A server that could not go back -------------------------------------------
+
+echo "a release the second server cannot start, nor go back from"
+reset_servers
+echo dead > "$root/server-b/down-on"
+expect "the deploy fails" deploy_fails dead
+expect "and says the second server is serving nothing" log_says "serving nothing"
+expect "the first server is left serving, not drained to be sent back" \
+  test "$(calls server-a roll-calls)" = "dead"
+
+# --- A first deploy that fails --------------------------------------------------
+
+echo "a first deploy the second server cannot start"
+new_servers
+echo first > "$root/server-b/fail-roll-on"
+expect "the deploy fails" deploy_fails first
+expect "and says there was no release to go back to" \
+  log_says "server-b, which had no release before this one"
+
+echo
+if [ "$failures" -ne 0 ]; then
+  echo "$failures check(s) failed; the last deploy's log:"
+  cat "$root/deploy.log"
+  exit 1
+fi
+echo "every check passed"
