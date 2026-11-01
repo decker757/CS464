@@ -35,6 +35,8 @@ flowchart LR
 | `deploy/production/release.sh` | one deploy, run from GitHub: send files, migrate once, roll each server |
 | `deploy/production/migrate.sh`, `ensure-database.sh` | on a server: roles and grants, then the three migrate steps |
 | `deploy/production/roll.sh` | on a server: drain, start the new release, go back if it is unhealthy |
+| `/opt/cs464/releases/<commit>/` | on a server: one release's own compose.yml, scripts, `app.env` and `release.env`; the live one and the one before are kept |
+| `/opt/cs464/current` | on a server: a link to the live release's directory |
 | `deploy/production/test/` | the two tests below, run by `ci-deploy.yml` |
 | `.github/workflows/deploy.yml` | push to `main`: build and push the images, then run `release.sh` |
 
@@ -128,14 +130,17 @@ The run goes red and says where. What state it left behind:
 **A migration is not undone when its release is sent back.** So write every
 migration to work with the release before it too: add a column, and drop the
 old one a release later. A migration that breaks the old release breaks the
-rollback.
+rollback. `CLAUDE.md` says the same, where backend changes are written.
 
-**Going back on purpose** to an earlier release that was deployed before:
-re-run the Deploy workflow for that commit, or revert on `main`, which deploys
-again. To move one server by hand: `ssh deploy@<server>`, `cd /opt/cs464`,
-`./roll.sh <commit sha>`.
+**Going back on purpose:** revert on `main`, which deploys again, or re-run an
+earlier Deploy run. To move one server by hand to the release before, which
+it still has: `ssh deploy@<server>`, then `/opt/cs464/releases/<commit>/roll.sh`.
+Its images may have been removed, and the server is logged out of GHCR after
+every deploy. So either make the `cs464-*` packages public once (each
+package's settings on GitHub; the repository already is), or log in first:
+`docker login ghcr.io -u <you>` with a token that can read packages.
 
-**Logs:** `ssh deploy@<server>`, `cd /opt/cs464`, then
+**Logs:** `ssh deploy@<server>`, `cd /opt/cs464/current`, then
 `docker compose --env-file app.env --env-file release.env logs -f ledger`.
 The logs rotate at 50 MB per container. #599 adds a dashboard.
 
@@ -149,8 +154,10 @@ The logs rotate at 50 MB per container. #599 adds a dashboard.
   pool sizes in `deploy/production/compose.yml` lowered, or a bigger
   `database_size`. DECISIONS.md, "Each service's connection pool is a
   setting, sized to the database's ceiling".
-- **Bigger servers:** change `app_server_size`. That rebuilds the servers, one
-  apply at a time. Deploy afterwards so the new ones get the app.
+- **Bigger servers:** change `app_server_size`, then resize one server at a
+  time, or both go down together: `infra/tf apply
+  -target='digitalocean_droplet.app[0]'`, wait for it to be healthy behind
+  the load balancer, then the same for `app[1]`.
 
 ## What it costs
 
@@ -190,6 +197,11 @@ certificate, and TLS to the managed databases.
 
 - **Staging.** #19 also asks for a staging environment on its own database.
   `infra/terraform` would run it as a second workspace. It is not built.
+  It needs a registrable domain of its own, not `staging.<domain>`: the
+  login cookie reaches every subdomain of the production domain (ADR 0026).
+- **A health check of every service.** `/lb-health` asks the ledger only
+  (ADR 0026), so an unhealthy auth or market service on one server is not
+  taken out of the load balancer. #599.
 - **Monitoring and alerts:** #599. Until then, DigitalOcean's server and
   database graphs are the only view.
 - **Login rate limiting:** #600.

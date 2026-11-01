@@ -163,6 +163,14 @@ fails until the later one is renumbered and its `down_revision` pointed at the
 other. The long-lived `cs464` gets the revision on the next
 `docker compose up --build`.
 
+**A migration must also work with the release before it.** Production
+migrates once and then rolls the servers one at a time, so for a while the old
+code runs against the new schema. And a release that fails is sent back
+without undoing its migration (ADR 0026). So add a column as nullable, or
+with a default, and drop or rename the old one a release later. A migration
+that breaks the release before it breaks the rollback too, and nothing tests
+that for you.
+
 The suites build their schema from the models, not from the migrations, and
 `test_migrations.py` is what holds the two together (ADR 0020). Market's and
 ledger's `unit_test/conftest.py` drop and recreate the schema per test, so a
