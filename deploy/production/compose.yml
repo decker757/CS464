@@ -9,9 +9,10 @@
 # the gateway; the migrate steps run only when the deploy asks for them (ADR
 # 0020); and the pool sizes are set (see below).
 #
-# Read by roll.sh and migrate.sh with two env files:
+# Each release has its own copy of this file, in /opt/cs464/releases/<tag>/,
+# beside the two env files that roll.sh and migrate.sh read it with:
 #   app.env      secrets and this server's settings, written by the deploy
-#   release.env  IMAGE_TAG, the release this server is on
+#   release.env  IMAGE_TAG, this release's images
 
 name: cs464
 
@@ -149,8 +150,9 @@ services:
       - "${GATEWAY_PORT:-80}:80"
     volumes:
       # roll.sh creates drain/on here to take this server out of the load
-      # balancer before it changes anything.
-      - ./drain:/etc/nginx/drain:ro
+      # balancer before it changes anything. One folder for every release,
+      # so it names an absolute path (app.env's DRAIN_DIR).
+      - ${DRAIN_DIR:?}:/etc/nginx/drain:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/gateway-health || exit 1"]
       interval: 5s

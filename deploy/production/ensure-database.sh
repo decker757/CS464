@@ -2,7 +2,8 @@
 # [5.3] #19. Ensure the production database has the four service roles, their
 # current passwords, and the schemas and grants of sql/02-schemas.sql. Safe to
 # run on every deploy: it creates what is missing and changes nothing that is
-# already right. migrate.sh runs it before the migrate steps.
+# already right, and all of it in one transaction, so a run that fails
+# partway changes nothing. migrate.sh runs it before the migrate steps.
 #
 # Reads from the environment, and writes none of it to disk:
 #   DATABASE_ADMIN_URL   the managed database's admin connection (doadmin)
@@ -29,5 +30,5 @@ docker run --rm \
   -e DATABASE_ADMIN_URL \
   -e AUTH_DB_PASSWORD -e MARKET_DB_PASSWORD -e LEDGER_DB_PASSWORD -e AUDIT_DB_PASSWORD \
   -v "$here/sql:/sql:ro" \
-  postgres:17-alpine \
-  sh -c 'psql "$DATABASE_ADMIN_URL" --quiet -v ON_ERROR_STOP=1 -f /sql/ensure-roles.sql -f /sql/02-schemas.sql'
+  postgres:17.2-alpine \
+  sh -c 'psql "$DATABASE_ADMIN_URL" --quiet --single-transaction -v ON_ERROR_STOP=1 -f /sql/ensure-roles.sql -f /sql/02-schemas.sql'
