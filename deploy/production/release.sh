@@ -2,14 +2,17 @@
 # [5.3] #19. One production deploy, run on GitHub's runner by
 # .github/workflows/deploy.yml once the release's images are pushed:
 #
-#   1. Send every app server this release's files and its app.env, into
-#      /opt/cs464/releases/<tag>/, and log it in to the image registry.
+#   1. Send every app server this release's files, into
+#      /opt/cs464/releases/<tag>/, and its app.env, into /opt/cs464/, shared
+#      by every release. Log it in to the image registry.
 #   2. Migrate the database once, from the first server (ADR 0020).
 #   3. Roll the servers one at a time with roll.sh. If one fails, roll.sh has
 #      already put it back on its old release, and every server rolled before
 #      it is sent back too, so the servers never run different releases. A
 #      server is sent back with its old release's own roll.sh, from its own
-#      directory, so the old release runs exactly as it was.
+#      directory, so the old release runs exactly as it was. The one exception:
+#      a server that could not go back is serving nothing, so the others are
+#      left serving rather than drained one by one to be sent back.
 #   4. Check the public site answers on every name.
 #
 #   release.sh <image-tag>
@@ -97,7 +100,6 @@ LEDGER_DATABASE_URL=$LEDGER_DATABASE_URL
 AUDIT_DATABASE_URL=$AUDIT_DATABASE_URL
 REDIS_URL=$REDIS_URL
 LEADERBOARD_REFRESH_ENABLED=$leaderboard
-DRAIN_DIR=$app_dir/drain
 EOF
 }
 
@@ -112,9 +114,10 @@ migrate_script() {
 }
 
 release_on() {
-  # The release a server runs now, or nothing if it has never had one:
-  # the directory that `current` links to.
-  on_host "$1" "readlink $app_dir/current 2>/dev/null | sed 's#.*/##'" < /dev/null || true
+  # The release a server runs now, or nothing if it has never had one: the
+  # directory that `current` links to. Fails if the server cannot be asked,
+  # which is not the same answer as "none".
+  on_host "$1" "{ readlink $app_dir/current || true; } | sed 's#.*/##'" < /dev/null
 }
 
 roll_to() {
@@ -130,7 +133,7 @@ for index in "${!hosts[@]}"; do
   host=${hosts[$index]}
   echo "deploy: preparing $host"
   on_host "$host" "mkdir -p $release_dir && tar -xzf - -C $release_dir" < "$work/bundle.tgz"
-  app_env_for "$index" | on_host "$host" "umask 077 && cat > $release_dir/app.env"
+  app_env_for "$index" | on_host "$host" "umask 077 && cat > $app_dir/app.env"
   printf '%s\n' "$REGISTRY_TOKEN" |
     on_host "$host" "docker login ${IMAGE_REGISTRY%%/*} -u $REGISTRY_USER --password-stdin" > /dev/null
   previous[index]=$(release_on "$host")
@@ -147,17 +150,32 @@ rolled=()
 for index in "${!hosts[@]}"; do
   host=${hosts[$index]}
   echo "deploy: rolling $host to $tag"
-  if roll_to "$host" "$tag"; then
+  roll_status=0
+  roll_to "$host" "$tag" || roll_status=$?
+  if [ "$roll_status" = 0 ]; then
     rolled+=("$index")
     continue
+  fi
+
+  if [ "$roll_status" = 2 ]; then
+    # roll.sh could not start the old release either. Sending the others
+    # back would drain each in turn while this one serves nothing.
+    echo "deploy: FAILED on $host, which could not go back and is serving nothing." >&2
+    echo "deploy: the servers rolled before it stay on $tag; see docs/deployment.md, \"When a deploy fails\"" >&2
+    exit 1
   fi
 
   # roll.sh puts a server it could not start back on its old release. But a
   # failure after the switch leaves it on the new one, so ask, not assume.
   send_back=(${rolled[@]+"${rolled[@]}"})
-  if [ "$(release_on "$host")" = "$tag" ]; then
+  now_on=$(release_on "$host") || now_on="unknown"
+  if [ "$now_on" = "$tag" ]; then
     echo "deploy: FAILED on $host, which is on $tag even so" >&2
     send_back+=("$index")
+  elif [ "$now_on" = "unknown" ]; then
+    echo "deploy: FAILED on $host, which cannot be asked which release it is on" >&2
+  elif [ -z "${previous[index]}" ]; then
+    echo "deploy: FAILED on $host, which had no release before this one" >&2
   else
     echo "deploy: FAILED on $host, which is back on its old release" >&2
   fi
