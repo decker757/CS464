@@ -5,17 +5,18 @@
 %%   backend/auth_service/controller/transport.py, backend/auth_service/controller/internal_routes.py,
 %%   backend/ledger_service/core/config.py, backend/realtime_service/Dockerfile,
 %%   frontend/src/hooks/usePriceSocket.ts
-%% Every AWS box is dashed because none of it exists. Lines are solid except the
-%% migrate gate, which is dotted to set it apart from request paths.
+%% Every AWS box is dashed because none of it exists. Every line is solid: the
+%% whole figure is planned, so a dashed line would add nothing.
 %% Connections: pool 10 + overflow 10 per task x 4 DB services. At most 3 tasks
 %% each, and a rolling update at maxPercent 150, is 5 tasks x 4 x 20 = 400 at
-%% peak, under db.t4g.medium (~450 by the RDS formula). Staging is not in #19.
+%% peak, under db.t4g.medium (~450 by the RDS formula). #19 also asks for staging
+%% from push to staging, with its own database: the same stack, so not drawn twice.
 %% Mermaid 12 redraws a dashed edge solid where it hops another line; no hops here.
 %%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 320}}}%%
 flowchart TB
     browser["Browser"]
 
-    subgraph aws["PLANNED (#19): nothing deployed yet — main only"]
+    subgraph aws["PLANNED (#19): nothing deployed yet. Production, from main;<br/>staging is the same stack with its own RDS, from staging"]
         cdn["CloudFront + S3<br/>app.cs464.dev"]
 
         subgraph pub["Public subnets, 2 AZs"]
@@ -34,16 +35,16 @@ flowchart TB
             redis[("ElastiCache Redis<br/>1 node")]
         end
 
-        shared["Route 53, ACM<br/>ECR, CloudWatch<br/>Secrets Manager:<br/>DATABASE_URL per role,<br/>JWT_SECRET shared by 5"]
+        shared["Route 53, ACM<br/>ECR, CloudWatch<br/>Secrets Manager:<br/>DATABASE_URL per role,<br/>JWT_SECRET shared by 5,<br/>LEDGER_SERVICE_KEY"]
         note["2–3 tasks each, CPU target;<br/>rollout maxPercent 150.<br/>Spot: ALB drains the task;<br/>a manual retry is safe<br/>(idempotency keys)."]
     end
 
     browser --> cdn
     browser -->|"cookie, wss"| alb
 
-    mig -.->|"gates rollout"| ledger
-    mig -.-> auth
-    mig -.-> market
+    mig -->|"exit 0 gates rollout"| ledger
+    mig --> auth
+    mig --> market
 
     alb --> ledger
     alb --> realtime

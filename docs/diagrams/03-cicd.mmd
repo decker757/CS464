@@ -21,10 +21,10 @@ flowchart TB
 
     notify["notify-failure.yml<br/>Telegram"]
 
-    subgraph deploy["PLANNED (#19) — deploy.yml, on push to main"]
+    subgraph deploy["PLANNED (#19) — deploy.yml, on push to staging or main"]
         direction LR
         tests["the same tests<br/>no path filter"]
-        image["OIDC role:<br/>main only<br/>images to ECR"]
+        image["OIDC role:<br/>staging, main only<br/>images to ECR"]
         mig["bootstrap: roles once,<br/>02-schemas each deploy;<br/>migrate × 3, expand/contract"]
         roll["ECS rolling<br/>update, health<br/>check, rollback"]
     end
@@ -33,7 +33,7 @@ flowchart TB
     push --> ci
     ci -->|"failed"| notify
 
-    push -.->|"planned: main only"| deploy
+    push -.->|"planned: staging, main"| deploy
     tests -.->|"needs: green"| image
     image -.-> mig
     mig -.->|"exit 0"| roll

@@ -9,8 +9,8 @@
 %%   backend/market_service/controller/routes.py,
 %%   backend/ledger_service/service/settlement.py,
 %%   backend/ledger_service/service/voiding.py
-%% Every arrow is a POST under /markets/{id} on market, by an admin, except
-%% the sweep. publish leaves only from submitted (market_service.py:393-395);
+%% Every arrow is a POST on market by an admin, under /markets/{id} except
+%% autosave and submit (POST /markets), and except the sweep. publish leaves only from submitted (market_service.py:393-395);
 %% the sweep and close early both land on closed. "window end" = the stored dispute_window_ends_at. approve,
 %% reject and send-back each quote the proposal_id they read (ADR 0016).
 %% settle and void are called by the ledger after its payout or refunds
