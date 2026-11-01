@@ -11197,3 +11197,37 @@ a busy market that closes far in the future can miss Trending. That is
 acceptable at this project's scale. If it stops being, a server-side ranking
 is a cross-service design decision, not a change to `_browse_order`, for the
 reason under Rejected.
+
+---
+
+### D-NEW — Each service's connection pool is a setting, sized to the database's ceiling
+
+**Date:** 2026-11-01 · **Ticket:** #19 · **Status:** active
+
+**Decision.** `DATABASE_POOL_SIZE` and `DATABASE_MAX_OVERFLOW` set each
+service's SQLAlchemy pool. Both default to what was hard-coded before (10
+and 10), so a laptop and CI behave exactly as they did. Production sets them
+lower, in `deploy/production/compose.yml`. The rule is that every replica of
+every service, at full overflow, plus the three migrate steps, stays under the
+managed database's connection limit.
+
+**Why.** Locally, Postgres allows 100 connections and there is one copy of
+each service. Managed Postgres allows far fewer: about 47 on DigitalOcean's 2 GB plan
+when this was written. In production, every app server runs auth, market, ledger
+and audit. At the old fixed sizes that is up to 80 connections per server,
+so the second server would hit "too many connections" under load, and the
+error would look like a bug in the service rather than a sizing problem.
+
+**Rejected.** *Pooling through PgBouncer in transaction mode* (DigitalOcean's
+"connection pools"). It multiplexes, so far fewer server connections are
+needed. But asyncpg caches prepared statements per connection, which
+transaction mode breaks unless every engine turns that cache off. That
+changes all four engines, against a pooler that nothing runs locally or in
+CI, so nothing would test it before production. A pool size is a smaller
+change. *A bigger database plan instead*: it costs more every month and only
+moves the same ceiling.
+
+**Notes.** The ceiling is what limits scaling out. A third app server will
+not fit at the production sizes until the database plan or the pool sizes
+change, and `docs/deployment.md` says so. That is the trade made here: the
+app servers scale out, and the one database scales up.
