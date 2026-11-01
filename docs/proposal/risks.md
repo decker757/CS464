@@ -2,7 +2,7 @@
 
 ## Body version
 
-The eight rows that fit the page budget, with the guideline's technical-debt bullet as the paragraph under the full table. L and I are likelihood and impact.
+The nine rows that fit the page budget, with the guideline's technical-debt bullet as the paragraph under the full table. L and I are likelihood and impact.
 
 | Risk | L | I | Mitigation | Status |
 |---|---|---|---|---|
@@ -12,6 +12,7 @@ The eight rows that fit the page budget, with the guideline's technical-debt bul
 | Cookie needs one registrable domain, and it is the socket's only browser credential (ADR 0002, 0010) | M | H | Serve all under `cs464.dev`, set `COOKIE_DOMAIN`; CSRF tokens before any `SameSite=None` | Planned |
 | A live access token cannot be revoked for up to 15 minutes (ADR 0002, 0003, 0007) | M | M | 15-minute lifetime; the ledger asks auth per trade; a `jti` denylist is the upgrade | Accepted |
 | No rate limiting on login (no ADR; found in the code) | M | M | Argon2id slows guesses; WAF or nginx limit | Not started |
+| Spot reclaims a task, dropping its requests and sockets (ADR 0010, 0019) | M | M | ALB drains it; idempotency keys make a retry safe; sockets reconnect and read a snapshot | Planned |
 | One Postgres in one AZ (ADR 0001) | L | H | A managed standby is the named upgrade | Accepted |
 | HS256: any verifier could sign a token (ADR 0002, 0003) | L | H | Verifiers have no encode path, and a test guards it; RS256 is the upgrade | Accepted |
 
@@ -21,7 +22,7 @@ The eight rows that fit the page budget, with the guideline's technical-debt bul
 
 | # | Risk | Likelihood | Impact | Mitigation | Status | Source |
 |---|---|---|---|---|---|---|
-| 1 | **Nothing is deployed.** Continuous delivery is unbuilt. There is no staging or production environment, no public URL and no measured running cost. | High (certain) | High | A planned AWS design: ECS tasks behind an ALB, a separate RDS for staging and for production, and the migrate step as a gated one-off job. Containers and CI (`ci-backend`, `ci-frontend`, `e2e`) already exist. | Planned. Not started. | #19 [5.3] Deploy pipeline; diagram 02 |
+| 1 | **Nothing is deployed.** Continuous delivery is unbuilt. There is no staging or production environment, no public URL and no measured running cost. | High (certain) | High | A planned AWS design: ECS tasks behind an ALB, a separate RDS for staging and for production, and the migrate step as a gated one-off job. Containers and CI (`ci-backend`, `ci-frontend`, `e2e`) already exist. | Planned. Not started. | #19 [5.3] Deploy pipeline; ADR 0020 *Migrations by Alembic, per service, run as a one-off step*; diagram 02 |
 | 2 | **No performance numbers.** The scalability claims are argued but not measured. Every trade makes two synchronous HTTP calls (auth and market_service), queues on its market's book-row lock, and does extra work under that lock for each resting order it fills. | High (certain) | High | A load test against the trade endpoint, recording p95 latency at 50 concurrent users. #440 has shown two replicas of every service working behind nginx, including a quote from one ledger replica honoured by the other. | Planned (#20 open). Replication has been run, but not under load. | #20 [5.4] Load test; ADR 0017 *The ledger asks market_service whether a market is still trading, once per trade*; ADR 0022 *The ledger asks auth whether a trader is still active, once per trade*; ADR 0024 *Resting orders fill against the AMM inside the trade that moved the price* |
 | 3 | **Database connection budget.** Each task holds a pool of 10 connections plus 10 overflow, and four services use the database. With 3 tasks per service and a rolling update that peaks at 4 (ECS rounds a 150% maximum down), that is 320 connections at peak, against roughly 450 for db.t4g.medium by AWS's formula, somewhat less in practice. A cap of 4 tasks per service would peak at 6 × 4 × 20 = 480 and exceed it, and requests would fail during a rollout. | Medium | High | The budget is worked out in diagram 02. The trade path releases its connection before each HTTP call (D-043). Set `max_overflow` explicitly, cap the task count, and add RDS Proxy or a larger instance if #20 calls for it. | Planned (design only). | Diagram 02's connection comment; `backend/*/core/database.py` |
 | 4 | **The cookie needs one registrable domain.** The `SameSite=Lax` session cookie is not sent on cross-site requests. If the frontend and the API are on different domains, login fails silently, and so do live prices, because the cookie is the WebSocket's only credential. | Medium | High | Serve the frontend and the API under one registrable domain (`app.cs464.dev`) and set `COOKIE_DOMAIN` on auth. Move to `SameSite=None` only after adding CSRF tokens. | Planned in diagram 02. Today the setting accepts `none` with no CSRF defence. | ADR 0002 *Cookies for the browser, bearer tokens for services*; ADR 0010 *A relay that owns nothing, and a bus that is not the database* |
@@ -48,5 +49,5 @@ The eight rows that fit the page budget, with the guideline's technical-debt bul
 - Row 8: the auth and terms clients time out after 5 s (`backend/ledger_service/service/account_status.py:28`, `backend/ledger_service/service/market_terms.py:35`).
 - Row 10: `jwt_algorithm = "HS256"` is at `backend/shared/config.py:43`. `JWT_SECRET: ${JWT_SECRET:?}` appears for auth, market, ledger, audit and realtime at `docker-compose.yml:79,126,194,245,303`.
 - Row 12: `CREATE SCHEMA ... ledger AUTHORIZATION ledger_svc` is at `sql/02-schemas.sql:11`. The trigger is `entries_append_only` (`backend/ledger_service/model/entities.py:915`).
-- Row 13: the publish comes after `post_all` commits (`backend/ledger_service/service/trading.py:911-931`), and a failed publish is caught and logged (`backend/ledger_service/service/bus.py:34-40`). Redis runs without persistence (`docker-compose.yml:262`).
+- Row 14: the publish comes after `post_all` commits (`backend/ledger_service/service/trading.py:911-931`), and a failed publish is caught and logged (`backend/ledger_service/service/bus.py:34-40`). Redis runs without persistence (`docker-compose.yml:262`).
 - Row 3: ECS rounds `maximumPercent` down, per the AWS [DeploymentConfiguration reference](https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_DeploymentConfiguration.html). The ~450 ceiling for db.t4g.medium is AWS's formula, not something the repository can check.
