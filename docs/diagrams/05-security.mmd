@@ -1,0 +1,75 @@
+%% 05 — Trust model: tokens, keys, grants
+%% Drawn from: ADR 0001, ADR 0002, ADR 0003, ADR 0006, ADR 0007, ADR 0010,
+%%   ADR 0021, ADR 0022 (and its ADR 0024 amendment), sql/01-roles.sql,
+%%   sql/02-schemas.sql, backend/shared/security.py, backend/shared/config.py,
+%%   backend/auth_service/core/config.py, backend/auth_service/core/security.py,
+%%   backend/auth_service/controller/transport.py,
+%%   backend/auth_service/controller/dependencies.py,
+%%   backend/auth_service/service/auth_service.py,
+%%   backend/ledger_service/service/account_status.py,
+%%   backend/ledger_service/service/orders.py,
+%%   backend/ledger_service/service/user_directory.py,
+%%   backend/realtime_service/controller/transport.py,
+%%   backend/realtime_service/controller/routes.py,
+%%   backend/ledger_service/model/entities.py,
+%%   backend/ledger_service/migrations/versions/0001_baseline.py
+%% The legend is drawn in the figure, inside the Postgres zone.
+flowchart LR
+    subgraph br["Browser: cookies set at login,<br/>httpOnly, SameSite=Lax"]
+        direction TB
+        acc["access_token<br/>JWT, 15 min<br/>path /"]
+        ref["refresh_token<br/>opaque, 14 days<br/>path /auth"]
+    end
+
+    subgraph svc["All five verify JWT_SECRET. HS256 lets any<br/>verifier sign: accepted in ADR 0002, RS256 the upgrade"]
+        direction TB
+        realtime["realtime<br/>Origin allowlist,<br/>no token in URL"]
+        market["market<br/>role claim<br/>until expiry"]
+        audit["audit<br/>admin claim,<br/>GET only"]
+        ledger["ledger<br/>role claim<br/>+ /auth/me"]
+        auth["auth<br/>only signer,<br/>reads live row"]
+    end
+
+    subgraph pg["Postgres: no cross grants"]
+        direction TB
+        sMarket[("market")]
+        sAudit[("audit.admin_actions<br/>append-only trigger<br/>owner superuser")]
+        sLedger[("ledger.entries<br/>append-only trigger<br/>owner ledger_svc")]
+        sAuth[("auth.refresh_tokens<br/>SHA-256 only")]
+        lg["Postgres edges:<br/>solid = owns schema<br/>thick = SELECT + INSERT<br/>dotted = INSERT only"]
+    end
+
+    acc -->|"cookie (a browser<br/>cannot set headers)"| realtime
+    acc -->|"cookie, or Bearer<br/>(header wins)"| market
+    acc --> audit
+    acc --> ledger
+    ref -->|"/auth/refresh: single use,<br/>replay revokes all"| auth
+
+    ledger -->|"GET /auth/me, forwards<br/>trader's own token"| auth
+    ledger -->|"X-Service-Key, only<br/>/internal/users/lookup"| auth
+
+    market --> sMarket
+    market -.-> sAudit
+    audit ==> sAudit
+    ledger -.-> sAudit
+    ledger --> sLedger
+    auth -.-> sAudit
+    auth --> sAuth
+
+    classDef browser  fill:#F2F2F2,stroke:#555555,color:#1A202C
+    classDef auth     fill:#DCEBFA,stroke:#2F6DB5,color:#1A202C
+    classDef market   fill:#DFF2E1,stroke:#2E8B47,color:#1A202C
+    classDef ledger   fill:#FCEBCF,stroke:#C27C0E,color:#1A202C
+    classDef audit    fill:#ECE3F7,stroke:#7048A8,color:#1A202C
+    classDef realtime fill:#DDF3F3,stroke:#1F8A8A,color:#1A202C
+    classDef pg       fill:#E6EBF2,stroke:#3B5068,color:#1A202C
+
+    classDef legend fill:#FFFFFF,stroke:#A0AEC0,color:#1A202C
+    class lg legend
+    class acc,ref browser
+    class auth auth
+    class market market
+    class ledger ledger
+    class audit audit
+    class realtime realtime
+    class sAuth,sMarket,sLedger,sAudit pg
