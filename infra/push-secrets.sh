@@ -29,8 +29,16 @@ set_variable() {
   echo "  variable  $1=$2"
 }
 
-echo "ensuring the GitHub environment \"$environment\" exists"
-gh api --silent -X PUT "repos/{owner}/{repo}/environments/$environment"
+echo "ensuring the GitHub environment \"$environment\" exists, open to main only"
+# Only a run on `main` may use this environment, so a workflow started from
+# any other branch can neither deploy nor read these secrets. ADR 0026.
+gh api --silent -X PUT "repos/{owner}/{repo}/environments/$environment" --input - <<'JSON'
+{"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
+JSON
+policies="repos/{owner}/{repo}/environments/$environment/deployment-branch-policies"
+if ! gh api "$policies" --jq '.branch_policies[].name' | grep -qx main; then
+  gh api --silent -X POST "$policies" -f name=main -f type=branch
+fi
 
 set_secret DEPLOY_SSH_KEY deploy_private_key
 set_secret DEPLOY_KNOWN_HOSTS known_hosts
