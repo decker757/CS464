@@ -371,7 +371,7 @@ Fifteen figures for the final proposal. Each `.mmd` in
 [`diagrams/`](diagrams/) is the source of truth and starts with the files and
 ADRs it was drawn from; the images below are its renders, made with
 `python docs/diagrams/render.py` (white background, 1600 px wide, one colour
-per service). [`diagrams/_conventions.md`](diagrams/_conventions.md) has the
+per service). Figure 15 is drawn by its own script, `diagrams/15-lmsr.py`. [`diagrams/_conventions.md`](diagrams/_conventions.md) has the
 rules: solid for what exists, dashed and labelled "planned" for what does not.
 The three diagrams above stay the detailed reference; where these and the code
 disagree, the code is right.
