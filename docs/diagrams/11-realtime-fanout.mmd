@@ -1,0 +1,42 @@
+%% 11 — Live prices: one publish, every replica
+%% Drawn from: ADR 0010, ADR 0024, D-049,
+%%   DECISIONS.md "One price frame per commit, at the final state_version",
+%%   docs/api/realtime-service.md,
+%%   backend/ledger_service/service/bus.py, backend/ledger_service/service/trading.py,
+%%   backend/realtime_service/service/bus.py, service/ordering.py,
+%%   service/subscriptions.py, controller/connection.py, controller/routes.py,
+%%   controller/transport.py, core/config.py,
+%%   frontend/src/hooks/useMarketPrices.ts, frontend/src/hooks/usePriceSocket.ts
+%%{init: {"flowchart": {"wrappingWidth": 320, "nodeSpacing": 22, "rankSpacing": 40}}}%%
+flowchart TB
+    L["ledger, after the commit<br/>1 price frame per commit<br/>1 order frame per fill"]:::ledger
+    R[("Redis<br/>market.price<br/>order.update")]:::redis
+    L -->|"PUBLISH"| R
+
+    RT1["realtime replica 1<br/>drops a price frame<br/>not strictly newer"]:::realtime
+    RT2["realtime replica 2<br/>(same, own state)"]:::realtime
+    R -->|"both channels"| RT1
+    R -->|"both channels"| RT2
+
+    B1["Browser A<br/>watches X"]:::browser
+    B2["Browser B<br/>watches X, owns<br/>the filled order"]:::browser
+    B3["Browser C<br/>watches X"]:::browser
+
+    B1 -->|"subscribe {market_id}"| RT1
+    RT1 -->|"price"| B1
+    RT1 -->|"price + order"| B2
+    RT2 -->|"price"| B3
+
+    S["ledger<br/>GET /ledger/markets/{id}/snapshot<br/>on mount, and on every subscribed ack"]:::ledger
+    B1 --> S
+    B2 --> S
+    B3 --> S
+
+    W["each /ws/prices socket:<br/>Origin + cookie checked<br/>≤ 50 markets, 64-frame queue<br/>queue full: close 4409"]:::ext
+    RT2 ~~~ W
+
+    classDef browser  fill:#F2F2F2,stroke:#555555,color:#1A202C
+    classDef ledger   fill:#FCEBCF,stroke:#C27C0E,color:#1A202C
+    classDef realtime fill:#DDF3F3,stroke:#1F8A8A,color:#1A202C
+    classDef redis    fill:#FBE0DE,stroke:#C0392B,color:#1A202C
+    classDef ext      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
