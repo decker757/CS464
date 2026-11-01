@@ -2,12 +2,14 @@
 # [5.3] #19. One production deploy, run on GitHub's runner by
 # .github/workflows/deploy.yml once the release's images are pushed:
 #
-#   1. Send every app server the files it runs and its app.env, and log it in
-#      to the image registry.
+#   1. Send every app server this release's files and its app.env, into
+#      /opt/cs464/releases/<tag>/, and log it in to the image registry.
 #   2. Migrate the database once, from the first server (ADR 0020).
 #   3. Roll the servers one at a time with roll.sh. If one fails, roll.sh has
 #      already put it back on its old release, and every server rolled before
-#      it is sent back too, so the servers never run different releases.
+#      it is sent back too, so the servers never run different releases. A
+#      server is sent back with its old release's own roll.sh, from its own
+#      directory, so the old release runs exactly as it was.
 #   4. Check the public site answers on every name.
 #
 #   release.sh <image-tag>
@@ -37,6 +39,7 @@ for name in IMAGE_REGISTRY REGISTRY_USER REGISTRY_TOKEN DEPLOY_SSH_KEY DEPLOY_KN
 done
 
 work=$(mktemp -d)
+release_dir=$app_dir/releases/$tag
 
 # --- Talking to a server -----------------------------------------------------
 
@@ -72,6 +75,7 @@ make_bundle() {
   mkdir -p "$work/bundle/sql"
   cp "$repo"/deploy/production/{compose.yml,roll.sh,migrate.sh,ensure-database.sh} "$work/bundle/"
   cp "$repo/deploy/production/sql/ensure-roles.sql" "$repo/sql/02-schemas.sql" "$work/bundle/sql/"
+  echo "IMAGE_TAG=$tag" > "$work/bundle/release.env"
   tar -czf "$work/bundle.tgz" -C "$work/bundle" .
 }
 
@@ -93,6 +97,7 @@ LEDGER_DATABASE_URL=$LEDGER_DATABASE_URL
 AUDIT_DATABASE_URL=$AUDIT_DATABASE_URL
 REDIS_URL=$REDIS_URL
 LEADERBOARD_REFRESH_ENABLED=$leaderboard
+DRAIN_DIR=$app_dir/drain
 EOF
 }
 
@@ -103,12 +108,18 @@ migrate_script() {
   for name in "${migrate_secrets[@]}"; do
     printf 'export %s=%q\n' "$name" "${!name}"
   done
-  printf 'cd %q && ./migrate.sh %q\n' "$app_dir" "$tag"
+  printf '%q\n' "$release_dir/migrate.sh"
 }
 
 release_on() {
-  # The release a server runs now, or nothing if it has never had one.
-  on_host "$1" "sed -n 's/^IMAGE_TAG=//p' $app_dir/release.env 2>/dev/null" < /dev/null || true
+  # The release a server runs now, or nothing if it has never had one:
+  # the directory that `current` links to.
+  on_host "$1" "readlink $app_dir/current 2>/dev/null | sed 's#.*/##'" < /dev/null || true
+}
+
+roll_to() {
+  # roll_to <host> <tag>: that release's own roll.sh, on that server.
+  on_host "$1" "$app_dir/releases/$2/roll.sh" < /dev/null
 }
 
 # --- 1. Prepare every server -------------------------------------------------
@@ -118,8 +129,8 @@ previous=()
 for index in "${!hosts[@]}"; do
   host=${hosts[$index]}
   echo "deploy: preparing $host"
-  on_host "$host" "tar -xzf - -C $app_dir" < "$work/bundle.tgz"
-  app_env_for "$index" | on_host "$host" "umask 077 && cat > $app_dir/app.env"
+  on_host "$host" "mkdir -p $release_dir && tar -xzf - -C $release_dir" < "$work/bundle.tgz"
+  app_env_for "$index" | on_host "$host" "umask 077 && cat > $release_dir/app.env"
   printf '%s\n' "$REGISTRY_TOKEN" |
     on_host "$host" "docker login ${IMAGE_REGISTRY%%/*} -u $REGISTRY_USER --password-stdin" > /dev/null
   previous[index]=$(release_on "$host")
@@ -136,20 +147,28 @@ rolled=()
 for index in "${!hosts[@]}"; do
   host=${hosts[$index]}
   echo "deploy: rolling $host to $tag"
-  if on_host "$host" "cd $app_dir && ./roll.sh $tag" < /dev/null; then
+  if roll_to "$host" "$tag"; then
     rolled+=("$index")
     continue
   fi
 
-  echo "deploy: FAILED on $host, which is back on its old release" >&2
-  for earlier in ${rolled[@]+"${rolled[@]}"}; do
+  # roll.sh puts a server it could not start back on its old release. But a
+  # failure after the switch leaves it on the new one, so ask, not assume.
+  send_back=(${rolled[@]+"${rolled[@]}"})
+  if [ "$(release_on "$host")" = "$tag" ]; then
+    echo "deploy: FAILED on $host, which is on $tag even so" >&2
+    send_back+=("$index")
+  else
+    echo "deploy: FAILED on $host, which is back on its old release" >&2
+  fi
+  for earlier in ${send_back[@]+"${send_back[@]}"}; do
     back_to=${previous[earlier]}
     if [ -z "$back_to" ]; then
       echo "deploy: ${hosts[earlier]} had no release before this one, so it stays on $tag" >&2
       continue
     fi
     echo "deploy: sending ${hosts[earlier]} back to $back_to" >&2
-    on_host "${hosts[earlier]}" "cd $app_dir && ./roll.sh $back_to" < /dev/null ||
+    roll_to "${hosts[earlier]}" "$back_to" ||
       echo "deploy: COULD NOT send ${hosts[earlier]} back to $back_to" >&2
   done
   exit 1
