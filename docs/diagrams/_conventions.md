@@ -30,8 +30,8 @@ system in the PDF.
   `/ws/prices`, `LEDGER_SERVICE_KEY`, `pending_resolution`. Do not invent
   friendlier names for things the code has named.
 - Readable in print: `render.py` prints the size the text would print at
-  17 cm (full text width). Body text should be 6.5 pt or more at the width the
-  figure is placed at; a landscape page gives 24.6 cm. Below that, cut words,
+  15.9 cm (full text width with 1-inch margins). Body text should be 6.5 pt or
+  more at the width the figure is placed at; a landscape page gives 24.6 cm. Below that, cut words,
   narrow the layout or split the diagram.
 
 ## Lines
