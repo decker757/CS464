@@ -56,5 +56,11 @@ set_secret JWT_SECRET jwt_secret
 set_secret LEDGER_SERVICE_KEY ledger_service_key
 
 set_variable APP_HOSTS "$(output app_hosts)"
-set_variable PRODUCTION_DOMAIN "$(output domain)"
+
+# The domain is not a secret, and the image build needs it. Set for the whole
+# repository, so the build never has to enter the production environment,
+# which holds the secrets.
+domain=$(output domain)
+gh variable set PRODUCTION_DOMAIN --body "$domain"
+echo "  variable  PRODUCTION_DOMAIN=$domain (repository)"
 echo "done"
