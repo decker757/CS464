@@ -176,6 +176,20 @@ defaulting to the ports above) is `localhost`, `127.0.0.1` or `[::1]`, and the
 Docker engine its SQL steps reach is a local socket or pipe. There is no
 override.
 
+**The production site has its own command** (#609): `npm run seed:production`,
+from `frontend/`, on the machine that ran `infra/tf apply`. Same markets,
+traders and scenarios, with three differences:
+- Every account gets a generated password, written to
+  `~/cs464-production-accounts.txt`. The password above is in this
+  repository, so on a public site anyone could log in as a seeded admin.
+- The two SQL steps run over SSH on an app server.
+- You type the domain to confirm. It refuses a site that already has a
+  market, any of its accounts, or an administrator: it makes the first one.
+
+Run it one to two weeks before the showcase, for the movers band, and before
+anyone makes an administrator.
+[`docs/deployment.md`](docs/deployment.md), "Seeding the demo markets".
+
 ### Two of everything, behind a load balancer
 
 ```bash

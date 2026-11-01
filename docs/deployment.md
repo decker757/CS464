@@ -88,16 +88,61 @@ admin of this repository.
 7. **Deploy.** Run the Deploy workflow by hand (Actions, Deploy, Run
    workflow, on `main`), or promote `dev` to `main`. The first run takes about
    ten minutes. When it is green, open `https://<domain>`.
-8. **The first administrator,** as ADR 0007 says. Register on the site, then
-   run the promotion from the first server, which can reach the database:
+8. **Seed the demo markets, if this site is for the showcase** (#609). Do it
+   before anyone makes an administrator: the seed makes the site's first one,
+   `admin_rachel`, the way ADR 0007 says a first administrator is made, and
+   refuses a site that already has one. From `frontend/`, on this machine:
 
    ```bash
-   ssh deploy@<first app server> # its address: infra/tf output app_hosts
-   docker run --rm -it postgres:17.2-alpine psql "<infra/tf output -raw database_admin_url>" \
-     -c "UPDATE auth.users SET role = 'admin' WHERE lower(username) = '<you>'"
+   npm run seed:production
    ```
 
-   Log out and back in. Every later administrator is promoted from the site.
+   It asks you to type the domain. It refuses a site that already has a
+   market, or any of its accounts, because a seed cannot be undone: ledger
+   entries are never deleted. It makes the same two admins, nine traders and
+   fourteen markets as the local seed (README, "A demo database") in about
+   three minutes.
+
+   Every account gets a generated password, in
+   `~/cs464-production-accounts.txt`, readable by you only. It is the only
+   copy, so move the passwords into a password manager and delete the file
+   once they are safe. The repository's test password is never used here,
+   because anyone can read it.
+
+   Seed **one to two weeks before the showcase,** if you can. The browse
+   page's "Biggest movers" band and each card's weekly change measure from
+   trades at least seven days old, and a trade's time cannot be backdated.
+   Seeded the day before, everything else is there and those two are not.
+
+   The seed registers eleven accounts from one address in a few seconds.
+   Login rate limiting (#600) must allow that, or the seed runs before it.
+9. **Your own administrator account.** Register on the site.
+   - If you seeded, log in as `admin_rachel` and promote yourself from Admin →
+     Users. That is how every administrator after the first is made, and the
+     audit log records who did it.
+   - If you did not seed, you are the first administrator. Run the promotion
+     by hand from the first server, which can reach the database:
+
+     ```bash
+     ssh deploy@<first app server> # its address: infra/tf output app_hosts
+     docker run --rm -it postgres:17.2-alpine psql "<infra/tf output -raw database_admin_url>" \
+       -c "UPDATE auth.users SET role = 'admin' WHERE lower(username) = '<you>'"
+     ```
+
+   Log out and back in: the role rides in the token.
+
+**If the seed stops partway.** Read what it printed last.
+- **It stopped before "Published 14 markets":** nothing permanent was made
+  except some accounts. A second run refuses, because those names exist. To
+  start again, recreate the `cs464` database in the DigitalOcean console (or
+  `infra/tf apply -replace=digitalocean_database_db.cs464`), then re-run the
+  Deploy workflow, which rebuilds the schemas, and seed again.
+- **It stopped after:** the markets, trades and ledger entries are
+  permanent. Either leave the site half-seeded, or recreate the database as
+  above, which also deletes anything else on the site.
+
+Either way, keep the passwords file the first run wrote. It holds the only
+copy of the passwords for the accounts that run made.
 
 ## A normal deploy
 
