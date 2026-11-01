@@ -20,7 +20,8 @@
 #   - a release that starts unhealthy is rolled back to the one before
 #   - a good release replaces the one before, which is kept, and nothing older
 #   - going back from a release that added a service runs the old release
-#     from its own files, without that service
+#     from its own files, without that service, and with today's secrets: a
+#     database password changed since the old release was deployed
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -81,7 +82,7 @@ install_release() {
   cp "$repo"/deploy/production/{roll.sh,migrate.sh,ensure-database.sh} "$directory/"
   cp "${2:-$repo/deploy/production/compose.yml}" "$directory/compose.yml"
   cp "$repo/deploy/production/sql/ensure-roles.sql" "$repo/sql/02-schemas.sql" "$directory/sql/"
-  cp "$repo/deploy/production/test/backing.yml" "$work/app.env" "$directory/"
+  cp "$repo/deploy/production/test/backing.yml" "$directory/"
   echo "IMAGE_TAG=$1" > "$directory/release.env"
 }
 
@@ -96,7 +97,7 @@ roll_is_refused() {
 
 compose() {
   # Compose, as the release the server is on.
-  (cd -P "$work/current" && docker compose --env-file app.env --env-file release.env "$@")
+  (cd -P "$work/current" && docker compose --env-file "$work/app.env" --env-file release.env "$@")
 }
 
 every_image_is_at() {
@@ -126,10 +127,7 @@ image_is_here() {
 
 cleanup() {
   echo "cleaning up"
-  if [ -d "$work/releases/one" ]; then
-    (cd "$work/releases/one" && docker compose --env-file app.env --env-file release.env \
-      down -v --remove-orphans) > /dev/null 2>&1 || true
-  fi
+  docker compose -p "$project" down -v --remove-orphans > /dev/null 2>&1 || true
   docker rm -f "$project-registry" > /dev/null 2>&1 || true
   rm -rf "$work"
 }
@@ -200,8 +198,9 @@ AUDIT_DATABASE_URL=postgresql+asyncpg://audit_svc:$AUDIT_DB_PASSWORD@postgres:54
 REDIS_URL=redis://redis:6379/0
 LEADERBOARD_REFRESH_ENABLED=true
 TEST_POSTGRES_PASSWORD=$TEST_POSTGRES_PASSWORD
-DRAIN_DIR=$work/drain
 EOF
+# roll.sh sets the same; compose needs it for this test's own calls too.
+export DRAIN_DIR="$work/drain"
 
 # Each release is installed just before it is rolled, as the deploy does:
 # a successful roll removes every release but itself and the one before.
@@ -221,7 +220,7 @@ YAML
 backing() {
   # The stand-ins, from release one's directory. They are not part of any
   # release, but they share its compose project and network.
-  (cd "$work/releases/one" && docker compose --env-file app.env --env-file release.env "$@")
+  (cd "$work/releases/one" && docker compose --env-file "$work/app.env" --env-file release.env "$@")
 }
 
 echo "starting the stand-in database and Redis"
@@ -322,6 +321,13 @@ expect "and every service runs release two" every_image_is_at two
 expect "and only two and the release before it are kept" releases_kept_are "one two"
 expect "and release one's images are kept, for going back" image_is_here "$registry/cs464-auth:one"
 
+echo "the ledger's database password changes, as a deploy would change it"
+LEDGER_DB_PASSWORD=$(random_secret)
+grep -v '^LEDGER_DATABASE_URL=' "$work/app.env" > "$work/app.env.next"
+echo "LEDGER_DATABASE_URL=postgresql+asyncpg://ledger_svc:$LEDGER_DB_PASSWORD@postgres:5432/cs464" >> "$work/app.env.next"
+mv "$work/app.env.next" "$work/app.env"
+"$work/releases/two/migrate.sh"
+
 echo "roll.sh, a release that adds a service and never becomes healthy"
 install_release three "$work/compose-three.yml"
 expect "roll.sh refuses it" roll_is_refused three
@@ -329,6 +335,7 @@ expect "and the server is back on two" test "$(current_release)" = two
 expect "and every service runs release two" every_image_is_at two
 expect "and the service only three has is not running" no_container_runs_for extra
 expect "and it is serving" status_becomes 127.0.0.1 /lb-health 200
+expect "and its ledger reaches the database with today's password" has_starting_grant
 
 echo
 if [ "$failures" -ne 0 ]; then
