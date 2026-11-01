@@ -146,7 +146,7 @@ describe('BalanceContext', () => {
 
     // The slow first reply (the stale pre-trade balance) arrives last; it
     // must not replace the newer one already on screen.
-    resolveFirst(await HttpResponse.json({ user_id: alice.id, account_id: 'acc-1', balance: '1000.0000' }))
+    resolveFirst(HttpResponse.json({ user_id: alice.id, account_id: 'acc-1', balance: '1000.0000' }))
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(screen.getByText('995.0000')).toBeInTheDocument()
   })

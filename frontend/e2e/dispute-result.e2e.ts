@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { approveOutcome, closeEarly, proposeOutcome, publishMarket, registerAdmin, uniqueName } from './support/backend'
-import { loadUntilShown, logIn } from './support/browser'
+import { logIn, marketCard, setQueryParams } from './support/browser'
 
 // [FE][3.3] #59, through the real market service and the audit log: the
 // dispute window and send-back-outcome are already on dev, and the modal's
@@ -18,8 +18,9 @@ test('the proposer disputes an approved result, and the market goes back to clos
 
   const page = await (await browser.newContext()).newPage()
   await logIn(page, proposer)
+  await setQueryParams(page, '/markets/overview', { q: market.question })
   await page.goto('/admin/markets')
-  const card = await loadUntilShown(page, market.question)
+  const card = marketCard(page, market.question)
 
   // The headline of the ticket: a countdown that silently stopped rendering
   // against the real API would otherwise go unnoticed.

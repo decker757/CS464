@@ -20,7 +20,7 @@ interface WithProvidersProps {
  * network. `balance` defaults to `undefined` (still loading), the value
  * every page test but AppNavbar's needs. */
 export function WithProviders({
-  user, balance = undefined, available = balance, refetchBalance = async () => {}, children,
+  user, balance, available = balance, refetchBalance = async () => {}, children,
 }: WithProvidersProps) {
   return (
     <AuthContext.Provider value={{ user, login: () => {}, logout: async () => {} }}>
