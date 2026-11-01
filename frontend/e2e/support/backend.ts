@@ -59,21 +59,27 @@ interface AuthResponse {
   tokens: { access_token: string }
 }
 
-export async function logInThroughApi(username: string): Promise<Session> {
-  const body = await call<AuthResponse>('POST', `${AUTH_URL}/auth/login`, null, { identifier: username, password: PASSWORD })
+// `password` is the production seed's (#609), which gives every account its
+// own. Everything else uses PASSWORD.
+export async function logInThroughApi(username: string, password = PASSWORD): Promise<Session> {
+  const body = await call<AuthResponse>('POST', `${AUTH_URL}/auth/login`, null, { identifier: username, password })
   return { id: body.user.id, username: body.user.username, accessToken: body.tokens.access_token }
 }
 
 export async function registerTrader(label: string): Promise<Session> {
-  return registerNamedTrader(uniqueName(label))
+  return registerNamedTrader(uniqueName(label), PASSWORD)
 }
 
-/** Registers exactly `username`, with no per-run suffix: the demo seed's fixed names (#454). */
-export async function registerNamedTrader(username: string): Promise<Session> {
+/**
+ * Registers exactly `username`, with no per-run suffix: the demo seed's fixed
+ * names (#454). The password is required, with no default, so a seed account
+ * never gets the repository's PASSWORD by omission (#609).
+ */
+export async function registerNamedTrader(username: string, password: string): Promise<Session> {
   const body = await call<AuthResponse>('POST', `${AUTH_URL}/auth/register`, null, {
     username,
     email: `${username}@example.com`,
-    password: PASSWORD,
+    password,
   })
   return { id: body.user.id, username: body.user.username, accessToken: body.tokens.access_token }
 }
@@ -126,29 +132,38 @@ export async function registerAdmin(label: string): Promise<Session> {
   return logInThroughApi(trader.username)
 }
 
+/** Runs SQL as the database's administrator, and returns psql's output. */
+export type SqlRunner = (sql: string) => Promise<string>
+
 /**
- * Runs one UPDATE as the superuser, the way a first admin is made by hand, and
- * checks it changed exactly one row.
+ * The local stack's database, as its superuser, through `docker compose exec`.
+ * The production seed (#609) passes its own runner instead.
  *
  * Awaited, never blocking (#492): `docker compose exec` can take seconds on a
  * loaded machine, and a blocked event loop cannot see uvicorn close an idle
  * keep-alive socket, so the next fetch goes out on a dead one
  * (`UND_ERR_SOCKET`).
  */
-async function runSql(sql: string, failure: string): Promise<void> {
+export async function runSqlLocally(sql: string): Promise<string> {
   const { stdout } = await execFileAsync(
     'docker',
     ['compose', 'exec', '-T', 'db', 'psql', '-U', process.env.POSTGRES_USER ?? 'cs464', '-d', process.env.POSTGRES_DB ?? 'cs464', '-v', 'ON_ERROR_STOP=1', '-c', sql],
     { cwd: REPO_ROOT, encoding: 'utf8' },
   )
-  if (!stdout.includes('UPDATE 1')) throw new Error(`${failure}: ${stdout}`)
+  return stdout
 }
 
-export async function promoteToAdmin(username: string): Promise<void> {
+/** Runs one UPDATE, the way a first admin is made by hand, and checks it changed exactly one row. */
+async function updateOneRow(runSql: SqlRunner, sql: string, failure: string): Promise<void> {
+  const output = await runSql(sql)
+  if (!output.includes('UPDATE 1')) throw new Error(`${failure}: ${output}`)
+}
+
+export async function promoteToAdmin(username: string, runSql: SqlRunner = runSqlLocally): Promise<void> {
   // Interpolated into SQL below, and only ever a name uniqueName() made or one
   // of the demo seed's fixed names.
   if (!/^\w+$/.test(username)) throw new Error(`refusing to promote ${username}`)
-  await runSql(`UPDATE auth.users SET role = 'admin' WHERE lower(username) = lower('${username}')`, `promoting ${username} changed no row`)
+  await updateOneRow(runSql, `UPDATE auth.users SET role = 'admin' WHERE lower(username) = lower('${username}')`, `promoting ${username} changed no row`)
 }
 
 /** Suspends an account ([4.2] #14), as an administrator through the auth service. */
@@ -286,9 +301,9 @@ export async function approveOutcome(admin: Session, marketId: string, proposalI
  * out either, so it reaches the stored column directly rather than the
  * setting or `approved_at`.
  */
-export async function backdateDisputeWindow(marketId: string): Promise<void> {
+export async function backdateDisputeWindow(marketId: string, runSql: SqlRunner = runSqlLocally): Promise<void> {
   if (!/^[\w-]+$/.test(marketId)) throw new Error(`refusing to backdate ${marketId}`)
-  await runSql(`UPDATE market.markets SET dispute_window_ends_at = now() - interval '10 minutes' WHERE id = '${marketId}'`, `backdating ${marketId} changed no row`)
+  await updateOneRow(runSql, `UPDATE market.markets SET dispute_window_ends_at = now() - interval '10 minutes' WHERE id = '${marketId}'`, `backdating ${marketId} changed no row`)
 }
 
 /**

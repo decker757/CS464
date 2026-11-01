@@ -13,12 +13,14 @@ function roleClaimOf(accessToken: string): unknown {
   }
 }
 
-/** Throws, naming the compose project the SQL step reached, unless the token's role is admin. */
-export function refuseUnlessAdmin(accessToken: string, composeProject: string): void {
+/**
+ * Throws unless the token's role is admin, naming where the SQL step ran and
+ * what to fix: a local compose project, or production's database (#609).
+ */
+export function refuseUnlessAdmin(accessToken: string, sqlRanIn: string, fix: string): void {
   if (roleClaimOf(accessToken) === 'admin') return
   throw new Error(
-    `The promotion to admin did not reach the stack the seed is talking to: the SQL step ran in the compose ` +
-      `project "${composeProject}", and the account still logs in as a trader. Set COMPOSE_PROJECT_NAME to the ` +
-      `project whose services the VITE_*_URL variables point at.`,
+    `The promotion to admin did not reach the stack the seed is talking to: the SQL step ran in ${sqlRanIn}, ` +
+      `and the account still logs in as a trader. ${fix}`,
   )
 }
