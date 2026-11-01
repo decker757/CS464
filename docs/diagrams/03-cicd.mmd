@@ -7,7 +7,7 @@
 %% The deploy reruns the tests itself because a path-filtered workflow it
 %% skipped would report no status for `needs:` to wait on (ci-backend.yml:6-14).
 %% Mermaid 12 redraws a dashed edge solid where it hops another line; no hops here.
-%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 320}}}%%
+%%{init: {"elk": {"lineHops": false, "nodePlacementStrategy": "SIMPLE"}, "flowchart": {"wrappingWidth": 320}}}%%
 flowchart TB
     pr["pull_request<br/>any base branch"]
     push["push<br/>dev, staging, main"]

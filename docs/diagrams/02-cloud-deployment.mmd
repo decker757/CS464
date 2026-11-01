@@ -7,12 +7,14 @@
 %%   frontend/src/hooks/usePriceSocket.ts
 %% Every AWS box is dashed because none of it exists. Every line is solid: the
 %% whole figure is planned, so a dashed line would add nothing.
-%% Connections: pool 10 + overflow 10 per task x 4 DB services. At most 3 tasks
-%% each, and a rolling update at maxPercent 150, is 5 tasks x 4 x 20 = 400 at
-%% peak, under db.t4g.medium (~450 by the RDS formula). #19 also asks for staging
+%% Connections: pool_size 10 per task, plus SQLAlchemy's default max_overflow of
+%% 10 (database.py sets only pool_size), x 4 DB services. At most 3 tasks each,
+%% and a rolling update at maxPercent 150 rounds down to 4 tasks: 4 x 4 x 20 =
+%% 320 at peak, under db.t4g.medium (~450 by the RDS formula, somewhat less in
+%% practice). #19 also asks for staging
 %% from push to staging, with its own database: the same stack, so not drawn twice.
 %% Mermaid 12 redraws a dashed edge solid where it hops another line; no hops here.
-%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 320}}}%%
+%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 420}, "themeVariables": {"fontSize": "22px"}}}%%
 flowchart TB
     browser["Browser"]
 
@@ -25,13 +27,13 @@ flowchart TB
         end
 
         subgraph priv["Private subnets, 2 AZs"]
-            mig["bootstrap: roles once,<br/>02-schemas each deploy;<br/>migrate × 3; on-demand"]
-            ledger["ledger<br/>+ refresher<br/>on-demand + Spot"]
+            mig["bootstrap: roles once, 02-schemas<br/>each deploy; migrate × 3; on-demand"]
+            ledger["ledger + refresher<br/>on-demand + Spot"]
             realtime["realtime<br/>Spot"]
             audit["audit<br/>Spot"]
-            auth["auth<br/>COOKIE_DOMAIN<br/>on-demand + Spot"]
-            market["market<br/>+ sweeper<br/>on-demand + Spot"]
-            rds[("RDS Postgres 17<br/>db.t4g.medium, 1 AZ<br/>≤ 400 conns at peak")]
+            auth["auth, COOKIE_DOMAIN<br/>on-demand + Spot"]
+            market["market + sweeper<br/>on-demand + Spot"]
+            rds[("RDS Postgres 17, db.t4g.medium,<br/>1 AZ, ≤ 320 conns at peak")]
             redis[("ElastiCache Redis<br/>1 node")]
         end
 

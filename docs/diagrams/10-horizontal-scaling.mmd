@@ -4,7 +4,7 @@
 %%   docs/horizontal-scaling.md, backend/realtime_service/service/bus.py,
 %%   backend/market_service/service/closing.py, backend/ledger_service/service/leaderboard.py
 %% Keep the listeners and services in the order written, 18000 to 18004.
-%%{init: {"elk": {"forceNodeModelOrder": true}}}%%
+%%{init: {"elk": {"forceNodeModelOrder": true, "lineHops": false}, "flowchart": {"wrappingWidth": 200}, "themeVariables": {"fontSize": "20px"}}}%%
 flowchart LR
     client["Browser<br/>or e2e"]
 

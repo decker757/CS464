@@ -13,16 +13,20 @@
 %%   backend/realtime_service/controller/routes.py,
 %%   backend/ledger_service/model/entities.py,
 %%   backend/ledger_service/migrations/versions/0001_baseline.py
-%% The legend is drawn in the figure, inside the Postgres zone.
-flowchart LR
+%% The legend is drawn in the figure, inside the Postgres zone. Top to bottom, the
+%% zone titles would sit under the edges, so they are notes in the zones instead.
+%% Some labels join their words with U+00A0 so Mermaid keeps them on one line.
+%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 400}, "themeVariables": {"fontSize": "20px"}}}%%
+flowchart TB
     subgraph br["Browser: cookies set at login,<br/>httpOnly, SameSite=Lax"]
         direction TB
         acc["access_token<br/>JWT, 15 min<br/>path /"]
         ref["refresh_token<br/>opaque, 14 days<br/>path /auth"]
     end
 
-    subgraph svc["All five verify JWT_SECRET. HS256 lets any<br/>verifier sign: accepted in ADR 0002, RS256 the upgrade"]
+    subgraph svc[" "]
         direction TB
+        jwt["All five verify JWT_SECRET.<br/>HS256 lets any verifier sign:<br/>accepted in ADR 0002,<br/>RS256 the upgrade"]
         realtime["realtime<br/>Origin allowlist,<br/>no token in URL"]
         market["market<br/>role claim<br/>until expiry"]
         audit["audit<br/>admin claim,<br/>GET only"]
@@ -30,22 +34,23 @@ flowchart LR
         auth["auth<br/>only signer,<br/>reads live row"]
     end
 
-    subgraph pg["Postgres: no cross grants"]
+    subgraph pg[" "]
         direction TB
         sMarket[("market")]
         sAudit[("audit.admin_actions<br/>append-only trigger<br/>owner superuser")]
         sLedger[("ledger.entries<br/>append-only trigger<br/>owner ledger_svc")]
         sAuth[("auth.refresh_tokens<br/>SHA-256 only")]
-        lg["Postgres edges:<br/>solid = owns schema<br/>thick = SELECT + INSERT<br/>dotted = INSERT only"]
+        lg["Postgres: no cross grants.<br/>Edges into it:<br/>solid = owns schema<br/>thick = SELECT + INSERT<br/>dotted = INSERT only"]
     end
 
     acc -->|"cookie (a browser<br/>cannot set headers)"| realtime
     acc -->|"cookie, or Bearer<br/>(header wins)"| market
     acc --> audit
     acc --> ledger
-    ref -->|"/auth/refresh: single use,<br/>replay revokes all"| auth
+    ref -->|"/auth/refresh: single use,<br/>replay revokes all"| auth
 
-    ledger -->|"GET /auth/me, forwards<br/>trader's own token"| auth
+    ledger -->|"GET /auth/me, forwards<br/>trader's own token"| auth
+    realtime ~~~ jwt
     ledger -->|"X-Service-Key, only<br/>/internal/users/lookup"| auth
 
     market --> sMarket
@@ -65,7 +70,7 @@ flowchart LR
     classDef pg       fill:#E6EBF2,stroke:#3B5068,color:#1A202C
 
     classDef legend fill:#FFFFFF,stroke:#A0AEC0,color:#1A202C
-    class lg legend
+    class lg,jwt legend
     class acc,ref browser
     class auth auth
     class market market

@@ -7,11 +7,12 @@
 %%   backend/ledger_service/service/leaderboard_refresher.py
 %% nginx fronts the scale stack (docker-compose.scale.yml), an ALB fronts AWS (02);
 %% the dev stack publishes each service port directly. Grants per schema: 05.
-%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
+%% Some labels join their words with U+00A0 so Mermaid keeps them on one line.
+%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 500}, "themeVariables": {"fontSize": "22px"}}}%%
 flowchart TB
-    browser["Browser<br/>React SPA"]:::browser
-    nginx["nginx, scale stack<br/>(ALB on AWS)"]:::edge
-    browser -->|"HTTP + WebSocket<br/>cookie auth"| nginx
+    browser["Browser, React SPA"]:::browser
+    nginx["nginx, scale stack (ALB on AWS)"]:::edge
+    browser -->|"HTTP + WebSocket, cookie auth"| nginx
 
     subgraph svc["FastAPI services"]
         direction LR
@@ -30,21 +31,21 @@ flowchart TB
         realtime["realtime :8004<br/>WebSocket relay"]:::realtime
     end
 
-    nginx -->|"a port per service;<br/>/ws/prices to realtime"| svc
+    nginx -->|"a port per service; /ws/prices to realtime"| svc
 
-    ledger -->|"GET /auth/me<br/>per trade and order"| auth
-    refresher -->|"POST /internal/users/lookup<br/>X-Service-Key"| auth
-    ledger -->|"GET /public/markets/{id}<br/>then POST settle, void"| market
+    ledger -->|"GET /auth/me<br/>per trade and order"| auth
+    refresher -->|"POST /internal/users/lookup<br/>X-Service-Key"| auth
+    ledger -->|"GET /public/markets/{id}<br/>then POST settle, void"| market
 
-    pg[("Postgres 17: a schema and role<br/>per service, no cross grants;<br/>writers INSERT the audit log")]:::pg
+    pg[("Postgres 17: a schema and role per service,<br/>no cross grants; writers INSERT the audit log")]:::pg
     redis[("Redis pub/sub<br/>market.price, order.update")]:::redis
 
     auth -->|"auth_svc"| pg
     market -->|"market_svc"| pg
     ledger -->|"ledger_svc"| pg
-    audit -->|"audit_svc: SELECT, INSERT"| pg
+    audit -->|"audit_svc:<br/>SELECT, INSERT"| pg
 
-    ledger -->|"PUBLISH after commit"| redis
+    ledger -->|"PUBLISH<br/>after commit"| redis
     realtime -->|"SUBSCRIBE"| redis
 
     classDef browser  fill:#F2F2F2,stroke:#555555,color:#1A202C
