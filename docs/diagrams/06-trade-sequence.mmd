@@ -7,7 +7,7 @@
 %%   backend/ledger_service/controller/routes.py (POST /markets/{id}/trades),
 %%   backend/ledger_service/service/bus.py, backend/realtime_service/service/bus.py
 %% Filled arrowheads: synchronous calls. Open arrowheads (-)): async pub/sub.
-%%{init: {"themeCSS": ".actor-line { stroke: #C3CBD5 !important; stroke-dasharray: 3 3; }"}}%%
+%%{init: {"sequence": {"width": 100, "actorMargin": 35}, "themeCSS": ".actor-line { stroke: #C3CBD5 !important; stroke-dasharray: 3 3; }"}}%%
 sequenceDiagram
     autonumber
     participant B as Browser
@@ -19,18 +19,17 @@ sequenceDiagram
     participant R as Redis
 
     B->>L: POST /ledger/markets/{id}/trades
-    L->>DB: look up key, no lock
+    L->>DB: read key,<br/>no lock
     alt key already committed: a replay
         L-->>B: 201, the stored result
     else first time
         L->>A: GET /auth/me
         A-->>L: 200 (suspended: ledger 403)
-        L->>M: GET /public/markets/{id}
+        L->>M: GET /public/<br/>markets/{id}
         M-->>L: status (not open: ledger 409)
-        L->>DB: lock book, re-check key
-        L->>DB: LMSR price, write, COMMIT
-        L-)R: PUBLISH market.price, failure logged
+        L->>DB: lock book, re-check key, LMSR price, write, COMMIT
+        L-)R: PUBLISH market.price<br/>(failure logged)
         L-->>B: 201, the trade result
         R-)RT: price frame
-        RT-)B: price frame on /ws/prices
+        RT-)B: price frame<br/>on /ws/prices
     end

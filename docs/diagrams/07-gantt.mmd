@@ -8,7 +8,14 @@
 %%   marker on 1 Nov rather than a bar.
 %% A bar runs from an epic's first merged PR to its last. It is a span, not
 %% continuous work. FE bars are shaded (`active`), BE bars plain.
-%%{init: {"themeCSS": ".tick text { font-size: 15px; } .sectionTitle { font-size: 15px; } .taskText, .taskTextOutsideRight, .taskTextOutsideLeft { font-size: 14px; }"}}%%
+%% Compact mode shares a row between bars that do not overlap, which would pile
+%% the release labels onto one row. Mermaid draws a milestone at the middle of
+%% its span, so each release is given a span centred on its merge date
+%% (4, 17, 19, 20, 24 and 29 Oct), sized so that overlapping spans put labels
+%% that would collide on different rows (Mermaid fills rows in source order,
+%% hence #577 before #504). The span itself is not drawn. "It." is Iteration,
+%% as the release PRs' titles name them.
+%%{init: {"gantt": {"displayMode": "compact", "barHeight": 18, "barGap": 4}, "themeCSS": ".tick text { font-size: 15px; } .sectionTitle { font-size: 15px; } .taskText, .taskTextOutsideRight, .taskTextOutsideLeft { font-size: 14px; }"}}%%
 gantt
     dateFormat YYYY-MM-DD
     axisFormat %d %b
@@ -48,11 +55,11 @@ gantt
     BE, 35 PRs :2026-09-13, 47d
     FE, 27 PRs :active, 2026-09-27, 33d
     section Releases to main
-    Sprint 2, #206    :milestone, 2026-10-04, 0d
-    Iteration 3, #327 :milestone, 2026-10-17, 0d
-    Iteration 4, #398 :milestone, 2026-10-19, 0d
-    Iteration 5, #427 :milestone, 2026-10-20, 0d
-    Iteration 6, #504 :milestone, 2026-10-24, 0d
-    Iteration 7, #577 :milestone, 2026-10-29, 0d
+    #206 Sprint 2  :milestone, 2026-10-02, 4d
+    #327 It. 3    :milestone, 2026-10-15, 4d
+    #398 It. 4    :milestone, 2026-10-18, 2d
+    #427 It. 5    :milestone, 2026-10-18, 4d
+    #577 It. 7    :milestone, 2026-10-27, 4d
+    #504 It. 6    :milestone, 2026-10-20, 8d
     section Still open
     #19 deploy, #20 load test, no date set :crit, milestone, 2026-11-01, 0d
