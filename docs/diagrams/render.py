@@ -29,6 +29,11 @@ OUT = HERE / "rendered"
 CONFIG = HERE / "mermaid.config.json"
 WIDTH = 1600
 
+# A gantt lays itself out to the viewport width, so its text size relative to
+# the figure is set here: a narrower viewport prints larger. Its PNG is drawn
+# at the same viewport and scaled up, so the two renders match.
+GANTT_VIEWPORTS = {"07-gantt": 1000}
+
 PRINT_WIDTHS_CM = (17.0, 15.9)
 POINTS_PER_CM = 72 / 2.54
 
@@ -36,7 +41,9 @@ POINTS_PER_CM = 72 / 2.54
 ICON_PACKS = ["@iconify-json/logos"]
 
 
-def mmdc(source: Path, target: Path, *, size: int | None = None) -> None:
+def mmdc(
+    source: Path, target: Path, *, size: int | None = None, scale: float = 1
+) -> None:
     command = [
         "mmdc", "-q",
         "-i", str(source),
@@ -46,6 +53,8 @@ def mmdc(source: Path, target: Path, *, size: int | None = None) -> None:
     ]
     if size is not None:
         command += ["--size", str(size)]
+    if scale != 1:
+        command += ["--scale", str(scale)]
     if "architecture-beta" in source.read_text(encoding="utf-8"):
         command += ["--iconPacks", *ICON_PACKS]
     subprocess.run(command, check=True, shell=sys.platform == "win32")
@@ -64,12 +73,16 @@ def render(name: str) -> None:
     svg = OUT / f"{name}.svg"
     png = OUT / f"{name}.png"
 
-    # A gantt lays itself out to the viewport, so the SVG is drawn at the
-    # target width too; for every other diagram this only caps max-width.
-    mmdc(source, svg, size=WIDTH)
-    width, height = svg_proportions(svg)
-    longer_side = WIDTH if width >= height else round(WIDTH * height / width)
-    mmdc(source, png, size=longer_side)
+    if name in GANTT_VIEWPORTS:
+        viewport = GANTT_VIEWPORTS[name]
+        mmdc(source, svg, size=viewport)
+        mmdc(source, png, size=viewport, scale=WIDTH / viewport)
+    else:
+        # For every diagram but a gantt this only caps the SVG's max-width.
+        mmdc(source, svg, size=WIDTH)
+        width, height = svg_proportions(svg)
+        longer_side = WIDTH if width >= height else round(WIDTH * height / width)
+        mmdc(source, png, size=longer_side)
 
     image = Image.open(png)
     if image.width != WIDTH:

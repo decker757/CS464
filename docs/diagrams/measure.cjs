@@ -16,7 +16,9 @@ function measureInPage() {
   const viewBoxWidth = Number(root.getAttribute("viewBox").trim().split(/[\s,]+/)[2]);
   root.setAttribute("width", viewBoxWidth);
   root.removeAttribute("height");
+  // mmdc --size writes max-width or max-height; either would shrink the text.
   root.style.maxWidth = "none";
+  root.style.maxHeight = "none";
 
   const charactersBySize = new Map();
   for (const element of root.querySelectorAll("*")) {
