@@ -394,12 +394,14 @@ inside their services.
 ![Cloud deployment](diagrams/rendered/02-cloud-deployment.svg)
 
 Planned AWS deployment, not yet built: CloudFront and S3 serve the SPA, an
-ALB routes each host under one registrable domain to its own ECS Fargate
-service across two Availability Zones, and one RDS Postgres and one Redis node
+ALB routes each host under one registrable domain to its own service
+across two Availability Zones, and one RDS Postgres and one Redis node
 sit in private subnets behind a one-off bootstrap-and-migrate task that gates
-every rollout. Secrets Manager holds a `DATABASE_URL` per role and the
-`JWT_SECRET` all five share; auth's `COOKIE_DOMAIN` must name the parent
-domain for the other hosts to receive the `access_token` cookie.
+every rollout. Production deploys from `main`; staging is the same stack
+with its own database, deployed from `staging`. Secrets Manager holds a
+`DATABASE_URL` per role, the `JWT_SECRET` all five share and
+`LEDGER_SERVICE_KEY`; auth's `COOKIE_DOMAIN` must name the parent domain for
+the other hosts to receive the `access_token` cookie.
 **Drawn from:** ADR 0002, 0010, 0011, 0020, 0021; issue #19; `sql/`,
 `backend/*/core/database.py`, `backend/auth_service/core/config.py`.
 [Source](diagrams/02-cloud-deployment.mmd)
@@ -410,7 +412,7 @@ domain for the other hosts to receive the `access_token` cookie.
 
 CI today (solid): path-filtered backend, frontend and end-to-end workflows on
 every pull request and on pushes to `dev`, `staging` and `main`. The planned
-deploy for `main` (dashed, #19) reruns the tests without a path filter, pushes
+deploy for `staging` and `main` (dashed, #19) reruns the tests without a path filter, pushes
 images to ECR through OIDC, bootstraps and migrates once, then rolls ECS out
 behind a health check.
 **Drawn from:** `.github/workflows/*`, ADR 0020, issue #19.
@@ -423,9 +425,10 @@ behind a health check.
 Key columns of all sixteen tables across the four schemas. Solid lines are
 foreign keys, all within one schema; dotted lines labelled "no FK" and columns
 marked "→ auth.users" are ids that name a row in another table without a
-foreign key, because no service holds a grant on another's schema.
-Crow's-foot ends show what the constraints enforce; Mermaid's
-identifying/non-identifying distinction is not used.
+foreign key: across schemas because no service holds a grant on another's,
+and for `proposed_outcome_id` by choice. On solid lines the crow's-foot ends
+show what the constraints enforce, on dotted lines what the writing code
+does; Mermaid's identifying/non-identifying distinction is not used.
 **Drawn from:** `backend/*/model/entities.py`, each service's
 `migrations/versions/`, `sql/02-schemas.sql`, ADR 0003.
 [Source](diagrams/04-erd-overview.mmd)
