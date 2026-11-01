@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# [5.3] #19. Terraform from its official image, so nobody has to install it.
+# Runs in infra/terraform/ and passes through the two values it reads from
+# the environment:
+#
+#   export DIGITALOCEAN_TOKEN=...      # an API token from the DigitalOcean console
+#   export TF_VAR_domain=example.com   # the site's domain
+#   infra/tf plan
+#
+# docs/deployment.md has the full first-time walkthrough.
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+
+# A terminal for `apply`'s confirmation prompt; none when the output is piped,
+# as push-secrets.sh does with `output -raw`.
+terminal=()
+if [ -t 0 ] && [ -t 1 ]; then
+  terminal=(-t)
+fi
+
+# The odd expansion: macOS ships bash 3.2, which calls an empty array unset.
+exec docker run --rm -i ${terminal[@]+"${terminal[@]}"} \
+  -v "$here/terraform:/tf" -w /tf \
+  -e DIGITALOCEAN_TOKEN -e TF_VAR_domain \
+  hashicorp/terraform:1.13 "$@"
