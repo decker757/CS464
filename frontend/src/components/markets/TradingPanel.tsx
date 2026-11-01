@@ -141,9 +141,41 @@ function isSameTrade(a: SentTrade, b: SentTrade): boolean {
 
 /** What a trader is told about a trade that got no answer or a 5xx: it may
  *  have gone through, and which trade it was, since they may be looking at
- *  another outcome by now (#580). */
+ *  another outcome by now (#580). "From this page", because the panel keeps
+ *  the key only while it is open: after a reload the same trade is a new one. */
 function describeUnconfirmedTrade(trade: SentTrade): string {
-  return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} could not be confirmed, and may have gone through. Check your portfolio, or send the same trade again: it will not be made twice.`
+  return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} could not be confirmed, and may have gone through. Check your portfolio before trading again, or send the same trade again from this page: it will not be made twice.`
+}
+
+/** A trade's key, kept until the ledger answers it definitely.
+ *  `mayHaveCommitted` once an attempt under it got no answer or a 5xx. */
+interface KeyAwaitingAnswer {
+  key: string
+  trade: SentTrade
+  mayHaveCommitted: boolean
+}
+
+/** A trade the ledger answered with a 201. `sentMoreThanOnce` when it went
+ *  out again under the key of an attempt that got no answer: the ledger makes
+ *  one trade per key, so the trader is told one was made, not that this
+ *  attempt added another. Which attempt committed cannot be told from here:
+ *  a replay's `state_version` matches a new trade's whenever the retry sends
+ *  the first attempt's quote. */
+interface CompletedTrade {
+  side: TradeSide
+  quantity: string
+  outcomeLabel: string
+  total: string
+  sentMoreThanOnce: boolean
+}
+
+function describeCompletedTrade(trade: CompletedTrade): string {
+  const credits = formatCreditsPrecise(unsignedCredits(trade.total))
+  if (trade.sentMoreThanOnce) {
+    return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} went through once, for ${credits} credits. It was sent more than once, but only one trade was made.`
+  }
+  const verb = trade.side === 'buy' ? 'Bought' : 'Sold'
+  return `${verb} ${trade.quantity} ${trade.outcomeLabel} for ${credits} credits.`
 }
 
 /**
@@ -189,7 +221,7 @@ export default function TradingPanel({
   const [submitting, setSubmitting] = useState(false)
   const [submitErrorFor, setSubmitErrorFor] = useState('')
   const [submitError, setSubmitError] = useState('')
-  const [lastTrade, setLastTrade] = useState<{ side: TradeSide; quantity: string; outcomeLabel: string; total: string } | null>(null)
+  const [lastTrade, setLastTrade] = useState<CompletedTrade | null>(null)
   // Every trade sent and not yet answered definitely, each with its key. A
   // key is dropped only once the server has given a definite answer: success,
   // or a 4xx that means the trade did not happen. A lost reply or a 5xx
@@ -202,10 +234,10 @@ export default function TradingPanel({
   // and a different trade never goes out under another's key, which the
   // ledger would refuse as idempotency_key_reused (#580). An unanswered
   // trade's key lasts as long as the panel: if it did go through, placing
-  // the same trade again on purpose replays its 201 and buys nothing, though
-  // this says "Bought". Accepted, and not to be cut short: a shorter life is
-  // how the retry stops being safe.
-  const keysAwaitingAnswerRef = useRef<{ key: string; trade: SentTrade }[]>([])
+  // the same trade again on purpose replays its 201 and buys nothing, and
+  // the confirmation says one trade was made (`sentMoreThanOnce`). Not to be
+  // cut short: a shorter life is how the retry stops being safe.
+  const keysAwaitingAnswerRef = useRef<KeyAwaitingAnswer[]>([])
   // The trade that got no answer or a 5xx, said on screen whatever the panel
   // now shows, until the next trade is sent (#580).
   const [unconfirmedTrade, setUnconfirmedTrade] = useState<SentTrade | null>(null)
@@ -242,14 +274,14 @@ export default function TradingPanel({
     reservedShares,
   })
 
-  // The key a trade already went out under, if it is still awaiting a
-  // definite answer, or a new one for it.
-  const keyFor = (trade: SentTrade): string => {
+  // The entry for the key a trade already went out under, if it is still
+  // awaiting a definite answer, or a new one for it.
+  const keyFor = (trade: SentTrade): KeyAwaitingAnswer => {
     const awaiting = keysAwaitingAnswerRef.current.find(entry => isSameTrade(entry.trade, trade))
-    if (awaiting) return awaiting.key
-    const key = crypto.randomUUID()
-    keysAwaitingAnswerRef.current.push({ key, trade })
-    return key
+    if (awaiting) return awaiting
+    const entry = { key: crypto.randomUUID(), trade, mayHaveCommitted: false }
+    keysAwaitingAnswerRef.current.push(entry)
+    return entry
   }
 
   const forgetKey = (key: string) => {
@@ -259,7 +291,8 @@ export default function TradingPanel({
   const submit = async () => {
     if (!preview || submitting) return
     const trade: SentTrade = { outcomeId, outcomeLabel: selectedOutcome?.label ?? '', side, quantity: quantity.trim() }
-    const idempotencyKey = keyFor(trade)
+    const keyEntry = keyFor(trade)
+    const idempotencyKey = keyEntry.key
     setSubmitting(true)
     setSubmitErrorFor(inputKey)
     setSubmitError('')
@@ -273,7 +306,13 @@ export default function TradingPanel({
         idempotency_key: idempotencyKey,
       })
       forgetKey(idempotencyKey)
-      setLastTrade({ side, quantity: result.quantity, outcomeLabel: trade.outcomeLabel, total: result.total })
+      setLastTrade({
+        side,
+        quantity: result.quantity,
+        outcomeLabel: trade.outcomeLabel,
+        total: result.total,
+        sentMoreThanOnce: keyEntry.mayHaveCommitted,
+      })
       setQuantity('')
       // `void`: BalanceContext's refetch catches its own failure, and the
       // trade is already committed — the confirmation above does not wait on
@@ -296,6 +335,7 @@ export default function TradingPanel({
         setSubmitError(describeTradeError(err))
         forgetKey(idempotencyKey)
       } else {
+        keyEntry.mayHaveCommitted = true
         setUnconfirmedTrade(trade)
       }
     } finally {
@@ -386,7 +426,7 @@ export default function TradingPanel({
       <>
       {visibleLastTrade && (
         <p role="status" className="mb-3 rounded-control bg-success/10 px-4 py-3 text-[13px] break-words text-success-strong">
-          {visibleLastTrade.side === 'buy' ? 'Bought' : 'Sold'} {visibleLastTrade.quantity} {visibleLastTrade.outcomeLabel} for {formatCreditsPrecise(unsignedCredits(visibleLastTrade.total))} credits.
+          {describeCompletedTrade(visibleLastTrade)}
         </p>
       )}
 
