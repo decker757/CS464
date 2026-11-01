@@ -1,0 +1,23 @@
+# [5.3] #19. Stand-ins for the managed Postgres and Redis, for stack-test.sh
+# only. Added to ../compose.yml with COMPOSE_FILE, so they share its network
+# and the services reach them as `postgres` and `redis`.
+services:
+  postgres:
+    image: postgres:17.2-alpine
+    environment:
+      # A throwaway superuser for this test's container, used only to create
+      # the non-superuser admin that stands in for DigitalOcean's doadmin.
+      POSTGRES_PASSWORD: ${TEST_POSTGRES_PASSWORD:?}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:8.2-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
