@@ -11,8 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from controller.errors import register_error_handlers
 from controller.routes import router as audit_router
+from core import observability
 from core.config import get_settings
-from core.database import dispose_engine
+from core.database import dispose_engine, get_engine
 
 # No migrate step, unlike auth, market and ledger: sql/02-schemas.sql creates
 # the table and the superuser owns it. ADR 0006.
@@ -53,9 +54,16 @@ def create_app() -> FastAPI:
     register_error_handlers(app)
     app.include_router(audit_router)
 
-    @app.get("/health", tags=["ops"], summary="Liveness and readiness probe")
+    @app.get("/health", tags=["ops"], summary="Liveness: the process is up")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    observability.install(
+        app,
+        ready_checks={
+            "database": lambda: observability.is_database_reachable(get_engine())
+        },
+    )
 
     return app
 

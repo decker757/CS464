@@ -13,8 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from controller.errors import register_error_handlers
 from controller.public_routes import router as public_market_router
 from controller.routes import router as market_router
+from core import observability
 from core.config import get_settings
-from core.database import dispose_engine, get_session_factory
+from core.database import dispose_engine, get_engine, get_session_factory
 from service.sweeper import run_close_sweeper
 
 logging.basicConfig(level=logging.INFO)
@@ -87,9 +88,16 @@ def create_app() -> FastAPI:
     app.include_router(market_router)
     app.include_router(public_market_router)
 
-    @app.get("/health", tags=["ops"], summary="Liveness and readiness probe")
+    @app.get("/health", tags=["ops"], summary="Liveness: the process is up")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    observability.install(
+        app,
+        ready_checks={
+            "database": lambda: observability.is_database_reachable(get_engine())
+        },
+    )
 
     return app
 
