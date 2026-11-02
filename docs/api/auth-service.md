@@ -157,9 +157,7 @@ Returns the same `AuthResponse` as register.
 | failed logins, per username or email as typed, from anywhere | 50 per hour | `LOGIN_FAILURES_PER_ACCOUNT`, `..._WINDOW_SECONDS` |
 | every login attempt, from one address | 30 per minute | `LOGIN_ATTEMPTS_PER_IP`, `..._WINDOW_SECONDS` |
 
-Failed logins are counted per username or email as typed, from each address
-(5 per 15 minutes) and from anywhere (50 per hour); a correct login resets that
-count. A username and its email are separate counts: that is deliberate, so a
+A correct login resets the two failure counts. A username and its email are separate counts: that is deliberate, so a
 429 cannot be used to link a username to an email. An unknown name is counted
 and refused in the same way as a real one, so the 429 reveals nothing about
 which accounts exist. Addresses behind one network (a campus Wi-Fi) share a
