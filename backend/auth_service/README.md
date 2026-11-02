@@ -38,7 +38,7 @@ for the frontend sub-issues #46, #47 and #48.
 ## Tests
 
 ```bash
-docker compose up -d db          # from the repo root
+docker compose up -d db redis    # from the repo root; the limiter tests need Redis
 .venv/bin/pytest                 # 97 tests
 .venv/bin/pytest unit_test/core  # no database needed
 ```

@@ -91,7 +91,8 @@ docker compose -f docker-compose.yml -f docker-compose.scale.yml \
 cd backend/auth_service       # or market_service, audit_service, ledger_service
 .venv/bin/pip install -r requirements-dev.txt   # again after pulling #75 (Alembic)
                                                 # and #342 (pytest-cov)
-.venv/bin/pytest              # needs `docker compose up -d db`
+.venv/bin/pytest              # needs `docker compose up -d db`; auth's also needs
+                              # `redis` (its login limits, #600)
 .venv/bin/pytest unit_test/core unit_test/model   # no database needed
 COVERAGE_RCFILE=../.coveragerc .venv/bin/pytest --cov=. --cov-report=term-missing
                               # the figure CI reports, for one suite [F-12] #342

@@ -97,6 +97,11 @@ and sending a `role` does nothing. An administrator is promoted by hand in the
 database and must log in again afterwards, because authority rides in the
 token rather than being looked up per request. [4.4] #16 replaces that.
 
+**Registrations are limited per client address:** 20 per hour
+(`REGISTRATIONS_PER_IP`, `REGISTRATIONS_PER_IP_WINDOW_SECONDS`). Over it, the
+request is refused with `429 too_many_attempts` before the password is hashed.
+Every attempt counts, successful or not. See [Too many attempts](#too-many-attempts).
+
 ### Response
 
 The same shape comes back from register, login and refresh, so one parser
@@ -141,6 +146,35 @@ A suspended account is the one exception, and returns `403 account_suspended`
 with a message worth showing verbatim.
 
 Returns the same `AuthResponse` as register.
+
+**Logins are rate-limited, and the limits are settings.** A refused request is
+`429 too_many_attempts` and is refused before the password is checked, so
+**a refused login is refused even with the right password.** Four counters:
+
+| What is counted | Default | Settings |
+| --- | --- | --- |
+| failed logins, per username or email as typed, from one address | 5 per 15 minutes | `LOGIN_FAILURES_PER_ACCOUNT_IP`, `..._WINDOW_SECONDS` |
+| failed logins, per username or email as typed, from anywhere | 50 per hour | `LOGIN_FAILURES_PER_ACCOUNT`, `..._WINDOW_SECONDS` |
+| every login attempt, from one address | 30 per minute | `LOGIN_ATTEMPTS_PER_IP`, `..._WINDOW_SECONDS` |
+
+Failed logins are counted per username or email as typed, from each address
+(5 per 15 minutes) and from anywhere (50 per hour); a correct login resets that
+count. A username and its email are separate counts: that is deliberate, so a
+429 cannot be used to link a username to an email. An unknown name is counted
+and refused in the same way as a real one, so the 429 reveals nothing about
+which accounts exist. Addresses behind one network (a campus Wi-Fi) share a
+count.
+
+If Redis is unreachable the limits are skipped, not enforced: login keeps
+working (ADR 0027).
+
+## Too many attempts
+
+Read the wait from the **`Retry-After` header**, in whole seconds. The browser
+can read it because the auth service lists it in its CORS exposed headers. The
+body is the usual envelope with `code: too_many_attempts`. Show the wait to the
+person ("Try again in 4 minutes"); do not retry automatically, and do not offer
+"forgot password" as a way round it. Same for login and registration. [FE] #601.
 
 ## POST /auth/refresh
 
@@ -497,6 +531,7 @@ The same envelope the market service uses, so one parser covers both:
 | 401 | `invalid_token` | no access token, or it is expired, forged or malformed |
 | 401 | `invalid_service_key` | `/internal/users/lookup` without the right `X-Service-Key` |
 | 403 | `account_suspended` | credentials were right; the account is suspended |
+| 429 | `too_many_attempts` | too many logins or registrations; wait the number of seconds in the `Retry-After` header (exposed to the browser through CORS) |
 | 400 | `malformed_cursor` | `cursor` was not one this service issued |
 | 403 | `not_an_administrator` | signed in, but not an admin — same code the market service uses |
 | 403 | `cannot_change_own_role` | an administrator targeting their own row |
