@@ -210,13 +210,17 @@ which connects from inside the VPC (`10.64.0.0/20`), is trusted to have set
 it. #600.
 
 **One-off check after the release that carries this reaches production,
-before the release that adds the per-IP login limits:** on one app server,
-`docker compose --env-file ../../app.env --env-file release.env logs --tail 20 gateway`
-in `/opt/cs464/current`. Each request's first field is the address nginx
-resolved. Before the fix it is an address inside `10.64.0.0/20` (the load
-balancer's); after it, the visitor's public address. If it is still inside the
-range, or the load balancer connects from outside it, stop and fix
-`set_real_ip_from` first, or every visitor shares one rate-limit bucket.
+before the release that adds the per-IP login limits:** from a machine whose
+public address you know (`curl -s https://ifconfig.me`), send one identifiable
+request: `curl -s "https://auth.<domain>/health?probe=600"`. Then, on an app
+server in `/opt/cs464/current`, find that request's line:
+`docker compose --env-file ../../app.env --env-file release.env logs --tail 200 gateway | grep probe=600`.
+Its first field, the client address, must be exactly your public address. Ignore
+the `/lb-health` lines: the load balancer sends those itself every few
+seconds, so they are expected to show an address inside `10.64.0.0/20`. If
+your line shows anything else, a `10.64.x` address or a public address you do
+not recognise, stop: the per-IP limits must not ship until `set_real_ip_from`
+is fixed, or every visitor shares one rate-limit bucket.
 
 ## Scaling
 
