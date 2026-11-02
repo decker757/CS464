@@ -187,7 +187,8 @@ async def authenticate(
     # Keyed by what was typed, known or not, so a locked username says nothing
     # about which email belongs to it, and an unknown name is refused the same
     # way as a real one. ADR 0027. Claimed before the lookup, so a refusal
-    # costs no query and a slow Redis holds no pooled connection.
+    # costs no query and the claims hold no pooled connection. The clears on
+    # a success still run after the lookup.
     account = f"id:{identifier.strip().lower()}"
     account_at_address = f"{account}:{client_ip}"
     await limiter.claim(limits.login_account_ip, account_at_address)
