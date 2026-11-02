@@ -236,12 +236,17 @@ cannot fix it. It would only turn "trades fail with an error" into the load
 balancer's bare 503 for the whole site, homepage included, and make a deploy
 during a blip roll back. So a server whose auth or market service is broken
 keeps its traffic, and the alert on "a service is down or not ready, per
-service per server" is what tells you. ADR 0028 has the reasoning.
+service per server" is what tells you. That alert arrives with #599's
+dashboard PR; until then, nothing watches `/ready` and you have to look. ADR
+0028 has the reasoning.
 
 The gateway returns 404 for `/ready` on every service's subdomain. It names
 the failing dependency, and only the monitoring on the private network needs
 it. To look yourself:
 `docker compose --env-file ../../app.env --env-file release.env exec gateway wget -qO- http://ledger:8000/ready`.
+Ready prints `{"status":"ready",...}`. Not ready prints no body: busybox
+`wget` shows only `wget: server returned error: HTTP/1.1 503 ...`, and that
+line is the answer.
 
 ## Scaling
 
