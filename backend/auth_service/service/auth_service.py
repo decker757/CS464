@@ -1,4 +1,4 @@
-"""Registration, login, session refresh and logout. [A-1] #29, [A-2] #30, [A-3] #31
+"""Registration, login, session refresh and logout. [A-1] #29, [A-2] #30, [A-3] #31, #600
 
 Works on the session it is handed and never commits halfway through a use case.
 """
@@ -18,6 +18,7 @@ from core.config import get_settings
 from core.errors import AccountSuspended, DuplicateUser, InvalidCredentials, InvalidToken
 from model.entities import RefreshToken, User
 from model.schemas import RegisterRequest, TokenPair
+from service.attempt_limits import AttemptLimiter
 
 
 def _users_matching(*, username: str, email: str) -> Select[tuple[User]]:
@@ -126,12 +127,18 @@ async def issue_tokens(session: AsyncSession, user: User) -> TokenPair:
     )
 
 
-async def register(session: AsyncSession, data: RegisterRequest) -> tuple[User, TokenPair]:
+async def register(
+    session: AsyncSession, data: RegisterRequest, *, limiter: AttemptLimiter, client_ip: str
+) -> tuple[User, TokenPair]:
     """Create the account, open its first session, and commit. [A-1] #29
 
-    Raises DuplicateUser. Grants no starting credits: this service does not
-    know credits exist, and the ledger mints the grant. ADR 0009.
+    Raises TooManyAttempts, before any lookup or hashing, once `client_ip` has
+    used up its registrations (ADR 0027), and DuplicateUser. Grants no starting
+    credits: this service does not know credits exist, and the ledger mints the
+    grant. ADR 0009.
     """
+    await limiter.claim(limiter.limits.register_ip, client_ip)
+
     if taken := await _taken_fields(session, data.username, data.email):
         raise DuplicateUser(taken)
 
@@ -156,15 +163,35 @@ async def register(session: AsyncSession, data: RegisterRequest) -> tuple[User, 
     return user, pair
 
 
-async def authenticate(session: AsyncSession, identifier: str, password: str) -> User:
-    """Return the user these credentials prove. [A-2] #30
+async def authenticate(
+    session: AsyncSession,
+    identifier: str,
+    password: str,
+    *,
+    limiter: AttemptLimiter,
+    client_ip: str,
+) -> User:
+    """Return the user these credentials prove. [A-2] #30, #600
 
-    Raises InvalidCredentials for a wrong password and an unknown account
-    alike, and AccountSuspended only after the password is proven. Locks the
-    user's row once the password is proven, held until the caller commits. May
-    rehash `user.password_hash`, leaving that write pending for the caller.
+    Raises TooManyAttempts before any hashing, for a real account and an
+    unknown one alike, once `client_ip` or the account has used up its
+    attempts (ADR 0027). Raises InvalidCredentials for a wrong password and an
+    unknown account alike, and AccountSuspended only after the password is
+    proven. Locks the user's row once the password is proven, held until the
+    caller commits. May rehash `user.password_hash`, leaving that write pending
+    for the caller.
     """
+    limits = limiter.limits
+    await limiter.claim(limits.login_ip, client_ip)
+
     user = await _find_by_identifier(session, identifier)
+
+    # Keyed by id, so a username and its email share one count; an unknown
+    # name is counted the same way, so the limit reveals nothing. ADR 0027.
+    account = str(user.id) if user else f"id:{identifier.strip().lower()}"
+    account_at_address = f"{account}:{client_ip}"
+    await limiter.claim(limits.login_account_ip, account_at_address)
+    await limiter.claim(limits.login_account, account)
 
     if user is None:
         # Equalise timing so response latency does not confirm the account exists.
@@ -173,6 +200,10 @@ async def authenticate(session: AsyncSession, identifier: str, password: str) ->
 
     if not security.verify_password(user.password_hash, password):
         raise InvalidCredentials
+
+    # The claims above reserved a slot each; a proven password hands them back.
+    await limiter.clear(limits.login_account_ip, account_at_address)
+    await limiter.clear(limits.login_account, account)
 
     # Decided from the locked row, or a login racing a suspension issues a
     # session after its revoke. DECISIONS.md, "Login decides suspension under
