@@ -426,10 +426,11 @@ the deploy: six images go to GHCR, then `release.sh` copies the release director
 to each server, ensures the roles and grants and runs each migration once from the
 first server, rolls the servers one at a time, and checks every public name. The
 deploy runs no suite and does not wait for CI. `main` is normally reached by
-promoting `dev`, but CI is advisory and nothing requires it green. A service that
-does not start or answer `/health` sends the servers back to the old release, unless
-a server cannot go back, in which case it stays drained and the others stay as they
-are. No `/health` reads a database or calls another service, so a release that starts
+promoting `dev`, but CI is advisory and nothing requires it green. A failed migration
+stops the deploy before any server rolls. A failed pull, or a service that does not
+start or answer `/health`, sends the servers back to the old release, unless a server
+cannot go back, in which case it stays drained and the others stay as they are. No
+`/health` reads a database or calls another service, so a release that starts
 but cannot serve is not caught. A failed public check rolls nothing back.
 **Drawn from:** `.github/workflows/*`, `deploy/production/{release,migrate,roll}.sh`,
 ADR 0020, 0026, [deployment.md](deployment.md).
@@ -469,8 +470,8 @@ schema plus INSERT-only access to the append-only audit log.
 
 A replayed idempotency key is answered at once; otherwise the ledger confirms
 the trader with auth and the market's status with market, prices and commits
-under the `market_books` row lock, and publishes the new price through Redis
-to subscribed browsers. The detailed version is
+under the `market_books` row lock, and publishes the new price through the bus,
+Redis locally and Valkey in production, to subscribed browsers. The detailed version is
 [above](#a-trade-end-to-end).
 **Drawn from:** ADR 0009, 0010, 0015, 0017, 0022, D-049;
 `backend/ledger_service/service/trading.py`.
@@ -480,7 +481,8 @@ to subscribed browsers. The detailed version is
 
 ![Timeline](diagrams/rendered/07-gantt.svg)
 
-297 merged pull requests, 13 September to 29 October 2026: one bar per epic
+297 pull requests merged into `dev` or a stack branch, 13 September to 29 October
+2026: one bar per epic
 from its first to its last merged PR (backend plain, frontend shaded), with the
 releases to `main`. The deploy (#19) shipped on 1 November: #603 to #607 merged
 into `dev` and #613 took them to `main`; the other pull requests merged after 29
@@ -535,7 +537,8 @@ setting, sized to the database's ceiling".
 
 ![Realtime fan-out](diagrams/rendered/11-realtime-fanout.svg)
 
-The ledger publishes once to Redis after each commit, every realtime replica
+The ledger publishes once to the bus after each commit, Redis locally and Valkey
+in production, every realtime replica
 receives every frame and forwards it to its own subscribed sockets, and a
 browser reconciles against the ledger's snapshot on mount and on every
 subscription acknowledgement.
