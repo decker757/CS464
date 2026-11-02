@@ -93,4 +93,4 @@ class AttemptLimiter:
             await self._client.delete(self._key(limit, subject))
         # Sanctioned fail-open catch, as in `claim` (ADR 0027).
         except RedisError:
-            logger.warning("attempt limiter unavailable; allowing the request (limit=%s)", limit.name)
+            logger.warning("attempt limiter unavailable; the count was not cleared (limit=%s)", limit.name)
