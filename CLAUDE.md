@@ -23,10 +23,16 @@ backend/*/migrations/     auth, market and ledger: each schema's own Alembic
                           history, applied by that service's migrate.py [F-5]
 sql/                      roles, schemas and grants for the shared Postgres
 sql/migrations/         0002 only: a login role, and 02-schemas.sql re-run
-deploy/                 nginx.conf for docker-compose.scale.yml, nothing else
+deploy/                 nginx.conf for docker-compose.scale.yml; production/,
+                        what each app server runs and the scripts that
+                        migrate and roll it [5.3] #19
+infra/                  the production cloud on DigitalOcean, as Terraform,
+                        and infra/tf to run it from Docker [5.3] #19
 docs/adr/               decisions that were expensive to make
 docs/api/               endpoint contracts for the frontend
 docs/horizontal-scaling.md  two of every service behind a proxy [5.4] #440
+docs/deployment.md      production: first-time setup, deploys, rollback,
+                        scaling and cost [5.3] #19
 docs/architecture.md    three mermaid diagrams — the services and their
                         schemas, a trade across three services, the ERDs —
                         each naming the ADR it was drawn from
@@ -62,6 +68,12 @@ cp .env.example .env          # fill in every blank; compose refuses to start ot
 docker compose up --build     # auth :8000, market :8001, audit :8002,
                               # ledger :8003, realtime :8004; auth-migrate,
                               # market-migrate and ledger-migrate run first
+```
+
+```bash
+deploy/production/test/stack-test.sh   # [5.3] #19: the production stack, run
+                                       # locally the way a server runs it; needs
+                                       # only Docker. docs/deployment.md
 ```
 
 ```bash
@@ -150,6 +162,16 @@ branches that both add `0002` give Alembic two heads, and the migrate step
 fails until the later one is renumbered and its `down_revision` pointed at the
 other. The long-lived `cs464` gets the revision on the next
 `docker compose up --build`.
+
+**A migration must also work with the release before it.** Production
+migrates once and then rolls the servers one at a time, so for a while the old
+code runs against the new schema. And a release that fails is sent back
+without undoing its migration (ADR 0026). So add a column as nullable, or
+with a default, and drop or rename the old one a release later. A migration
+that breaks the release before it breaks the rollback too, and nothing tests
+that for you. Once a migration has reached production, undo its release by
+fixing forward, not by reverting it: the deploy migrates before it rolls, and
+Alembic refuses a database newer than the code. docs/deployment.md.
 
 The suites build their schema from the models, not from the migrations, and
 `test_migrations.py` is what holds the two together (ADR 0020). Market's and
@@ -679,15 +701,16 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0023** sending an approved outcome back inside its stored dispute window, by any admin
 - **0024** resting orders fill against the AMM inside the trade that moved the price
 - **0025** voiding a flawed market, by any admin without a stake, refunded at cost
+- **0026** production on DigitalOcean, two or more app servers behind a load balancer, deployed from main
 
 Four known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`
 cookie is not sent cross-site, so the frontend and API must share a registrable
-domain or the scheme changes before [5.3] #19. The audit log's atomicity
+domain, which production does with one subdomain per service (ADR 0026). The audit log's atomicity
 holds only while every service shares one database: split them and the service
 that moves needs an outbox and a relay, which is the machinery ADR 0006 exists
 to avoid paying for while it is unnecessary. And the migrate step runs once per
 deploy, never once per replica: it takes no lock, so two copies at once fail
 loudly and the replica whose step lost does not start. Compose already runs one
-per service; #19's pipeline must run it as its own job before the app rolls
-out (ADR 0020).
+per service, and the production deploy runs it once, from the first server,
+before any server rolls (ADR 0020, ADR 0026).

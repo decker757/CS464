@@ -1,0 +1,132 @@
+name: Deploy
+
+# [5.3] #19. Every push to main goes to production. Build the six images and
+# push them to GHCR, tagged with the commit; then deploy/production/release.sh
+# migrates the database once and rolls the app servers one at a time. If any
+# server fails, every server ends on the release it had before, and this run
+# fails. docs/deployment.md is the walkthrough; ADR 0026 is why.
+#
+# Main is only reached by promoting dev, where CI has already run. This does
+# not repeat the suites; ci-deploy.yml has already proven the stack.
+#
+# Reads the GitHub environment "production" (its secrets and APP_HOSTS) and
+# the repository variable PRODUCTION_DOMAIN, all written by
+# infra/push-secrets.sh.
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+# One deploy at a time. A push during a deploy waits for it to finish
+# rather than cancelling it halfway through a roll.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+# Nothing by default; each job asks for what it needs.
+permissions: {}
+
+jobs:
+  images:
+    # Main only, even when started by hand. The production environment says
+    # the same (infra/push-secrets.sh), so a run on another branch cannot
+    # read its secrets either. ADR 0026.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # No `environment`: this job holds a token that can push images, so it
+    # gets none of production's secrets. PRODUCTION_DOMAIN is a repository
+    # variable for that reason (infra/push-secrets.sh).
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - { name: auth, context: backend, file: backend/auth_service/Dockerfile }
+          - { name: market, context: backend, file: backend/market_service/Dockerfile }
+          - { name: ledger, context: backend, file: backend/ledger_service/Dockerfile }
+          - { name: audit, context: backend, file: backend/audit_service/Dockerfile }
+          - { name: realtime, context: backend, file: backend/realtime_service/Dockerfile }
+          - { name: gateway, context: ., file: deploy/production/gateway/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR names must be lower case; an owner's login need not be.
+      - name: Name the registry
+        run: echo "IMAGE_REGISTRY=ghcr.io/${OWNER,,}" >> "$GITHUB_ENV"
+        env:
+          OWNER: ${{ github.repository_owner }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: true
+          tags: ${{ env.IMAGE_REGISTRY }}/cs464-${{ matrix.name }}:${{ github.sha }}
+          # Only the gateway reads it: the frontend's service URLs are fixed
+          # at build time.
+          build-args: DOMAIN=${{ vars.PRODUCTION_DOMAIN }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  release:
+    needs: images
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # This job's token is the one the servers pull with, so it can read
+    # images and nothing else.
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: production
+      url: https://${{ vars.PRODUCTION_DOMAIN }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Name the registry
+        run: echo "IMAGE_REGISTRY=ghcr.io/${OWNER,,}" >> "$GITHUB_ENV"
+        env:
+          OWNER: ${{ github.repository_owner }}
+
+      - name: Migrate, then roll every server
+        run: deploy/production/release.sh "${{ github.sha }}"
+        env:
+          APP_HOSTS: ${{ vars.APP_HOSTS }}
+          PRODUCTION_DOMAIN: ${{ vars.PRODUCTION_DOMAIN }}
+          # The servers pull with this run's own token, which expires with
+          # the run; release.sh logs them out again at the end.
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DATABASE_ADMIN_URL: ${{ secrets.DATABASE_ADMIN_URL }}
+          AUTH_DATABASE_URL: ${{ secrets.AUTH_DATABASE_URL }}
+          MARKET_DATABASE_URL: ${{ secrets.MARKET_DATABASE_URL }}
+          LEDGER_DATABASE_URL: ${{ secrets.LEDGER_DATABASE_URL }}
+          AUDIT_DATABASE_URL: ${{ secrets.AUDIT_DATABASE_URL }}
+          AUTH_DB_PASSWORD: ${{ secrets.AUTH_DB_PASSWORD }}
+          MARKET_DB_PASSWORD: ${{ secrets.MARKET_DB_PASSWORD }}
+          LEDGER_DB_PASSWORD: ${{ secrets.LEDGER_DB_PASSWORD }}
+          AUDIT_DB_PASSWORD: ${{ secrets.AUDIT_DB_PASSWORD }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          LEDGER_SERVICE_KEY: ${{ secrets.LEDGER_SERVICE_KEY }}
+
+  notify:
+    needs: [images, release]
+    if: failure()
+    uses: ./.github/workflows/notify-failure.yml
+    with:
+      area: Deploy to production
+    secrets: inherit

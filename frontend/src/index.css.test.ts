@@ -3,16 +3,11 @@
 /// <reference types="node" />
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { AA_SMALL_TEXT, contrastRatio, type Colour } from './test/contrast'
 
-// The colour tokens in `index.css`, measured. WCAG 2.1 asks for 4.5:1 between
-// text under 18px and whatever is behind it, and every size in this app is
-// under 18px. The ratios are read out of the stylesheet rather than written
-// down here, so lightening a token fails this file. [#360]
-// https://www.w3.org/TR/WCAG21/#contrast-minimum
-const AA_SMALL_TEXT = 4.5
-
-/** An sRGB colour, each channel 0–1. */
-type Colour = [number, number, number]
+// The colour tokens in `index.css`, measured against WCAG AA. The ratios are
+// read out of the stylesheet rather than written down here, so lightening a
+// token fails this file. [#360]
 
 function parseHex(hex: string): Colour {
   const digits = hex.replace('#', '')
@@ -28,18 +23,6 @@ function readColourTokens(): Record<string, Colour> {
     tokens[name] = parseHex(hex)
   }
   return tokens
-}
-
-function relativeLuminance([red, green, blue]: Colour): number {
-  const linearise = (channel: number) =>
-    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
-  return 0.2126 * linearise(red) + 0.7152 * linearise(green) + 0.0722 * linearise(blue)
-}
-
-function contrastRatio(foreground: Colour, background: Colour): number {
-  const [lighter, darker] = [relativeLuminance(foreground), relativeLuminance(background)]
-    .sort((a, b) => b - a)
-  return (lighter + 0.05) / (darker + 0.05)
 }
 
 /** What `bg-<colour>/<alpha>` actually looks like once it is over a surface. */
@@ -108,6 +91,16 @@ const TONE_ON_OWN_TINT = [
   { site: 'small gold text on a gold tint', text: 'smu-gold-text', tint: 'smu-gold', alpha: 0.1, surfaces: ['a white card'] },
 ]
 
+// Every text on a browse chip while its price is marked as moved
+// (OutcomeChips' movementTint): a 10% success or danger tint, inside a white
+// Card. The label is neutral text rather than the tone's own, so neither table
+// above measures it; muted measured 4.14–4.23:1 here, short of AA (#574).
+const ON_A_MOVED_CHIP = [
+  { site: 'the outcome label and the weekly change', text: 'secondary' },
+  { site: 'the price and its arrow', text: 'smu-navy' },
+]
+const MOVED_CHIP_TINTS = ['success', 'danger']
+
 // Without this, a token added later is simply absent from the lists above and
 // nothing below ever measures it.
 it('sorts every colour token into text or surface', () => {
@@ -147,6 +140,15 @@ describe('a tone on its own tint, elsewhere in the app', () => {
     ),
   )('$site, on $surface', ({ text, tint, alpha, surface }) => {
     const background = tintOver(tokens[tint], SURFACES[surface], alpha)
+    expect(contrastRatio(tokens[text], background)).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
+  })
+})
+
+describe('text on a browse chip that has just moved', () => {
+  it.each(
+    ON_A_MOVED_CHIP.flatMap((site) => MOVED_CHIP_TINTS.map((tint) => ({ ...site, tint }))),
+  )('$site, on the $tint tint', ({ text, tint }) => {
+    const background = tintOver(tokens[tint], WHITE, 0.1)
     expect(contrastRatio(tokens[text], background)).toBeGreaterThanOrEqual(AA_SMALL_TEXT)
   })
 })

@@ -27,6 +27,13 @@ function movementTint(movement: PriceMovement | undefined): string {
   return 'bg-smu-cream'
 }
 
+// The label's colour on that background. Muted text is AA on cream but only
+// 4.1–4.2:1 on either tint, so it steps up to secondary while the chip is
+// tinted (#574). index.css.test.ts measures every text on the tint.
+function labelTone(movement: PriceMovement | undefined): string {
+  return movement ? 'text-secondary' : 'text-muted'
+}
+
 // A browse card's outcomes as one chip each: every market with more than two
 // outcomes, and any market with no price to split — still on its way, refused,
 // untraded or voided — where a split would read as a 50/50 nobody holds
@@ -50,7 +57,7 @@ export default function OutcomeChips({ outcomes, snapshot, hasPrices, sides, mov
               key={outcome.id}
               className={`flex min-w-[120px] flex-1 items-center justify-between gap-2 rounded-control px-3 py-2 transition-colors duration-500 motion-reduce:transition-none ${movementTint(movement)} ${edge}`}
             >
-              <span title={outcome.label} className="truncate text-xs font-semibold tracking-[0.5px] text-muted uppercase">
+              <span title={outcome.label} className={`truncate text-xs font-semibold tracking-[0.5px] uppercase ${labelTone(movement)}`}>
                 {outcome.label}
               </span>
               {/* An untraded market keeps its outcome names (#214) and shows
