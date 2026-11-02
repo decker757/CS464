@@ -96,13 +96,15 @@ class RequestContextMiddleware:
 
         request_id = accepted_request_id(_incoming_request_id(scope))
         token = _request_id.set(request_id)
-        try:
-            if scope["type"] == "websocket":
-                await self.app(scope, receive, send)
-            else:
-                await self._serve_http(scope, receive, send, request_id)
-        finally:
-            _request_id.reset(token)
+        if scope["type"] == "websocket":
+            await self.app(scope, receive, send)
+        else:
+            await self._serve_http(scope, receive, send, request_id)
+        # Reset on a normal return only. An escaping exception keeps the ID set,
+        # so uvicorn's "Exception in ASGI application" traceback carries it. No
+        # leak: uvicorn runs each request in a task of its own, whose context
+        # copy dies with it, and the next request sets its own ID first.
+        _request_id.reset(token)
 
     async def _serve_http(
         self, scope: Scope, receive: Receive, send: Send, request_id: str
