@@ -118,9 +118,6 @@ class RequestContextMiddleware:
 
         try:
             await self.app(scope, receive, send_with_id)
-        except BaseException:
-            outcome["status"] = 500
-            raise
         finally:
             if scope["path"] not in QUIET_PATHS:
                 _access_log.info(
