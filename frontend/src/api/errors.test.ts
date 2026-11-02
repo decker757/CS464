@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AxiosError, type AxiosResponse } from 'axios'
-import { GENERIC_ERROR, describeInsufficientFunds, describeInsufficientShares, describeOrderError, describeTradeError } from './errors'
+import { GENERIC_ERROR, describeFormError, describeInsufficientFunds, describeInsufficientShares, describeOrderError, describeTradeError } from './errors'
 
 /** A refusal from the ledger's trade route, the shape describeTradeError
  *  reads: a 409 unless a test says otherwise. `details` is a list only for
@@ -170,5 +170,56 @@ describe('describeOrderError', () => {
 
   it('falls back to the generic message for a failure that is not an API error', () => {
     expect(describeOrderError(new Error('network down'))).toBe(GENERIC_ERROR)
+  })
+})
+
+// #601: a 429 too_many_attempts names how long to wait, from Retry-After
+// (auth-service.md). It must never read as a wrong password.
+describe('describeFormError on 429 too_many_attempts', () => {
+  const FIELDS = ['username', 'password']
+
+  function tooManyAttempts(retryAfter?: string): AxiosError {
+    const response = {
+      status: 429,
+      data: { error: { code: 'too_many_attempts', message: 'Too many attempts.' } },
+      headers: retryAfter === undefined ? {} : { 'retry-after': retryAfter },
+    } as unknown as AxiosResponse
+    return new AxiosError('Request failed with status code 429', 'ERR_BAD_REQUEST', undefined, undefined, response)
+  }
+
+  function messageFor(retryAfter?: string): string {
+    return describeFormError(tooManyAttempts(retryAfter), {
+      fields: FIELDS,
+      codeMessages: { invalid_credentials: 'Incorrect username or password.' },
+    }).formError
+  }
+
+  it.each([
+    ['1', 'Too many attempts. Try again in 1 second.'],
+    ['45', 'Too many attempts. Try again in 45 seconds.'],
+    ['59', 'Too many attempts. Try again in 59 seconds.'],
+    ['60', 'Too many attempts. Try again in 1 minute.'],
+    ['61', 'Too many attempts. Try again in 2 minutes.'],
+    ['900', 'Too many attempts. Try again in 15 minutes.'],
+    ['901', 'Too many attempts. Try again in 16 minutes.'],
+  ])('Retry-After %s says "%s"', (retryAfter, expected) => {
+    expect(messageFor(retryAfter)).toBe(expected)
+  })
+
+  it.each([undefined, '', 'soon', '0', '-5', '1.5', 'Wed, 21 Oct 2026 07:28:00 GMT'])(
+    'says "a few minutes" when Retry-After is %j',
+    (retryAfter) => {
+      expect(messageFor(retryAfter)).toBe('Too many attempts. Try again in a few minutes.')
+    },
+  )
+
+  it('is neither the invalid-credentials message nor the generic one, and sets no field error', () => {
+    const view = describeFormError(tooManyAttempts('900'), {
+      fields: FIELDS,
+      codeMessages: { invalid_credentials: 'Incorrect username or password.' },
+    })
+    expect(view.formError).not.toBe('Incorrect username or password.')
+    expect(view.formError).not.toBe(GENERIC_ERROR)
+    expect(view.fieldErrors).toEqual({})
   })
 })

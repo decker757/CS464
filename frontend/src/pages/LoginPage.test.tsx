@@ -190,6 +190,28 @@ describe('LoginPage — integration', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Your account has been suspended.')
   })
 
+  // #601: the limiter's 429 is not a wrong password, and the button stays
+  // live because the same trader may still log in with their email.
+  it('says how long to wait on a 429, and leaves the button clickable', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post('http://localhost:8000/auth/login', () =>
+        HttpResponse.json(
+          { error: { code: 'too_many_attempts', message: 'Too many attempts.' } },
+          { status: 429, headers: { 'Retry-After': '900' } },
+        ),
+      ),
+    )
+
+    renderLoginPage()
+    await user.type(screen.getByLabelText('Username or Email'), 'alice')
+    await user.type(screen.getByLabelText('Password'), 'test-fixture-pw-ok')
+    await user.click(screen.getByRole('button', { name: /log in/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Too many attempts. Try again in 15 minutes.')
+    expect(screen.getByRole('button', { name: /log in/i })).toBeEnabled()
+  })
+
   it('shows generic error when the server is unreachable', async () => {
     const user = userEvent.setup()
     server.use(http.post('http://localhost:8000/auth/login', () => HttpResponse.error()))

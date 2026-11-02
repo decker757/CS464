@@ -130,6 +130,25 @@ describe('RegisterPage — client-side validation', () => {
 })
 
 describe('RegisterPage — integration', () => {
+  it('says how long to wait on a 429, and leaves the button clickable (#601)', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.post('http://localhost:8000/auth/register', () =>
+        HttpResponse.json(
+          { error: { code: 'too_many_attempts', message: 'Too many attempts.' } },
+          { status: 429, headers: { 'Retry-After': '120' } },
+        ),
+      ),
+    )
+
+    renderRegisterPage()
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Too many attempts. Try again in 2 minutes.')
+    expect(screen.getByRole('button', { name: /create account/i })).toBeEnabled()
+  })
+
   it('happy path: sends correct payload and signs the user in', async () => {
     const user = userEvent.setup()
     let capturedBody: unknown
