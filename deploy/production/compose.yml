@@ -82,6 +82,8 @@ services:
       DATABASE_POOL_SIZE: 3
       DATABASE_MAX_OVERFLOW: 1
       LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
+      # [A-2] #600, ADR 0027. Login and registration limits; fails open.
+      REDIS_URL: ${REDIS_URL:?}
       COOKIE_SECURE: "true"
       # The cookie is set by auth.<domain> and read by market., ledger.,
       # audit. and realtime.<domain>, so it names the parent domain. ADR 0002.

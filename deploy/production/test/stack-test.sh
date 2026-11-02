@@ -161,17 +161,18 @@ publish() {
   docker tag "$1" "$2"
   docker push -q "$2" > /dev/null
 }
-# "broken" is release one, except that auth's image is the realtime service,
-# which cannot start without REDIS_URL. Its health check never passes.
-publish "$registry/cs464-realtime:one" "$registry/cs464-auth:broken"
+# "broken" is release one, except that auth's image is the gateway's, which serves on port 80 and never answers auth's health check
+# on 8000. (It was the realtime service until auth, too, was given REDIS_URL,
+# which made that image start cleanly under auth's settings.)
+publish "$registry/cs464-gateway:one" "$registry/cs464-auth:broken"
 # "three" is broken the same way, and also adds a service, `extra`, whose
 # image exists only at tag three. Going back to two with three's files would
 # look for cs464-extra:two, which nobody pushed.
 for service in market ledger audit realtime gateway; do
   push_as three "$service"
 done
-publish "$registry/cs464-realtime:one" "$registry/cs464-auth:three"
-publish "$registry/cs464-realtime:one" "$registry/cs464-extra:three"
+publish "$registry/cs464-gateway:one" "$registry/cs464-auth:three"
+publish "$registry/cs464-gateway:one" "$registry/cs464-extra:three"
 
 # --- A server's directory, as the deploy lays it out --------------------
 
@@ -257,16 +258,6 @@ for service in auth market ledger audit realtime; do
 done
 expect "an unknown host name gets 404" test "$(status_of nobody.test /health)" = 404
 
-# [BE][A-2] #600. uvicorn trusts the leftmost X-Forwarded-For entry, which the
-# visitor writes. The gateway must replace the header, not append to it.
-forged=203.0.113.77
-curl -s -o /dev/null -H "Host: auth.$domain" -H "X-Forwarded-For: $forged" "$gateway/health"
-auth_log=$(compose logs auth 2>&1)
-expect "the auth log shows the requests it served" \
-  grep -q 'GET /health' <<< "$auth_log"
-expect "a forged X-Forwarded-For never reaches a service" \
-  test -z "$(grep "$forged" <<< "$auth_log")"
-
 username="stack$(date +%s)"
 password=$(random_secret)
 register_status=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: auth.$domain" \
@@ -282,6 +273,20 @@ token=$(curl -fsS -D "$login_headers" -H "Host: auth.$domain" -H 'Content-Type: 
 expect "the login cookie names the parent domain, so every subdomain gets it" \
   grep -qi "set-cookie: access_token=.*Domain=$domain" "$login_headers"
 expect "the login cookie is Secure" grep -qi "set-cookie: access_token=.*Secure" "$login_headers"
+
+# [BE][A-2] #600. Each registration forges a different X-Forwarded-For. If the
+# gateway passed them on, every one would count against a different address
+# and none would ever be refused.
+refused=no
+for attempt in $(seq 1 25); do
+  name="forge$attempt$(date +%s)"
+  status=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: auth.$domain" \
+    -H "X-Forwarded-For: 198.51.100.$attempt" -H 'Content-Type: application/json' \
+    -d "{\"username\":\"$name\",\"email\":\"$name@example.com\",\"password\":\"$password\"}" \
+    "$gateway/auth/register")
+  if [ "$status" = 429 ]; then refused=yes; break; fi
+done
+expect "forged addresses still share one registration limit" test "$refused" = yes
 
 expect "the ledger mints the starting grant on first read" has_starting_grant
 expect "the market service reads its schema" \
