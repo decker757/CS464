@@ -314,6 +314,12 @@ expect "a response carries a request ID" sh -c "echo '$rid' | grep -qE '^[0-9a-f
 expect "the gateway logged the same ID the service answered with" gateway_logged "$rid"
 expect "a client's own request ID comes back unchanged" \
   test "$(request_id_of -H 'X-Request-ID: stack-test-0001')" = stack-test-0001
+# 65 characters, one past the services' rule. The gateway must replace it
+# itself, or its log line names an ID the service then threw away.
+unsafe_rid=$(request_id_of -H "X-Request-ID: $(printf '%65s' '' | tr ' ' a)")
+expect "an unsafe request ID is replaced, not echoed" \
+  sh -c "echo '$unsafe_rid' | grep -qE '^[0-9a-f]{32}$'"
+expect "the gateway logged the ID that replaced an unsafe one" gateway_logged "$unsafe_rid"
 expect "the ledger's log line for a request is JSON and carries its ID" ledger_logged_json
 
 expect "the ledger mints the starting grant on first read" has_starting_grant
