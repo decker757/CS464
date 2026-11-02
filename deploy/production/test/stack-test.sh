@@ -297,6 +297,25 @@ for attempt in $(seq 1 25); do
 done
 expect "forged addresses still share one registration limit" test "$refused" = yes
 
+# [BE][5.5] #599. Request IDs: stamped by the gateway, kept from the client,
+# and on the services' JSON log lines.
+request_id_of() {
+  curl -s -D - -o /dev/null -H "Host: auth.$domain" "$@" "$gateway/health" \
+    | tr -d '\r' | sed -n 's/^[Xx]-[Rr]equest-[Ii][Dd]: //p'
+}
+gateway_logged() { compose logs --no-log-prefix gateway 2>/dev/null | grep -q "rid=$1"; }
+ledger_logged_json() {
+  curl -s -o /dev/null -H "Host: ledger.$domain" -H 'X-Request-ID: stack-test-0002' \
+    -H "Authorization: Bearer $token" "$gateway/ledger/portfolio/me"
+  compose logs --no-log-prefix ledger 2>/dev/null | grep -q '"request_id": "stack-test-0002"'
+}
+rid=$(request_id_of)
+expect "a response carries a request ID" sh -c "echo '$rid' | grep -qE '^[0-9a-f]{32}$'"
+expect "the gateway logged the same ID the service answered with" gateway_logged "$rid"
+expect "a client's own request ID comes back unchanged" \
+  test "$(request_id_of -H 'X-Request-ID: stack-test-0001')" = stack-test-0001
+expect "the ledger's log line for a request is JSON and carries its ID" ledger_logged_json
+
 expect "the ledger mints the starting grant on first read" has_starting_grant
 expect "the market service reads its schema" \
   test "$(curl -s -o /dev/null -w '%{http_code}' -H "Host: market.$domain" -H "Authorization: Bearer $token" "$gateway/public/markets")" = 200

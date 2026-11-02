@@ -9,3 +9,8 @@ proxy_set_header Host $host;
 proxy_set_header X-Forwarded-For $remote_addr;
 proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
 proxy_set_header X-Real-IP $remote_addr;
+# [BE][5.5] #599. The service validates the ID itself, so a hostile value is
+# replaced there. The access_log line overrides the image's http-level one, so
+# a request is not logged twice, and adds the ID.
+proxy_set_header X-Request-ID $forwarded_request_id;
+access_log /var/log/nginx/access.log cs464;
