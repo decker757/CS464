@@ -41,7 +41,9 @@ map $http_x_request_id $forwarded_request_id {
     ""      $request_id;
 }
 
-log_format cs464 '$remote_addr [$time_iso8601] "$request" $status $body_bytes_sent rid=$forwarded_request_id';
+# The path, never the query string, which can hold a token or an email. The
+# services log the route template for the same reason.
+log_format cs464 '$remote_addr [$time_iso8601] "$request_method $uri" $status $body_bytes_sent rid=$forwarded_request_id';
 
 # The load balancer's health check arrives by IP address, not by one of our
 # names, so it lands here.
