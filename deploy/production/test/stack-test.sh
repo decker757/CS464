@@ -303,7 +303,7 @@ request_id_of() {
   curl -s -D - -o /dev/null -H "Host: auth.$domain" "$@" "$gateway/health" \
     | tr -d '\r' | sed -n 's/^[Xx]-[Rr]equest-[Ii][Dd]: //p'
 }
-gateway_logged() { compose logs --no-log-prefix gateway 2>/dev/null | grep -q "rid=$1"; }
+gateway_logged() { test -n "$1" || return 1; compose logs --no-log-prefix gateway 2>/dev/null | grep -q "rid=$1"; }
 ledger_logged_json() {
   curl -s -o /dev/null -H "Host: ledger.$domain" -H 'X-Request-ID: stack-test-0002' \
     -H "Authorization: Bearer $token" "$gateway/ledger/portfolio/me"
