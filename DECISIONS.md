@@ -11197,3 +11197,66 @@ a busy market that closes far in the future can miss Trending. That is
 acceptable at this project's scale. If it stops being, a server-side ranking
 is a cross-service design decision, not a change to `_browse_order`, for the
 reason under Rejected.
+
+---
+
+### D-NEW — Each service's connection pool is a setting, sized to the database's ceiling
+
+**Date:** 2026-11-01 · **Ticket:** #19 · **Status:** active
+
+**Decision.** `DATABASE_POOL_SIZE` and `DATABASE_MAX_OVERFLOW` set each
+service's SQLAlchemy pool. Both default to what was hard-coded before (10
+and 10), so a laptop and CI behave exactly as they did. Production sets them
+lower, in `deploy/production/compose.yml`. The rule is that every replica of
+every service, at full overflow, plus the three migrate steps, stays under the
+managed database's connection limit.
+
+**Why.** Locally, Postgres allows 100 connections and there is one copy of
+each service. Managed Postgres allows far fewer: about 47 on DigitalOcean's 2 GB plan
+when this was written. In production, every app server runs auth, market, ledger
+and audit. At the old fixed sizes that is up to 80 connections per server,
+so the second server would hit "too many connections" under load, and the
+error would look like a bug in the service rather than a sizing problem.
+
+**Rejected.** *Pooling through PgBouncer in transaction mode* (DigitalOcean's
+"connection pools"). It multiplexes, so far fewer server connections are
+needed. But asyncpg caches prepared statements per connection, which
+transaction mode breaks unless every engine turns that cache off. That
+changes all four engines, against a pooler that nothing runs locally or in
+CI, so nothing would test it before production. A pool size is a smaller
+change. *A bigger database plan instead*: it costs more every month and only
+moves the same ceiling.
+
+**Notes.** The ceiling is what limits scaling out. A third app server will
+not fit at the production sizes until the database plan or the pool sizes
+change, and `docs/deployment.md` says so. That is the trade made here: the
+app servers scale out, and the one database scales up.
+
+---
+
+### D-NEW — The production site is seeded by its own command, with a generated password per account
+
+**Date:** 2026-11-01 · **Ticket:** #609 · **Status:** active
+
+**Decision.** `npm run seed:production` seeds the production site with the
+same markets, traders and scenarios as `npm run seed:demo`. `seed:demo` keeps
+its local-only guard with no override (#454). The production command is a
+separate path with its own checks:
+- the person running it types the domain;
+- it refuses a site that already has a market, any of its accounts, or an
+  administrator, because it makes the first one by hand (ADR 0007);
+- every account gets a generated password, written to a file outside the
+  repository;
+- its two SQL steps run over SSH on an app server, with the admin URL off
+  every command line.
+
+**Why.** The showcase is on the production site, and an empty site shows
+nothing. The local seed cannot simply be pointed at it. Its one password is
+in the repository, so on a public site anyone could log in as a seeded admin.
+And its SQL steps need a local `docker compose exec db`.
+
+**Rejected.** *An override for the local guard*: it would bring the
+repository's password to production, and the guard's whole point is that a
+seed cannot be undone. *Copying a seeded local database into production*: it
+would carry over test trades, needs care with sequences and the audit log,
+and still leaves the passwords to reset by hand.

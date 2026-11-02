@@ -27,3 +27,9 @@ dist/
 coverage/
 coverage-*.json
 .coverage
+
+# Terraform: providers, and state that holds every production secret. #19
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/*.tfvars

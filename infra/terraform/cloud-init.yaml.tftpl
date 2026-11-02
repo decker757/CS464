@@ -1,0 +1,39 @@
+#cloud-config
+# [5.3] #19. First boot of an app server: Docker, a `deploy` user that the
+# pipeline logs in as, a host key known in advance, and SSH that takes keys
+# only. Nothing about the app is here; the deploy brings it.
+
+ssh_keys:
+  ed25519_private: |
+    ${indent(4, host_private_key)}
+  ed25519_public: ${host_public_key}
+ssh_deletekeys: true
+ssh_genkeytypes: []
+disable_root: true
+ssh_pwauth: false
+
+users:
+  - name: deploy
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ${deploy_public_key}
+
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/10-cs464.conf
+    content: |
+      PasswordAuthentication no
+      PermitRootLogin no
+      AllowUsers deploy
+
+runcmd:
+  # Docker's own packages, which bring the compose plugin roll.sh uses.
+  - curl -fsSL https://get.docker.com | sh
+  # After Docker, which is what creates the docker group.
+  - usermod -aG docker deploy
+  - install -d -o deploy -g deploy -m 750 /opt/cs464
+  - systemctl restart ssh

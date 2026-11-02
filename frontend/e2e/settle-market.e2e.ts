@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { approveOutcome, backdateDisputeWindow, buy, closeEarly, proposeOutcome, publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
-import { loadUntilShown, logIn, selectTab } from './support/browser'
+import { logIn, marketCard, setQueryParams } from './support/browser'
 
 // [FE][3.4] #216, across market_service and the ledger: the settle control
 // reads `settleable` from market_service, and settlement itself is the
@@ -24,9 +24,9 @@ test('an admin settles an approved market once its dispute window has passed, an
   await backdateDisputeWindow(market.id)
 
   await logIn(page, admin)
+  await setQueryParams(page, '/markets/overview', { q: market.question })
   await page.goto('/admin/markets')
-  await selectTab(page, /^approved/i)
-  const card = await loadUntilShown(page, market.question)
+  const card = marketCard(page, market.question)
   await card.getByRole('button', { name: /^settle$/i }).click()
   await page.getByRole('button', { name: /confirm settle/i }).click()
 
