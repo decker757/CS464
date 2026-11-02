@@ -168,3 +168,19 @@ class SuspensionIncomplete(AuthError):
     def __init__(self, problems: Sequence[FieldProblem]) -> None:
         self.problems = tuple(problems)
         super().__init__(self.message)
+
+
+class TooManyAttempts(AuthError):
+    """[A-2] #600 - a login or registration limit is used up.
+
+    The same for a real account and an unknown one, so it tells a caller
+    nothing about which exists. `retry_after_seconds` becomes `Retry-After`.
+    """
+
+    status_code = 429
+    code = "too_many_attempts"
+    message = "Too many attempts. Wait a moment and try again."
+
+    def __init__(self, retry_after_seconds: int) -> None:
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(self.message)
