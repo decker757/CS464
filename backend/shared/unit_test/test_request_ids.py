@@ -128,7 +128,7 @@ def test_each_background_run_gets_its_own_id():
 
 
 def test_a_websocket_gets_an_id_for_its_lines(caplog):
-    with caplog.at_level(logging.INFO, logger=ACCESS_LOGGER),  TestClient(_build_app()) as client:
+    with caplog.at_level(logging.INFO, logger=ACCESS_LOGGER), TestClient(_build_app()) as client:
         with client.websocket_connect("/ws") as socket:
             received = socket.receive_text()
     assert received and re.fullmatch(GENERATED_ID, received)
