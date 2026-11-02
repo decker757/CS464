@@ -156,11 +156,6 @@ for service in auth market ledger audit realtime gateway; do
   push_as two "$service"
   push_as broken "$service"
 done
-publish() {
-  # publish <source image> <image to push>
-  docker tag "$1" "$2"
-  docker push -q "$2" > /dev/null
-}
 # "broken" is release one, except that auth's image is built from the real one
 # with its command replaced by `sleep`: it keeps auth's own HEALTHCHECK, which
 # never passes because nothing listens on 8000.
