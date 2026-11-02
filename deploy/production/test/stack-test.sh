@@ -257,6 +257,16 @@ for service in auth market ledger audit realtime; do
 done
 expect "an unknown host name gets 404" test "$(status_of nobody.test /health)" = 404
 
+# [BE][A-2] #600. uvicorn trusts the leftmost X-Forwarded-For entry, which the
+# visitor writes. The gateway must replace the header, not append to it.
+forged=203.0.113.77
+curl -s -o /dev/null -H "Host: auth.$domain" -H "X-Forwarded-For: $forged" "$gateway/health"
+auth_log=$(compose logs auth 2>&1)
+expect "the auth log shows the requests it served" \
+  grep -q 'GET /health' <<< "$auth_log"
+expect "a forged X-Forwarded-For never reaches a service" \
+  test -z "$(grep "$forged" <<< "$auth_log")"
+
 username="stack$(date +%s)"
 password=$(random_secret)
 register_status=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: auth.$domain" \

@@ -201,6 +201,23 @@ old name, and going back to it would start it without one.
 `docker compose --env-file ../../app.env --env-file release.env logs -f ledger`.
 The logs rotate at 50 MB per container. #599 adds a dashboard.
 
+**The client's address:** the gateway resolves it and overwrites
+`X-Forwarded-For` with that one address (`set_real_ip_from` in
+`deploy/production/gateway/default.conf.template`). uvicorn trusts the
+leftmost entry of that header, which a visitor can write, so passing it on
+would let anyone pick the address a service sees. Only the load balancer,
+which connects from inside the VPC (`10.64.0.0/20`), is trusted to have set
+it. #600.
+
+**One-off check after the release that carries this reaches production,
+before the release that adds the per-IP login limits:** on one app server,
+`docker compose --env-file ../../app.env --env-file release.env logs --tail 20 gateway`
+in `/opt/cs464/current`. Each request's first field is the address nginx
+resolved. Before the fix it is an address inside `10.64.0.0/20` (the load
+balancer's); after it, the visitor's public address. If it is still inside the
+range, or the load balancer connects from outside it, stop and fix
+`set_real_ip_from` first, or every visitor shares one rate-limit bucket.
+
 ## Scaling
 
 - **More app servers:** raise `app_server_count` in
