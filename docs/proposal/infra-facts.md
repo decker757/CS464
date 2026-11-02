@@ -52,7 +52,7 @@ DigitalOcean's list prices when `docs/deployment.md` was written. That page says
 | Load balancer | idle timeout | 600 s | `infra/terraform/load_balancer.tf:61` |
 | Connections | ceiling on the 2 GB plan | about 47; DigitalOcean's figure, which the repository cannot check | ADR 0026:83-87 |
 | Connections | pool + overflow per server | auth 3+1, market 3+2, ledger 6+3, audit 1+1 = 20 | `deploy/production/compose.yml:70-75` |
-| Connections | at peak | 40 for two servers, plus 3 for the migrate steps | `docs/deployment.md:209-210` |
+| Connections | at full overflow | 40 for two servers. The budget leaves 3 for the migrate steps, which run one after another | `docs/deployment.md:209-210`; `deploy/production/migrate.sh:21-25` |
 
 ## Backups
 
@@ -61,6 +61,7 @@ DigitalOcean's list prices when `docs/deployment.md` was written. That page says
 | Postgres relies on DigitalOcean's daily backups | ADR 0026:95-97 |
 | Terraform sets no backup option: they are the managed service's own, and the retention period is not in the repository | `infra/terraform/databases.tf:4-12` |
 | There is no standby node | `infra/terraform/databases.tf:10`; ADR 0026:96-97 |
+| The repository records no restore having been tried | a search of `docs/deployment.md` and ADR 0026 for "restore" finds nothing |
 | The app servers hold no data, so they have nothing to back up | `infra/terraform/servers.tf:1-2`; `deploy/production/compose.yml:3-4` |
 | Valkey "holds nothing worth keeping" | `infra/terraform/databases.tf:27-28` |
 | `infra/tf destroy` deletes the database too | `docs/deployment.md:233-234` |
@@ -102,7 +103,10 @@ DigitalOcean's list prices when `docs/deployment.md` was written. That page says
 | A server's firewall admits port 80 from the load balancer only | `infra/terraform/servers.tf:35-39` |
 | It also admits port 22 from anywhere, keys only, because GitHub's runners have no fixed address | `infra/terraform/servers.tf:29-30,41-45`; `infra/terraform/cloud-init.yaml.tftpl:27-31` |
 | Postgres and Valkey accept only servers tagged `cs464-app`, over the private network | `infra/terraform/databases.tf:1-2,19-25,39-45`; `infra/terraform/outputs.tf:6,91` |
-| Terraform generates every secret | `infra/terraform/secrets.tf:1-3` |
+| Terraform generates the application's secrets: the role passwords, `JWT_SECRET`, the service key, and the SSH keys | `infra/terraform/secrets.tf:5-36` |
+| DigitalOcean makes the `doadmin` password and the Valkey URL, and Terraform reads them | `infra/terraform/outputs.tf:45-46,91` |
+| The deploy logs in to GHCR with the run's own `GITHUB_TOKEN`, which is not in the environment | `.github/workflows/deploy.yml:110`; `deploy/production/release.sh:137` |
 | `infra/push-secrets.sh` copies them to the GitHub `production` environment, which accepts `main` only | `infra/push-secrets.sh:32-56` |
 | `release.sh` writes one `app.env` per server on every deploy | `deploy/production/release.sh:85-104,136` |
-| The admin URL and the role passwords reach a server on stdin only, never in `app.env` | `deploy/production/release.sh:37,106-114` |
+| Each role's password is in `app.env`, inside that role's URL, written under `umask 077` | `deploy/production/release.sh:97-100,136`; `infra/terraform/outputs.tf:9` |
+| The admin URL stays out of `app.env`, and reaches a server on stdin only | `deploy/production/release.sh:37,106-114` |
