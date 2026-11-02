@@ -1,44 +1,49 @@
 %% 01 — System architecture
 %% Drawn from: ADR 0003, ADR 0006, ADR 0010, ADR 0011, ADR 0017, ADR 0019,
-%%   ADR 0021, ADR 0022, ADR 0025, docker-compose.yml, docker-compose.scale.yml,
-%%   deploy/nginx.conf, sql/01-roles.sql, sql/02-schemas.sql,
+%%   ADR 0021, ADR 0022, ADR 0025, ADR 0026, deploy/production/compose.yml,
+%%   deploy/production/gateway/default.conf.template, infra/terraform/load_balancer.tf,
+%%   docker-compose.yml, sql/01-roles.sql, sql/02-schemas.sql,
 %%   backend/ledger_service/service/{account_status,market_terms,user_directory,bus}.py,
 %%   backend/market_service/service/sweeper.py,
 %%   backend/ledger_service/service/leaderboard_refresher.py
-%% nginx fronts the scale stack (docker-compose.scale.yml), an ALB fronts AWS (02);
-%% the dev stack publishes each service port directly. Grants per schema: 05.
+%% Production: the load balancer, then the gateway on each server (02). Locally,
+%% compose publishes one port per service, 8000 to 8004, and no gateway runs; the
+%% scale stack puts one nginx in front (docs/horizontal-scaling.md). The bus is Valkey in
+%% production and Redis locally: the same protocol. Grants per schema: 05.
 %% Some labels join their words with U+00A0 so Mermaid keeps them on one line.
-%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 500}, "themeVariables": {"fontSize": "22px"}}}%%
+%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 500, "padding": 8, "nodeSpacing": 30}, "themeVariables": {"fontSize": "24px"}}}%%
 flowchart TB
     browser["Browser, React SPA"]:::browser
-    nginx["nginx, scale stack (ALB on AWS)"]:::edge
-    browser -->|"HTTP + WebSocket, cookie auth"| nginx
+    lb["Load balancer: ends TLS, checks /lb-health"]:::edge
+    gateway["gateway on each server: nginx, frontend"]:::edge
+    browser -->|"HTTPS + WebSocket, cookie auth"| lb
+    lb --> gateway
 
     subgraph svc["FastAPI services"]
         direction LR
-        audit["audit :8002<br/>reads audit log"]:::audit
-        subgraph mk["market :8001"]
+        audit["audit<br/>reads log"]:::audit
+        subgraph mk["market"]
             direction TB
             market["market<br/>lifecycle, resolution"]:::market
             sweeper(["close sweeper, 10 s<br/>open → closed"]):::job
         end
-        auth["auth :8000<br/>users, sessions"]:::auth
-        subgraph lg["ledger :8003"]
+        auth["auth<br/>users, sessions"]:::auth
+        subgraph lg["ledger"]
             direction TB
             ledger["ledger<br/>credits, trades, LMSR"]:::ledger
             refresher(["leaderboard<br/>refresher, 60 s"]):::job
         end
-        realtime["realtime :8004<br/>WebSocket relay"]:::realtime
+        realtime["realtime<br/>socket relay"]:::realtime
     end
 
-    nginx -->|"a port per service; /ws/prices to realtime"| svc
+    gateway -->|"a subdomain per service; /ws/prices on realtime"| svc
 
     ledger -->|"GET /auth/me<br/>per trade and order"| auth
-    refresher -->|"POST /internal/users/lookup<br/>X-Service-Key"| auth
+    refresher -->|"POST<br/>/internal/users/lookup<br/>X-Service-Key"| auth
     ledger -->|"GET /public/markets/{id}<br/>then POST settle, void"| market
 
     pg[("Postgres 17: a schema and role per service,<br/>no cross grants; writers INSERT the audit log")]:::pg
-    redis[("Redis pub/sub<br/>market.price, order.update")]:::redis
+    redis[("Valkey pub/sub<br/>market.price, order.update")]:::redis
 
     auth -->|"auth_svc"| pg
     market -->|"market_svc"| pg

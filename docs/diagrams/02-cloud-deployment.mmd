@@ -1,96 +1,87 @@
-%% 02 — Cloud deployment on AWS (PLANNED, [5.3] #19 — nothing is deployed yet)
-%% Drawn from: ADR 0002, ADR 0010, ADR 0011, ADR 0020, ADR 0021, issue #19,
-%%   docker-compose.yml, sql/01-roles.sql, sql/02-schemas.sql, .github/workflows/ci-backend.yml,
-%%   backend/*/core/database.py (pool 10 + overflow 10), backend/auth_service/core/config.py,
-%%   backend/auth_service/controller/transport.py, backend/auth_service/controller/internal_routes.py,
-%%   backend/ledger_service/core/config.py, backend/realtime_service/Dockerfile,
-%%   frontend/src/hooks/usePriceSocket.ts
-%% Every AWS box is dashed because none of it exists. Every line is solid: the
-%% whole figure is planned, so a dashed line would add nothing.
-%% Connections: pool_size 10 per task, plus SQLAlchemy's default max_overflow of
-%% 10 (database.py sets only pool_size), x 4 DB services. At most 3 tasks each,
-%% and a rolling update at maxPercent 150 rounds down to 4 tasks: 4 x 4 x 20 =
-%% 320 at peak, under db.t4g.medium (~450 by the RDS formula, somewhat less in
-%% practice). #19 also asks for staging
-%% from push to staging, with its own database: the same stack, so not drawn twice.
-%% The outer title is in the note node because a centred title sat under the CloudFront arrow.
-%% Mermaid 12 redraws a dashed edge solid where it hops another line; no hops here.
-%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 420}, "themeVariables": {"fontSize": "24px"}}}%%
+%% 02 — Production on DigitalOcean, as built ([5.3] #19)
+%% Drawn from: ADR 0026, ADR 0002, ADR 0010, ADR 0011, ADR 0020, ADR 0021,
+%%   docs/deployment.md, infra/terraform/{network,load_balancer,servers,databases,dns,secrets,outputs}.tf,
+%%   infra/terraform/variables.tf, infra/push-secrets.sh,
+%%   deploy/production/{compose.yml,release.sh}, deploy/production/gateway/default.conf.template,
+%%   .github/workflows/deploy.yml
+%% Solid: built. Dashed and "not built": what ADR 0026's Consequences say is missing.
+%% The firewall (servers.tf) admits :80 from the load balancer only, and :22 from
+%% anywhere, keys only, because GitHub's runners have no fixed address. The gateway
+%% is the only container publishing a port (compose.yml).
+%% app.env takes the role URLs, JWT_SECRET, LEDGER_SERVICE_KEY and REDIS_URL. The
+%% admin URL and the role passwords reach a server on stdin only (release.sh).
+%% Connections: 20 per server at full overflow (compose.yml), 40 for two, 3 more for
+%% the migrate steps, against about 47 on the 2 GB plan (ADR 0026).
+%% The VPC title has right padding so the browser arrow misses it. ELK lays
+%% siblings out in reverse source order here, so app-2 is written before app-1.
+%% Mermaid 12 redraws a dashed edge solid where it hops another line; no dashed edges here.
+%%{init: {"elk": {"lineHops": false, "forceNodeModelOrder": true, "mergeEdges": true}, "flowchart": {"wrappingWidth": 620, "nodeSpacing": 18, "rankSpacing": 26, "padding": 8}, "themeVariables": {"fontSize": "22px"}}}%%
 flowchart TB
-    browser["Browser"]
-
-    subgraph aws[" "]
-        cdn["CloudFront + S3<br/>app.cs464.dev"]
-
-        subgraph pub["Public subnets,<br/>2 AZs"]
-            alb["ALB<br/>host per service<br/>no /internal/*"]
-            nat["NAT gateway<br/>one, 1 AZ"]
-        end
-
-        subgraph priv["Private subnets, 2 AZs: ECS tasks"]
-            mig["bootstrap: roles once, 02-schemas<br/>each deploy; migrate × 3; on-demand"]
-            ledger["ledger + refresher<br/>on-demand + Spot"]
-            realtime["realtime<br/>Spot"]
-            audit["audit<br/>Spot"]
-            auth["auth, COOKIE_DOMAIN<br/>on-demand + Spot"]
-            market["market + sweeper<br/>on-demand + Spot"]
-            rds[("RDS Postgres 17, db.t4g.medium,<br/>1 AZ, ≤ 320 conns at peak")]
-            redis[("ElastiCache Redis<br/>1 node")]
-        end
-
-        shared["Route 53, ACM<br/>ECR, CloudWatch<br/>Secrets Manager:<br/>DATABASE_URL per role,<br/>JWT_SECRET shared by 5,<br/>LEDGER_SERVICE_KEY"]
-        note["<b>PLANNED (#19): nothing deployed yet.</b><br/>Production from main; staging: same<br/>stack, own RDS, from staging.<br/>2–3 tasks each, CPU target; rollout<br/>maxPercent 150. Spot: ALB drains the<br/>task; a manual retry is safe<br/>(idempotency keys)."]
+    subgraph ops["Outside DigitalOcean"]
+        tf["Terraform: all of DigitalOcean,<br/>every generated secret"]
+        images["deploy.yml, main only:<br/>builds 6 images"]
+        env["GitHub production<br/>environment: secrets"]
+        ghcr[("GHCR<br/>tag = commit")]
+        tf -->|"push-secrets.sh"| env
+        images -->|"push"| ghcr
     end
 
-    browser --> cdn
-    browser -->|"cookie, wss"| alb
+    browser["Browser"]
 
-    mig -->|"exit 0 gates rollout"| ledger
-    mig --> auth
-    mig --> market
+    subgraph gaps["Not built (ADR 0026)"]
+        staging["staging: own domain,<br/>own database (#19)"]
+        limit["login rate<br/>limit (#600)"]
+        mon["monitoring, alerts<br/>(#599)"]
+        staging ~~~ limit
+        limit ~~~ mon
+    end
 
-    alb --> ledger
-    alb --> realtime
-    alb --> audit
-    alb --> auth
-    alb --> market
-    ledger -->|"Service Connect"| auth
-    ledger -->|"Service Connect"| market
+    subgraph do["<span style='padding-right:330px'>DigitalOcean sgp1: VPC 10.64.0.0/20</span>"]
+        lb["Load balancer: ends TLS with Let's Encrypt,<br/>sends only to servers whose /lb-health answers 200"]
 
+        subgraph fw["Firewall: :80 LB only; :22 keys only"]
+            subgraph s2["cs464-app-2, 1 vCPU, 2 GB"]
+                gw2["gateway: nginx, frontend,<br/>routes each subdomain to"]
+                svc2["<span style='background:#DCEBFA'>&nbsp;auth&nbsp;</span> <span style='background:#DFF2E1'>&nbsp;market&nbsp;</span> <span style='background:#FCEBCF'>&nbsp;ledger&nbsp;</span><br/><span style='background:#ECE3F7'>&nbsp;audit&nbsp;</span> <span style='background:#DDF3F3'>&nbsp;realtime&nbsp;</span>"]
+                gw2 --> svc2
+            end
+            subgraph s1["cs464-app-1, 1 vCPU, 2 GB"]
+                gw1["gateway: nginx, frontend,<br/>routes each subdomain to"]
+                svc1["<span style='background:#DCEBFA'>&nbsp;auth&nbsp;</span> <span style='background:#DFF2E1'>&nbsp;market&nbsp;</span> <span style='background:#FCEBCF'>&nbsp;ledger&nbsp;</span><br/><span style='background:#ECE3F7'>&nbsp;audit&nbsp;</span> <span style='background:#DDF3F3'>&nbsp;realtime&nbsp;</span>"]
+                gw1 --> svc1
+            end
+        end
 
-    auth --> rds
-    market --> rds
-    ledger --> rds
-    audit --> rds
-    ledger -->|"PUBLISH"| redis
-    realtime -->|"SUBSCRIBE"| redis
-    browser ~~~ shared
-    browser ~~~ note
+        valkey[("Managed Valkey 8,<br/>1 GB, 1 node")]
+        pg[("Managed Postgres 17, 2 GB, 1 node, daily backups;<br/>20 connections a server, 40 of about 47")]
+        standby[("not built:<br/>Postgres standby")]
+    end
+
+    browser -->|"https, wss"| lb
+    lb -->|":80, http"| s2
+    lb -->|":80, http"| s1
+
+    s2 --> pg
+    s1 --> pg
+    s2 --> valkey
+    s1 --> valkey
+    s2 ~~~ standby
+
+    env -->|"release.sh, SSH:<br/>release dir, app.env"| fw
+    ghcr -->|"servers pull"| fw
 
     classDef browser  fill:#F2F2F2,stroke:#555555,color:#1A202C
     classDef edge     fill:#FFF4CC,stroke:#9A7B00,color:#1A202C
-    classDef auth     fill:#DCEBFA,stroke:#2F6DB5,color:#1A202C
-    classDef market   fill:#DFF2E1,stroke:#2E8B47,color:#1A202C
-    classDef ledger   fill:#FCEBCF,stroke:#C27C0E,color:#1A202C
-    classDef audit    fill:#ECE3F7,stroke:#7048A8,color:#1A202C
-    classDef realtime fill:#DDF3F3,stroke:#1F8A8A,color:#1A202C
     classDef pg       fill:#E6EBF2,stroke:#3B5068,color:#1A202C
     classDef redis    fill:#FBE0DE,stroke:#C0392B,color:#1A202C
-    classDef job      fill:#FFFFFF,stroke:#4A5568,color:#1A202C,stroke-dasharray:2 2
     classDef planned  fill:#FFFFFF,stroke:#888888,color:#555555,stroke-dasharray:6 4
     classDef ext      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
-    %% Not one of the shared colours: only adds the planned dash to a service colour.
-    classDef notBuilt stroke-dasharray:6 4
 
     class browser browser
-    class cdn,alb,nat edge
-    class auth auth
-    class market market
-    class ledger ledger
-    class audit audit
-    class realtime realtime
-    class rds pg
-    class redis redis
-    class mig,shared planned
-    class note ext
-    class cdn,alb,nat,auth,market,ledger,audit,realtime,rds,redis notBuilt
+    class lb,gw1,gw2 edge
+    class svc1,svc2 ext
+    class pg pg
+    class valkey redis
+    class tf,env,images,ghcr ext
+    class standby,staging,mon,limit planned
+    style gaps stroke-dasharray:6 4,fill:#FFFFFF

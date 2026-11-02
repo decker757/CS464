@@ -4,8 +4,11 @@
 %%   else the issue's parent, else the story tag in the title. 62 PRs with no
 %%   epic anywhere are the last lane; #221's void stack, unlabelled, is under
 %%   resolution. Releases are the [Release] PRs into main, named as their
-%%   titles name them. #19 and #20 are open with no target date, so they are a
-%%   marker on 1 Nov rather than a bar.
+%%   titles name them. The deploy row is outside that window: #19's five PRs,
+%%   #603 to #607, merged into dev on 2026-11-01, and #613 took them to main the
+%%   same day, as did the unrelated #597: neither is in the Releases lane, whose
+%%   labels would collide. Staging (a #19 criterion, ADR 0026) and #20 have no
+%%   target date, so they are a marker at the chart's end rather than a bar.
 %% A bar runs from an epic's first merged PR to its last. It is a span, not
 %% continuous work. FE bars are shaded (`active`), BE bars plain.
 %% Compact mode shares a row between bars that do not overlap, which would pile
@@ -15,7 +18,7 @@
 %% that would collide on different rows (Mermaid fills rows in source order,
 %% hence #577 before #504). The span itself is not drawn. "It." is Iteration,
 %% as the release PRs' titles name them.
-%%{init: {"gantt": {"displayMode": "compact", "barHeight": 18, "barGap": 4}, "themeCSS": ".tick text { font-size: 15px; } .sectionTitle { font-size: 15px; } .taskText, .taskTextOutsideRight, .taskTextOutsideLeft { font-size: 14px; }"}}%%
+%%{init: {"gantt": {"displayMode": "compact", "barHeight": 18, "barGap": 4}, "themeCSS": ".tick text { font-size: 15px; } .sectionTitle { font-size: 15px; } .taskText, .taskTextOutsideRight, .taskTextOutsideLeft { font-size: 14.5px; }"}}%%
 gantt
     dateFormat YYYY-MM-DD
     axisFormat %d %b
@@ -61,5 +64,7 @@ gantt
     #427 It. 5    :milestone, 2026-10-18, 4d
     #577 It. 7    :milestone, 2026-10-27, 4d
     #504 It. 6    :milestone, 2026-10-20, 8d
+    section Deploy #19
+    Shipped 1 Nov, #603 to #607, #613 :milestone, 2026-11-01, 0d
     section Still open
-    #19 deploy, #20 load test, no date set :crit, milestone, 2026-11-01, 0d
+    Staging, #20 load test, no date set :crit, milestone, 2026-11-01, 0d

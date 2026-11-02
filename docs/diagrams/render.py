@@ -37,9 +37,6 @@ GANTT_VIEWPORTS = {"07-gantt": 1000}
 PRINT_WIDTH_CM = 15.9
 POINTS_PER_CM = 72 / 2.54
 
-# architecture-beta diagrams draw AWS icons from this Iconify pack.
-ICON_PACKS = ["@iconify-json/logos"]
-
 
 def mmdc(
     source: Path, target: Path, *, size: int | None = None, scale: float = 1
@@ -55,8 +52,6 @@ def mmdc(
         command += ["--size", str(size)]
     if scale != 1:
         command += ["--scale", str(scale)]
-    if "architecture-beta" in source.read_text(encoding="utf-8"):
-        command += ["--iconPacks", *ICON_PACKS]
     subprocess.run(command, check=True, shell=sys.platform == "win32")
 
 

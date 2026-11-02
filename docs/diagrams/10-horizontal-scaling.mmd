@@ -1,63 +1,58 @@
-%% 10 — Two of every service behind one nginx, locally ([5.4] #440)
-%% Drawn from: ADR 0002, ADR 0010, ADR 0011, ADR 0020, ADR 0021,
-%%   docker-compose.yml, docker-compose.scale.yml, deploy/nginx.conf,
-%%   docs/horizontal-scaling.md, backend/realtime_service/service/bus.py,
-%%   backend/market_service/service/closing.py, backend/ledger_service/service/leaderboard.py
-%% Keep the listeners and services in the order written, 18000 to 18004.
-%%{init: {"elk": {"forceNodeModelOrder": true, "lineHops": false}, "flowchart": {"wrappingWidth": 200}, "themeVariables": {"fontSize": "20px"}}}%%
+%% 10 — Two app servers in production: what scales and what does not ([5.3] #19)
+%% Drawn from: ADR 0011, ADR 0020, ADR 0021, ADR 0026, docs/deployment.md,
+%%   deploy/production/{compose.yml,release.sh,migrate.sh}, infra/terraform/{variables,load_balancer}.tf,
+%%   backend/ledger_service/core/config.py, backend/market_service/service/closing.py,
+%%   DECISIONS.md "Each service's connection pool is a setting, sized to the database's ceiling"
+%% Pool + overflow per server (compose.yml): auth 3+1, market 3+2, ledger 6+3, audit
+%% 1+1 = 20. Two servers 40, plus 3 migrate steps, against about 47 on the 2 GB plan.
+%% LEADERBOARD_REFRESH_ENABLED is true on the first server only (release.sh app_env_for).
+%% The ledger's calls reach auth and market on its own server: compose sets no
+%% MARKET_SERVICE_URL or AUTH_SERVICE_URL, so config.py's defaults name those containers.
+%% The local run of the same idea, one host and one nginx, is docs/horizontal-scaling.md.
+%% ELK lays siblings out in reverse source order here, so app-2 is written first.
+%%{init: {"elk": {"lineHops": false, "forceNodeModelOrder": true, "mergeEdges": true}, "flowchart": {"wrappingWidth": 620, "nodeSpacing": 10, "rankSpacing": 30, "padding": 6}, "themeVariables": {"fontSize": "21px"}}}%%
 flowchart LR
-    client["Browser<br/>or e2e"]
+    client["Browser"]
+    lb["Load balancer:<br/>any server tagged<br/>cs464-app whose<br/>/lb-health answers 200"]
 
-    subgraph local["docker-compose.scale.yml — local, one host"]
-        subgraph proxyBox["proxy: nginx<br/>1 worker, round robin<br/>Upgrade, read 300 s"]
-            direction TB
-            p0["18000 → auth"]
-            p1["18001 → market"]
-            p2["18002 → audit"]
-            p3["18003 → ledger"]
-            p4["18004 → realtime"]
-        end
-
-        auth@{ shape: procs, label: "auth × 2" }
-        market@{ shape: procs, label: "market × 2<br/>sweeper on both:<br/>SKIP LOCKED" }
-        audit@{ shape: procs, label: "audit × 2" }
-        ledger@{ shape: procs, label: "ledger × 2<br/>refresher on both:<br/>advisory lock.<br/>Calls auth, market<br/>direct, not nginx" }
-
-        subgraph realtimeR["realtime × 2, either one"]
-            rt1["realtime-1"]
-            rt2["realtime-2"]
-        end
-
-        authMig["auth-migrate × 1<br/>exit 0 gates both"]
-        marketMig["market-migrate × 1<br/>exit 0 gates both"]
-        ledgerMig["ledger-migrate × 1<br/>exit 0 gates both"]
-
-        db[("Postgres<br/>× 1")]
-        redis[("Redis<br/>× 1")]
+    subgraph s2["cs464-app-2: pool + overflow"]
+        gw2["gateway"]
+        a2["auth 3+1"]
+        m2["market 3+2, sweeper"]
+        l2["ledger 6+3;<br/>calls auth, market here"]
+        u2["audit 1+1"]
+        r2["realtime, no database"]
+        gw2 --> a2
+        gw2 --> m2
+        gw2 --> l2
+        gw2 --> u2
+        gw2 --> r2
     end
 
-    client --> p0
-    client --> p1
-    client --> p2
-    client --> p3
-    client -->|"ws"| p4
+    subgraph s1["cs464-app-1: pool + overflow"]
+        gw1["gateway"]
+        a1["auth 3+1"]
+        m1["market 3+2, sweeper"]
+        l1["ledger 6+3, refresher;<br/>calls auth, market here"]
+        u1["audit 1+1"]
+        r1["realtime, no database"]
+        gw1 --> a1
+        gw1 --> m1
+        gw1 --> l1
+        gw1 --> u1
+        gw1 --> r1
+    end
 
-    p0 --> auth
-    p1 --> market
-    p2 --> audit
-    p3 --> ledger
-    p4 --> realtimeR
+    db[("Postgres × 1<br/>20 + 20 + 3 migrate steps,<br/>of about 47. A third server<br/>needs smaller pools<br/>or a bigger plan")]
+    bus[("Valkey × 1<br/>PUBLISH, SUBSCRIBE")]
 
-    auth --> db
-    market --> db
-    audit --> db
-    ledger --> db
-    ledger -->|"PUBLISH"| redis
-    authMig --> auth
-    marketMig --> market
-    ledgerMig --> ledger
-    rt1 -->|"SUBSCRIBE"| redis
-    rt2 -->|"SUBSCRIBE"| redis
+    client --> lb
+    lb --> s2
+    lb --> s1
+    s2 --> db
+    s1 --> db
+    s2 --> bus
+    s1 --> bus
 
     classDef browser  fill:#F2F2F2,stroke:#555555,color:#1A202C
     classDef edge     fill:#FFF4CC,stroke:#9A7B00,color:#1A202C
@@ -68,19 +63,13 @@ flowchart LR
     classDef realtime fill:#DDF3F3,stroke:#1F8A8A,color:#1A202C
     classDef pg       fill:#E6EBF2,stroke:#3B5068,color:#1A202C
     classDef redis    fill:#FBE0DE,stroke:#C0392B,color:#1A202C
-    classDef job      fill:#FFFFFF,stroke:#4A5568,color:#1A202C,stroke-dasharray:2 2
-    classDef planned  fill:#FFFFFF,stroke:#888888,color:#555555,stroke-dasharray:6 4
-    classDef ext      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
 
     class client browser
-    class p0,p1,p2,p3,p4 edge
-    class auth auth
-    class market market
-    class audit audit
-    class ledger ledger
-    class authMig auth
-    class marketMig market
-    class ledgerMig ledger
-    class rt1,rt2 realtime
+    class lb,gw1,gw2 edge
+    class a1,a2 auth
+    class m1,m2 market
+    class l1,l2 ledger
+    class u1,u2 audit
+    class r1,r2 realtime
     class db pg
-    class redis redis
+    class bus redis

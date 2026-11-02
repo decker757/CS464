@@ -37,8 +37,9 @@ system in the PDF.
 ## Lines
 
 - **Solid**: exists in the code today.
-- **Dashed**, and labelled `planned`: does not exist yet ([5.3] #19 deploy,
-  the AWS design). In a flowchart `-.->|"planned: ..."|`.
+- **Dashed**, and labelled `not built`, or inside a box that says so: does not
+  exist yet (staging, monitoring and the rest in ADR 0026). In a flowchart
+  `-.->|"not built: ..."|`.
 - Dotted is reserved for one other meaning, and only where the diagram
   says so in its legend: a cross-schema id that is not a foreign key (ERDs)
   or INSERT-only access to `audit.admin_actions` (architecture). Never use it
@@ -65,7 +66,8 @@ classDef planned  fill:#FFFFFF,stroke:#888888,color:#555555,stroke-dasharray:6 4
 classDef ext      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
 ```
 
-- `edge` is whatever sits in front of the services: nginx, CloudFront, ALB.
+- `edge` is whatever sits in front of the services: the load balancer, the
+  gateway, nginx.
 - `job` is a background task inside a service (the close sweeper, the
   leaderboard refresher); put it inside or beside its service's colour.
 - Sequence diagrams: participants in the same left-to-right order wherever
@@ -85,15 +87,15 @@ classDef ext      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
 | --- | --- |
 | The five services | `auth`, `market`, `ledger`, `audit`, `realtime` (compose names). Add `:8001` or `market_svc` only where the port or the role is the point |
 | The database | `Postgres`, with schema names `auth`, `market`, `ledger`, `audit` |
-| The bus | `Redis` |
+| The bus | `Valkey` in production, `Redis` locally |
 | The frontend | `Browser` (React SPA) |
-| The proxy | `nginx` locally, `ALB` on AWS |
+| The proxy | `Load balancer` and `gateway` in production, `nginx` in the local scale stack |
 
 ## Rendering gotchas (mmdc 12, Mermaid 12)
 
 - Flowcharts are laid out by ELK. Where one edge hops another, Mermaid
   redraws a dashed or dotted edge solid, so `mermaid.config.json` turns line
-  hops off. Leave it off, or "planned" lines silently become real ones.
+  hops off. Leave it off, or "not built" lines silently become real ones.
 - A bare `%%` line with nothing after it breaks the parser. Use `%% -` as a
   blank line in a comment block.
 - A per-file `%%{init: ...}%%` line after the comment block is fine for
