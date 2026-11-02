@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import replace
 from uuid import uuid4
 
 import pytest
@@ -30,6 +31,13 @@ from unit_test.conftest import TEST_IP, VALID_PASSWORD
 
 WRONG_PASSWORD = "wrong-password-here"
 OTHER_IP = "203.0.113.5"
+FIVE_PER_ACCOUNT_AND_IP = Limit("login-account-ip", 5, 900)
+
+
+@pytest.fixture
+def attempt_limiter(make_limiter: Callable[..., AttemptLimiter]) -> AttemptLimiter:
+    """Five failures per account and address: what these tests count to, whatever .env says."""
+    return make_limiter(login_account_ip=FIVE_PER_ACCOUNT_AND_IP)
 
 
 def _counting(real: Callable, name: str, calls: Counter[str]) -> Callable:
@@ -62,6 +70,7 @@ async def _login(
     limiter: AttemptLimiter,
     identifier: str,
     password: str,
+    *,
     client_ip: str = TEST_IP,
 ) -> User:
     return await auth_service.authenticate(
@@ -76,7 +85,7 @@ async def _fail_login(
     client_ip: str = TEST_IP,
 ) -> None:
     with pytest.raises(InvalidCredentials):
-        await _login(session, limiter, identifier, WRONG_PASSWORD, client_ip)
+        await _login(session, limiter, identifier, WRONG_PASSWORD, client_ip=client_ip)
 
 
 async def test_after_five_failures_even_the_right_password_is_refused_without_hashing(
@@ -142,7 +151,9 @@ async def test_a_success_clears_the_account_counters(
 ) -> None:
     """Both counters are capped at five here, so each one's clear is needed:
     without it the nine attempts below would overrun that counter."""
-    limiter = make_limiter(login_account=Limit("login-account", 5, 3600))
+    limiter = make_limiter(
+        login_account_ip=FIVE_PER_ACCOUNT_AND_IP, login_account=Limit("login-account", 5, 3600)
+    )
     for _ in range(4):
         await _fail_login(session, limiter, "ernest_t")
     await _login(session, limiter, "ernest_t", VALID_PASSWORD)
@@ -159,9 +170,9 @@ async def test_a_lockout_from_one_address_does_not_reach_another(
     for _ in range(5):
         await _fail_login(session, attempt_limiter, "ernest_t", TEST_IP)
     with pytest.raises(TooManyAttempts):
-        await _login(session, attempt_limiter, "ernest_t", VALID_PASSWORD, TEST_IP)
+        await _login(session, attempt_limiter, "ernest_t", VALID_PASSWORD, client_ip=TEST_IP)
 
-    found = await _login(session, attempt_limiter, "ernest_t", VALID_PASSWORD, OTHER_IP)
+    found = await _login(session, attempt_limiter, "ernest_t", VALID_PASSWORD, client_ip=OTHER_IP)
 
     assert found.id == registered_user.id
 
@@ -171,12 +182,14 @@ async def test_failures_spread_across_addresses_hit_the_account_cap(
     registered_user: User,
     make_limiter: Callable[..., AttemptLimiter],
 ) -> None:
-    limiter = make_limiter(login_account=Limit("login-account", 3, 3600))
+    limiter = make_limiter(
+        login_account_ip=FIVE_PER_ACCOUNT_AND_IP, login_account=Limit("login-account", 3, 3600)
+    )
     for address in ["198.51.100.1", "198.51.100.2", "198.51.100.3"]:
         await _fail_login(session, limiter, "ernest_t", address)
 
     with pytest.raises(TooManyAttempts):
-        await _login(session, limiter, "ernest_t", VALID_PASSWORD, "198.51.100.4")
+        await _login(session, limiter, "ernest_t", VALID_PASSWORD, client_ip="198.51.100.4")
 
 
 async def test_one_address_trying_many_usernames_is_refused(
@@ -237,7 +250,10 @@ async def test_concurrent_wrong_logins_cannot_overshoot_the_limit(
     racers = 8
     client = open_redis(get_settings())
     prefix = f"auth:rl:test:{uuid4().hex}"
-    limiter = AttemptLimiter(client, AttemptLimits.from_settings(get_settings()), prefix)
+    limits = replace(
+        AttemptLimits.from_settings(get_settings()), login_account_ip=FIVE_PER_ACCOUNT_AND_IP
+    )
+    limiter = AttemptLimiter(client, limits, prefix)
     factory = get_session_factory()
     barrier = asyncio.Barrier(racers)
 

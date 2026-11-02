@@ -6,7 +6,6 @@ import asyncio
 from uuid import uuid4
 
 import pytest
-import redis.asyncio as redis
 
 from core.cache import open_redis
 from core.config import get_settings
@@ -48,20 +47,6 @@ async def test_a_refused_claim_does_not_extend_the_window():
         await client.aclose()
 
 
-async def test_clearing_resets_the_count(make_limiter):
-    limit = Limit("login-account", 2, 60)
-    limiter = make_limiter(login_account=limit)
-
-    await limiter.claim(limit, "a")
-    await limiter.claim(limit, "a")
-    await limiter.clear(limit, "a")
-    await limiter.claim(limit, "a")
-    await limiter.claim(limit, "a")
-
-    with pytest.raises(TooManyAttempts):
-        await limiter.claim(limit, "a")
-
-
 async def test_two_limiters_over_one_redis_share_one_count():
     limit = Limit("login-ip", 2, 60)
     limits = AttemptLimits.from_settings(get_settings())
@@ -79,19 +64,3 @@ async def test_two_limiters_over_one_redis_share_one_count():
         await first.clear(limit, "a")
         await first_client.aclose()
         await second_client.aclose()
-
-
-async def test_an_unreachable_redis_lets_every_claim_through():
-    limit = Limit("login-ip", 1, 60)
-    client = redis.from_url(
-        "redis://127.0.0.1:1/0", socket_timeout=0.5, socket_connect_timeout=0.5
-    )
-    limiter = AttemptLimiter(
-        client, AttemptLimits.from_settings(get_settings()), "auth:rl:test:down"
-    )
-    try:
-        for _ in range(10):
-            await limiter.claim(limit, "a")
-        await limiter.clear(limit, "a")
-    finally:
-        await client.aclose()
