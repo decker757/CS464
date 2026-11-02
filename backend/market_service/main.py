@@ -18,7 +18,7 @@ from core.config import get_settings
 from core.database import dispose_engine, get_engine, get_session_factory
 from service.sweeper import run_close_sweeper
 
-logging.basicConfig(level=logging.INFO)
+observability.configure_logging()
 logger = logging.getLogger(__name__)
 
 

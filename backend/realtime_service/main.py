@@ -7,7 +7,6 @@ nothing in `sql/`. ADR 0010.
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
@@ -21,7 +20,7 @@ from service.bus import FrameBus
 from service.ordering import get_gate
 from service.subscriptions import get_hub
 
-logging.basicConfig(level=logging.INFO)
+observability.configure_logging()
 
 
 @asynccontextmanager

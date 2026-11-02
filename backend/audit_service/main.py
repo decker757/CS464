@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -18,7 +17,7 @@ from core.database import dispose_engine, get_engine
 # No migrate step, unlike auth, market and ledger: sql/02-schemas.sql creates
 # the table and the superuser owns it. ADR 0006.
 
-logging.basicConfig(level=logging.INFO)
+observability.configure_logging()
 
 
 @asynccontextmanager

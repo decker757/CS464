@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -19,7 +18,7 @@ from core.cache import open_redis
 from core.database import dispose_engine, get_engine
 from service.attempt_limits import AttemptLimiter, AttemptLimits
 
-logging.basicConfig(level=logging.INFO)
+observability.configure_logging()
 
 
 @asynccontextmanager
