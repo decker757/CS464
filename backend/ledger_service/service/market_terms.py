@@ -17,6 +17,7 @@ from decimal import Decimal
 import httpx
 
 from core.config import get_settings
+from core import observability
 from core.errors import (
     LedgerError,
     MarketNotFound,
@@ -284,6 +285,7 @@ def open_client(
         base_url=get_settings().market_service_url,
         transport=transport,
         timeout=_TIMEOUT,
+        event_hooks={"request": [observability.send_request_id]},
     )
 
 

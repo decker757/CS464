@@ -17,6 +17,7 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from core import observability
 from service import closing
 
 logger = logging.getLogger(__name__)
@@ -79,8 +80,11 @@ async def run_close_sweeper(
         batch_limit,
     )
     while True:
-        try:
-            await _drain(session_factory, batch_limit)
-        except Exception:
-            logger.exception("close sweep failed; retrying in %.1fs", interval_seconds)
+        with observability.background_run():
+            try:
+                await _drain(session_factory, batch_limit)
+            except Exception:
+                logger.exception(
+                    "close sweep failed; retrying in %.1fs", interval_seconds
+                )
         await asyncio.sleep(interval_seconds)
