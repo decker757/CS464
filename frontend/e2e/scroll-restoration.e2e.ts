@@ -69,10 +69,11 @@ test('coming back from a market returns the browse list to where it was', async 
   // retries. #502's flake was not a late restore but a wrong one. The market
   // page's jump to the top was recorded as the list's offset, because the
   // list's scroll listener was still attached for a frame after the switch,
-  // so Back "restored" the list to 0 and the browser's own restore clamped it
-  // to a page that was still short (87px in CI). A slow machine opens that
-  // frame: under 6x CPU throttling this failed 4 runs in 10 before the fix
-  // and none in 30 after. ScrollRestoration.test.tsx pins the cause.
+  // so Back "restored" the list to 0, most likely leaving the browser's own
+  // restore to clamp it to a page that was still short (87px in CI). A slow
+  // machine opens that frame: under 6x CPU throttling this failed 4 runs in 10
+  // before the fix and none in 30 after. ScrollRestoration.test.tsx pins the
+  // cause.
 
   // The card the trader was looking at is on screen again, and the list is
   // nowhere near the top — where every Back used to land, a screen and a half
