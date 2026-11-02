@@ -175,7 +175,7 @@ async def authenticate(
 
     Raises TooManyAttempts before any hashing, for a real account and an
     unknown one alike, once `client_ip` or the account has used up its
-    attempts (ADR 0027). Raises InvalidCredentials for a wrong password and an
+    attempts at that identifier (ADR 0027). Raises InvalidCredentials for a wrong password and an
     unknown account alike, and AccountSuspended only after the password is
     proven. Locks the user's row once the password is proven, held until the
     caller commits. May rehash `user.password_hash`, leaving that write pending
@@ -186,9 +186,10 @@ async def authenticate(
 
     user = await _find_by_identifier(session, identifier)
 
-    # Keyed by id, so a username and its email share one count; an unknown
-    # name is counted the same way, so the limit reveals nothing. ADR 0027.
-    account = str(user.id) if user else f"id:{identifier.strip().lower()}"
+    # Keyed by what was typed, known or not, so a locked username says nothing
+    # about which email belongs to it, and an unknown name is refused the same
+    # way as a real one. ADR 0027.
+    account = f"id:{identifier.strip().lower()}"
     account_at_address = f"{account}:{client_ip}"
     await limiter.claim(limits.login_account_ip, account_at_address)
     await limiter.claim(limits.login_account, account)
