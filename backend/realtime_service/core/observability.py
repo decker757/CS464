@@ -1,4 +1,4 @@
-"""Readiness for this service, bound to the shared route. #599
+"""Readiness, JSON logs and request IDs for this service, from shared/. #599
 
 Logs and request IDs are `shared/`'s, bound here to this service's name;
 metrics and traces join in later steps. This service has no
