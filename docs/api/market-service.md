@@ -56,7 +56,8 @@ has not traded it, and why the reason is kept on the market:
 | GET | `/markets` | List my own markets |
 | GET | `/markets/overview` | Every market I can see, a page at a time, by status or question, with counts |
 | GET | `/markets/{id}` | Read one of my own markets |
-| GET | `/health` | Liveness and readiness probe |
+| GET | `/health` | Liveness probe: the process is up |
+| GET | `/ready` | Readiness probe: the database answers. 503 names the one that does not. Not public: the production gateway returns 404 for it (ADR 0028) |
 
 Every `/markets` route requires an **administrator** token. There is no
 unauthenticated read here; the public market API for traders is
