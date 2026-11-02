@@ -16,9 +16,10 @@ anything, and the three alerts first planned for #599 would not have caught
 the outage of 1 November at low traffic.
 
 ADR 0026 left that open. It says `/lb-health` asks the ledger only, and that
-#599 should "alert on each" service. It also wanted `/health` to start
-checking the database, so that "a server that cannot trade should not get
-traffic". This record settles that.
+#599 "should either check every service behind it or alert on each". The
+gateway's `/lb-health` comment from #19 leaned the other way: "a server that
+cannot trade should not get traffic. #599 makes /health check the database."
+This record settles which.
 
 The fact that decides it: the database is one managed instance, shared by every
 server. Taking a server out of the load balancer cannot fix a database that is
