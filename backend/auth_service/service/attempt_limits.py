@@ -5,6 +5,8 @@ add": with that order 200 simultaneous logins all read zero and all run Argon2.
 A success calls `clear` to hand the slots back; a failure just leaves its claim.
 """
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
 
@@ -19,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Limit:
+    """One counter: how many attempts fit in how many seconds."""
+
     name: str
     max_attempts: int
     window_seconds: int
@@ -26,13 +30,16 @@ class Limit:
 
 @dataclass(frozen=True)
 class AttemptLimits:
+    """The four limits the auth service enforces."""
+
     login_account_ip: Limit
     login_account: Limit
     login_ip: Limit
     register_ip: Limit
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "AttemptLimits":
+    def from_settings(cls, settings: Settings) -> AttemptLimits:
+        """Build the four limits from the configured settings."""
         return cls(
             login_account_ip=Limit(
                 "login-account-ip",
@@ -58,6 +65,8 @@ class AttemptLimits:
 
 
 class AttemptLimiter:
+    """Counts attempts in Redis and fails open when Redis is unreachable."""
+
     def __init__(self, client: redis.Redis, limits: AttemptLimits, key_prefix: str) -> None:
         self._client = client
         self.limits = limits
@@ -89,6 +98,7 @@ class AttemptLimiter:
             raise TooManyAttempts(max(ttl, 1))
 
     async def clear(self, limit: Limit, subject: str) -> None:
+        """Reset the count; fails open like `claim`."""
         try:
             await self._client.delete(self._key(limit, subject))
         # Sanctioned fail-open catch, as in `claim` (ADR 0027).

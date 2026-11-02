@@ -1,5 +1,7 @@
 """The Redis client the attempt limiter counts in. [A-2] #600, ADR 0027."""
 
+from __future__ import annotations
+
 import redis.asyncio as redis
 
 from core.config import Settings
