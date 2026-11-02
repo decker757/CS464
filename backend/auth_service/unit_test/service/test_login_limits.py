@@ -147,8 +147,14 @@ async def test_spacing_and_case_variants_of_an_unknown_name_share_one_count(
 @pytest.mark.parametrize(
     "exhausted",
     [
-        {"login_account_ip": Limit("login-account-ip", 1, 900)},
-        {"login_account": Limit("login-account", 1, 3600)},
+        {
+            "login_account_ip": Limit("login-account-ip", 1, 900),
+            "login_account": Limit("login-account", 50, 3600),
+        },
+        {
+            "login_account_ip": FIVE_PER_ACCOUNT_AND_IP,
+            "login_account": Limit("login-account", 1, 3600),
+        },
     ],
     ids=["account-at-address", "account"],
 )
@@ -160,8 +166,9 @@ async def test_a_refused_login_makes_no_database_query(
 ) -> None:
     """#619: the account claims come before the user lookup, so a refusal
     never holds a pooled connection while it waits on Redis. One case per
-    claim, so either moving below the lookup turns this red."""
-    limiter = make_limiter(**exhausted)
+    claim, so either moving below the lookup turns this red. Every other
+    login limit is pinned above one, so only the exhausted one can refuse."""
+    limiter = make_limiter(login_ip=Limit("login-ip", 30, 60), **exhausted)
     await _fail_login(session, limiter, "ernest_t")
     statements: list[str] = []
 
@@ -292,7 +299,7 @@ async def test_concurrent_wrong_logins_cannot_overshoot_the_limit(
     factory = get_session_factory()
     barrier = asyncio.Barrier(racers)
 
-    # The per-address claims finish at different times and would space the
+    # The per-IP (`login_ip`) claims finish at different times and would space the
     # racers out before the account claim, so a read-then-add limiter could
     # pass. Meeting again just before the account-and-address claim, the one
     # capped at five, puts all eight at it together; every claim still runs.
