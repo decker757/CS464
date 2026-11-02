@@ -23,6 +23,7 @@ def restore_logging():
         )
         for name in UVICORN_LOGGERS
     }
+    saved_quiet = {n: logging.getLogger(n).level for n in ("httpx", "httpcore")}
     yield
     root.handlers[:] = saved_handlers
     root.setLevel(saved_level)
@@ -31,6 +32,8 @@ def restore_logging():
         logger.handlers[:] = handlers
         logger.propagate = propagate
         logger.disabled = disabled
+    for name, level in saved_quiet.items():
+        logging.getLogger(name).setLevel(level)
 
 
 def _format(message="hello", *, extra=None, exc_info=None) -> str:
@@ -87,9 +90,18 @@ def test_a_record_is_written_once_as_json(capsys):
 
 
 def test_uvicorn_errors_reach_the_json_handler_and_its_access_log_is_off():
-    logging.getLogger("uvicorn.error").addHandler(logging.NullHandler())
+    for name in ("uvicorn", "uvicorn.error"):
+        # What uvicorn does before it imports the app.
+        logging.getLogger(name).addHandler(logging.NullHandler())
+        logging.getLogger(name).propagate = False
     configure_logging(service="ledger")
     assert logging.getLogger("uvicorn.access").disabled
     for name in ("uvicorn", "uvicorn.error"):
         logger = logging.getLogger(name)
         assert logger.propagate and not logger.handlers
+
+
+def test_httpx_request_lines_are_not_emitted_because_they_carry_the_full_url(capsys):
+    configure_logging(service="ledger")
+    logging.getLogger("httpx").info("HTTP Request: GET http://x/?token=secret-q")
+    assert "secret-q" not in capsys.readouterr().out
