@@ -199,7 +199,12 @@ old name, and going back to it would start it without one.
 
 **Logs:** `ssh deploy@<server>`, `cd /opt/cs464/current`, then
 `docker compose --env-file ../../app.env --env-file release.env logs -f ledger`.
-The logs rotate at 50 MB per container. #599 adds a dashboard.
+The logs rotate at 50 MB per container. The services log JSON, one object per
+line. To follow one request, grep or filter by `request_id`: a response's
+`X-Request-ID` header is the value to search for, in the service logs and in
+the gateway's `rid=`. The gateway stamps an ID when the client sent none, so a
+502 or 504 the gateway answered itself still has a line to find. #599 adds a
+dashboard.
 
 **The client's address:** the gateway resolves it and overwrites
 `X-Forwarded-For` with that one address (`set_real_ip_from` in
