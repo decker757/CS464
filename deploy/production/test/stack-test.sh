@@ -161,18 +161,24 @@ publish() {
   docker tag "$1" "$2"
   docker push -q "$2" > /dev/null
 }
-# "broken" is release one, except that auth's image is the gateway's, which serves on port 80 and never answers auth's health check
-# on 8000. (It was the realtime service until auth, too, was given REDIS_URL,
-# which made that image start cleanly under auth's settings.)
-publish "$registry/cs464-gateway:one" "$registry/cs464-auth:broken"
+# "broken" is release one, except that auth's image is built from the real one
+# with its command replaced by `sleep`: it keeps auth's own HEALTHCHECK, which
+# never passes because nothing listens on 8000.
+build_stand_in() {
+  # build_stand_in <image to push>
+  printf 'FROM %s/cs464-auth:one\nCMD ["sleep", "infinity"]\n' "$registry" \
+    | docker build -q -t "$1" - > /dev/null
+  docker push -q "$1" > /dev/null
+}
+build_stand_in "$registry/cs464-auth:broken"
 # "three" is broken the same way, and also adds a service, `extra`, whose
 # image exists only at tag three. Going back to two with three's files would
 # look for cs464-extra:two, which nobody pushed.
 for service in market ledger audit realtime gateway; do
   push_as three "$service"
 done
-publish "$registry/cs464-gateway:one" "$registry/cs464-auth:three"
-publish "$registry/cs464-gateway:one" "$registry/cs464-extra:three"
+build_stand_in "$registry/cs464-auth:three"
+build_stand_in "$registry/cs464-extra:three"
 
 # --- A server's directory, as the deploy lays it out --------------------
 

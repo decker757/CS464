@@ -149,7 +149,7 @@ Returns the same `AuthResponse` as register.
 
 **Logins are rate-limited, and the limits are settings.** A refused request is
 `429 too_many_attempts` and is refused before the password is checked, so
-**a refused login is refused even with the right password.** Four counters:
+**a refused login is refused even with the right password.** Three counters, plus the registration limit above:
 
 | What is counted | Default | Settings |
 | --- | --- | --- |
