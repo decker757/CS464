@@ -3,4 +3,9 @@
 # /ready names which dependency is down, which is for Alloy, scraping over the
 # private network, and not for the internet. Add a path here to hide it.
 # ADR 0028.
-location = /ready { return 404; }
+# The access_log line is proxy-headers.inc's: without it this location falls
+# back to the image's `combined` format, which logs the query string.
+location = /ready {
+    access_log /var/log/nginx/access.log cs464;
+    return 404;
+}
