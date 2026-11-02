@@ -6,6 +6,9 @@
   keyed per account and IP with a looser cap per account, and this record for
   the auth service's new dependency on Redis. The details below are the #600
   stack's, and its review can reopen any of them.
+- **Amended:** 2026-11-02, by Ernest, after code review: the account counters
+  are keyed by the identifier the user typed, not by user id (see "The account
+  key is what the user typed"). Privacy mattered more than the tighter limit.
 - **Affects:** [BE][A-2] #600, [FE] #601, #599, [5.3] #19, ADR 0010,
   ADR 0026
 - **Implemented in:** the #600 stack: `deploy/production/gateway/` and
@@ -41,7 +44,8 @@ What the code already fixes:
 ## Decision
 
 **The gateway resolves the real client address, once.** The gateway trusts
-`X-Forwarded-For` only from the load balancer's network (the VPC) and takes
+`X-Forwarded-For` only from the load balancer's network (the VPC, our private
+network in the cloud) and takes
 the address the balancer saw. It then overwrites `X-Forwarded-For` with that
 single address instead of appending to it. The services keep reading
 `request.client.host`, which is now the visitor's address and cannot be
@@ -49,31 +53,46 @@ forged. This was done first, in its own PR, and fixes every service, not only
 auth. `deploy/nginx.conf` (the local scale stack) overwrites the header too,
 and trusts nothing.
 
-**Four counters, kept in Redis.** Each is a fixed window.
+**Four counters, kept in Redis.** Each is a fixed window: it starts at the
+first attempt, counts until its time is up, then resets to zero all at once.
 
 | Counter | Counts | Default limit |
 |---|---|---|
-| Failed logins per account and IP | failures | 5 per 900 s |
-| Failed logins per account, any IP | failures | 50 per 3600 s |
+| Failed logins per identifier and IP | failures | 5 per 900 s |
+| Failed logins per identifier, any IP | failures | 50 per 3600 s |
 | Logins per IP | every attempt | 30 per 60 s |
 | Registrations per IP | every attempt | 20 per 3600 s |
 
 Limits and windows are settings. The per-IP limits are generous on purpose,
 because a room of people shares one public IP (campus Wi-Fi, the showcase).
-They stop CPU floods. The per-account limits stop guessing.
+They stop CPU floods. The per-identifier limits stop guessing. An identifier
+is what the user typed in the login box: a username or an email.
 
-**The account key is the user's id.** The identifier is resolved to a user
-first (one indexed query, no hashing), so a username and the email of the same
-user share one count. An identifier that matches no user is keyed
-`id:<identifier.strip().lower()>` and limited the same way.
+**The account key is what the user typed.** Every login, for a real account or
+not, is keyed `id:<identifier.strip().lower()>`. We never look the user up to
+build the key. So a username and the email of the same user do **not** share a
+count, and a known identifier and an unknown one are keyed and answered the
+same way. This was changed on 2026-11-02 (see Amended above). Keyed by user id,
+the shared count was an oracle: lock a public username with five wrong
+passwords from one IP, then try candidate emails from that IP. The email that
+belongs to that user is refused with 429 and every other one gets "wrong
+password". That links a public username to a person's email, and SMU emails
+follow a predictable pattern.
+
+**The per-IP login claim runs first**, before anything else, so a flood from
+one address is refused before it costs a query or a hash.
 
 **Claim the slot first, then compare.** Each check is `INCR` plus `EXPIRE NX`
-in one `MULTI`, then a read of the TTL. If the new count is over the limit, the
+in one `MULTI` (Redis runs the commands together, with nothing in between),
+then a read of the TTL (the seconds left in the window). `EXPIRE NX` sets the
+window's end only when the counter has none yet, so a refused claim cannot
+extend the window. Without it, hammering an account would keep it locked
+forever. If the new count is over the limit, the
 request is refused. "Read, hash, then add" would let 200 simultaneous logins
 all read zero and all run Argon2. Claiming first means exactly `limit` of them
 reach the password check. The failed-login counters therefore reserve a slot
 before the password is checked. A failure leaves it in place. A success clears
-both account counters for that account. The per-IP counters count every
+both account counters for the identifier that succeeded. The per-IP counters count every
 attempt and are never cleared.
 
 **Refused before hashing.** A refused request is `429` with code
@@ -94,23 +113,29 @@ include Redis.
 - **A Redis outage turns the limiter off, and nothing says so.** The warning
   is in the log only. #599 adds a "limiter is off" alert. Until then, an
   outage is noticed only by reading logs.
-- **Residual: one network shares one IP.** Devices behind one NAT (one Wi-Fi
-  network) share a public IP. Someone on the owner's own network can still
+- **Residual: one network shares one IP.** Devices behind one NAT (one router
+  sharing one public address, as a Wi-Fi network does) share a public IP. Someone on the owner's own network can still
   lock that account out for one 15-minute window by failing five times.
+- **Cost of keying by identifier: twice the guesses.** A user who has both a
+  username and an email can be guessed five times through each, per window per
+  IP, so ten instead of five. The any-IP cap is per identifier too. That is
+  still far too few to guess a long Argon2-hashed password, and we accept it
+  to close the oracle above.
 - **Residual: the any-IP cap can be used against an account.** Fifty failures
-  from many addresses lock an account for up to an hour, for everyone,
+  from many addresses lock an identifier for up to an hour, for everyone,
   including its owner. We accept it: that is the price of stopping guessing
   spread across many machines.
 - **A fifth sanctioned catch.** The fail-open catch handles the Redis client's
-  error types and the timeout, never a bare `Exception`. It is added to the
-  list in `backend/CLAUDE.md`.
+  error types and the timeout, never a bare `Exception`. This stack
+  adds it to the list in `backend/CLAUDE.md`.
 - **A production check before the per-IP limits ship.** `stack-test.sh` has no
   real load balancer. Before the limits are released, one real request in a
   gateway's access log must show a `$remote_addr` inside `10.64.0.0/20`, and
   the services must see the visitor's public address. If the balancer connects
   from outside the VPC, every visitor would share one per-IP count and the
-  whole site would be locked out. This goes in `docs/deployment.md` as a
+  whole site would be locked out. This stack adds it to `docs/deployment.md` as a
   one-off post-deploy step.
+- **Release timing.** Build it on `dev`, and release it after the showcase.
 
 ## Alternatives rejected
 
@@ -118,6 +143,10 @@ include Redis.
   log). Anyone could type five wrong passwords for someone else and lock them
   out, again and again. Keyed by account and IP, a stranger locks out only
   their own address.
+- **Account keyed by user id.** A username and its email would share one
+  count, which is tidier. But it is an oracle that links a public username to
+  a private email (see "The account key is what the user typed"). Privacy
+  matters more than the five extra guesses.
 - **Counts in memory.** Each replica would keep its own count, so the allowance
   would multiply by the number of replicas.
 - **Counts in Postgres.** Every attempt would be a write on the shared
