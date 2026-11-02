@@ -61,3 +61,15 @@ async def test_ready_is_200_when_every_dependency_answers():
     response = await _get_ready({"database": _answers(True)})
     assert response.status_code == 200
     assert response.json() == {"status": "ready", "dependencies": {"database": "ok"}}
+
+
+async def test_ready_is_503_when_a_dependency_hangs_past_the_default_timeout():
+    async def hangs_for_three_seconds() -> bool:
+        await asyncio.sleep(3)
+        return True
+
+    started = time.monotonic()
+    response = await _get_ready({"database": hangs_for_three_seconds})
+    assert response.status_code == 503
+    assert response.json()["dependencies"] == {"database": "down"}
+    assert time.monotonic() - started < 2.6
