@@ -103,10 +103,11 @@ DigitalOcean's list prices when `docs/deployment.md` was written. That page says
 | A server's firewall admits port 80 from the load balancer only | `infra/terraform/servers.tf:35-39` |
 | It also admits port 22 from anywhere, keys only, because GitHub's runners have no fixed address | `infra/terraform/servers.tf:29-30,41-45`; `infra/terraform/cloud-init.yaml.tftpl:27-31` |
 | Postgres and Valkey accept only servers tagged `cs464-app`, over the private network | `infra/terraform/databases.tf:1-2,19-25,39-45`; `infra/terraform/outputs.tf:6,91` |
-| Terraform generates the application's secrets: the role passwords, `JWT_SECRET`, the service key, and the SSH keys | `infra/terraform/secrets.tf:5-36` |
+| Terraform generates the application's secrets: the role passwords, `JWT_SECRET`, the service key, and the SSH keys | `infra/terraform/secrets.tf:5-35` |
 | DigitalOcean makes the `doadmin` password and the Valkey URL, and Terraform reads them | `infra/terraform/outputs.tf:45-46,91` |
-| The deploy logs in to GHCR with the run's own `GITHUB_TOKEN`, which is not in the environment | `.github/workflows/deploy.yml:110`; `deploy/production/release.sh:137` |
 | `infra/push-secrets.sh` copies them to the GitHub `production` environment, which accepts `main` only | `infra/push-secrets.sh:32-56` |
+| The deploy logs in to GHCR with the run's own `GITHUB_TOKEN`, which is not in the environment | `.github/workflows/deploy.yml:110`; `deploy/production/release.sh:137` |
 | `release.sh` writes one `app.env` per server on every deploy | `deploy/production/release.sh:85-104,136` |
 | Each role's password is in `app.env`, inside that role's URL, written under `umask 077` | `deploy/production/release.sh:97-100,136`; `infra/terraform/outputs.tf:9` |
-| The admin URL stays out of `app.env`, and reaches a server on stdin only | `deploy/production/release.sh:37,106-114` |
+| The admin URL stays out of `app.env`, and reaches a server on stdin | `deploy/production/release.sh:37,106-114` |
+| While roles are ensured, the admin URL is on `psql`'s command line in a container on the first server. #611 tracks it | `deploy/production/ensure-database.sh:34`; #611 |
