@@ -16,8 +16,8 @@ from decimal import Decimal
 
 import httpx
 
-from core.config import get_settings
 from core import observability
+from core.config import get_settings
 from core.errors import (
     LedgerError,
     MarketNotFound,
