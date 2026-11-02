@@ -702,6 +702,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0024** resting orders fill against the AMM inside the trade that moved the price
 - **0025** voiding a flawed market, by any admin without a stake, refunded at cost
 - **0026** production on DigitalOcean, two or more app servers behind a load balancer, deployed from main
+- **0027** login and registration limits in Redis, per username or email and address, failing open
 
 Four known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`
