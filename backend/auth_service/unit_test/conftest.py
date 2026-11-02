@@ -151,7 +151,7 @@ async def admin_client(client: AsyncClient, session) -> AsyncClient:
 
 
 @pytest.fixture
-async def target_user_id(session) -> str:
+async def target_user_id(session, attempt_limiter) -> str:
     """A trader for an administrator to act on.
 
     Registered through the service layer: a second /auth/register on the
@@ -167,6 +167,8 @@ async def target_user_id(session) -> str:
             email="michelle@example.com",
             password=VALID_PASSWORD,
         ),
+        limiter=attempt_limiter,
+        client_ip=TEST_IP,
     )
     return str(user.id)
 
