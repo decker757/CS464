@@ -310,6 +310,24 @@ function describeValidationErrors(entries: ValidationEntry[], fields: readonly s
   return { fieldErrors, formError }
 }
 
+const SECONDS_PER_MINUTE = 60
+
+/**
+ * The wait a 429's `Retry-After` asks for, as a sentence (auth-service.md).
+ * Whole minutes are rounded up, so the trader is never told to retry early.
+ * A header that is missing or not a positive whole number of seconds says
+ * "a few minutes" rather than guess; the HTTP-date form is not sent here.
+ */
+function describeTooManyAttempts(retryAfter: unknown): string {
+  const seconds = typeof retryAfter === 'string' && /^\d+$/.test(retryAfter) ? Number(retryAfter) : 0
+  if (seconds <= 0) return 'Too many attempts. Try again in a few minutes.'
+  if (seconds < SECONDS_PER_MINUTE) {
+    return `Too many attempts. Try again in ${seconds} ${seconds === 1 ? 'second' : 'seconds'}.`
+  }
+  const minutes = Math.ceil(seconds / SECONDS_PER_MINUTE)
+  return `Too many attempts. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`
+}
+
 /** Turn a failed request into per-field messages, one message for the whole form, or both. */
 export function describeFormError(
   err: unknown,
@@ -322,6 +340,11 @@ export function describeFormError(
   if (Array.isArray(detail)) return describeValidationErrors(detail, fields)
 
   const code = data?.error?.code
+  // The limiter's refusal, for login and register alike. Checked before
+  // codeMessages so a form cannot map it to a wrong-password message.
+  if (code === 'too_many_attempts') {
+    return { fieldErrors: {}, formError: describeTooManyAttempts(err.response?.headers['retry-after']) }
+  }
   if (code && codeMessages[code]) return { fieldErrors: {}, formError: codeMessages[code] }
 
   // A code like duplicate_user normally names its fields in `details`. When
