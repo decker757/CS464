@@ -1,4 +1,4 @@
-"""Can this service reach what it needs? The `/ready` route. [599] #599
+"""Can this service reach what it needs? The `/ready` route. #599
 
 `/ready` is readiness, for dashboards and alerts. `/health` stays liveness, for
 the load balancer and Docker: a database outage cannot be fixed by pulling a
