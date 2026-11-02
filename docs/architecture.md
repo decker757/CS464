@@ -9,7 +9,7 @@ bug.
 
 [The diagram set](#the-diagram-set), at the end, is a second set drawn for the
 final proposal: shorter labels that print at half or full A4 width, and the
-parts these three do not draw — the planned AWS deployment, CI/CD, security,
+parts these three do not draw — the production deployment, CI/CD, security,
 the market lifecycle, settlement, scaling, the live-price fan-out and a
 delivery timeline.
 
@@ -372,7 +372,7 @@ Twelve diagrams for the final proposal. Each `.mmd` in
 ADRs it was drawn from; the images below are its renders, made with
 `python docs/diagrams/render.py` (white background, 1600 px wide, one colour
 per service). [`diagrams/_conventions.md`](diagrams/_conventions.md) has the
-rules: solid for what exists, dashed and labelled "planned" for what does not.
+rules: solid for what exists, dashed and labelled "not built" for what does not.
 The three diagrams above stay the detailed reference; where these and the code
 disagree, the code is right.
 
@@ -380,43 +380,55 @@ disagree, the code is right.
 
 ![System architecture](diagrams/rendered/01-system-architecture.svg)
 
-The browser reaches five FastAPI services through nginx in the scaled stack
-(an ALB on AWS); each service connects as its own Postgres role to its own
-schema, the ledger calls auth and market directly and publishes prices to
-Redis after every commit, and the close sweeper and leaderboard refresher run
-inside their services. `audit_svc` holds INSERT as well as SELECT only so that
-its own suite can seed rows; the audit service has no write route.
-**Drawn from:** ADR 0003, 0006, 0010, 0011, 0017, 0019, 0021, 0022, 0025;
-`docker-compose.yml`, `docker-compose.scale.yml`, `sql/`.
+In production the browser reaches the load balancer, then the gateway on an app
+server, which serves the frontend and sends each subdomain to its service. Each
+service connects as its own Postgres role to its own schema, the ledger calls
+auth and market directly and publishes prices to Valkey after every commit, and
+the close sweeper and leaderboard refresher run inside their services. Locally
+compose publishes one port per service, no gateway runs, and the bus is Redis.
+`audit_svc` holds INSERT as well as SELECT only so that its own suite can seed
+rows; the audit service has no write route.
+**Drawn from:** ADR 0003, 0006, 0010, 0011, 0017, 0019, 0021, 0022, 0025, 0026;
+`deploy/production/`, `infra/terraform/load_balancer.tf`, `docker-compose.yml`,
+`sql/`.
 [Source](diagrams/01-system-architecture.mmd)
 
-### 2. Cloud deployment (planned, #19)
+### 2. Production deployment
 
-![Cloud deployment](diagrams/rendered/02-cloud-deployment.svg)
+![Production deployment](diagrams/rendered/02-cloud-deployment.svg)
 
-Planned AWS deployment, not yet built: CloudFront and S3 serve the SPA, an
-ALB routes each host under one registrable domain to its own service
-across two Availability Zones, and one RDS Postgres and one Redis node
-sit in private subnets behind a one-off bootstrap-and-migrate task that gates
-every rollout. Production deploys from `main`; staging is the same stack
-with its own database, deployed from `staging`. Secrets Manager holds a
-`DATABASE_URL` per role, the `JWT_SECRET` all five share and
-`LEDGER_SERVICE_KEY`; auth's `COOKIE_DOMAIN` must name the parent domain for
-the other hosts to receive the `access_token` cookie.
-**Drawn from:** ADR 0002, 0010, 0011, 0020, 0021; issue #19; `sql/`,
-`backend/*/core/database.py`, `backend/auth_service/core/config.py`.
+Production as built, at <https://predictsmu.xyz>, in DigitalOcean's `sgp1`. The
+load balancer ends TLS with a Let's Encrypt certificate and sends HTTP to port 80
+of each server whose `/lb-health` answers 200, which is the ledger's `/health`
+through the gateway. The firewall admits port 80 from the load balancer only, and
+port 22 from anywhere with keys only, because GitHub's runners have no fixed
+address. Each gateway serves the frontend and routes `auth.`, `market.`,
+`ledger.`, `audit.` and `realtime.` to the containers on its own server. Managed
+Postgres and Valkey accept only servers tagged `cs464-app`, over the private
+network. Terraform generates every secret, `infra/push-secrets.sh` copies them to
+the GitHub `production` environment, and `release.sh` writes `app.env` on each
+server; the admin URL and the role passwords reach a server on stdin only. Dashed
+boxes are what ADR 0026 records as not built.
+**Drawn from:** ADR 0026, 0002, 0010, 0011, 0020, 0021; `infra/terraform/`,
+`infra/push-secrets.sh`, `deploy/production/`, `.github/workflows/deploy.yml`,
+[deployment.md](deployment.md).
 [Source](diagrams/02-cloud-deployment.mmd)
 
 ### 3. CI/CD
 
 ![CI/CD](diagrams/rendered/03-cicd.svg)
 
-CI today (solid): path-filtered backend, frontend and end-to-end workflows on
-every pull request and on pushes to `dev`, `staging` and `main`. The planned
-deploy for `staging` and `main` (dashed, #19) reruns the tests without a path filter, pushes
-images to ECR through OIDC, bootstraps and migrates once, then rolls ECS out
-behind a health check.
-**Drawn from:** `.github/workflows/*`, ADR 0020, issue #19.
+CI runs path-filtered workflows on every pull request and on pushes to `dev`,
+`staging` and `main`. A push to `main`, or a run started by hand on `main`, starts
+the deploy: six images go to GHCR, then `release.sh` copies the release directory
+to each server, ensures the roles and grants and runs each migration once from the
+first server, rolls the servers one at a time, and checks every public name. The
+deploy runs no suite and does not wait for CI; `main` is reached by promoting
+`dev`, where CI has run. A failed roll sends the servers back to the old release,
+unless a server cannot go back, in which case it stays drained and the others stay
+as they are. A failed public check rolls nothing back.
+**Drawn from:** `.github/workflows/*`, `deploy/production/{release,migrate,roll}.sh`,
+ADR 0020, 0026, [deployment.md](deployment.md).
 [Source](diagrams/03-cicd.mmd)
 
 ### 4. Entity-relationship overview
@@ -465,8 +477,10 @@ to subscribed browsers. The detailed version is
 ![Timeline](diagrams/rendered/07-gantt.svg)
 
 297 merged pull requests, 13 September to 29 October 2026: one bar per epic
-from its first to its last merged PR (backend plain, frontend shaded), with
-the releases to `main` and the open deploy (#19) and load-test (#20) work.
+from its first to its last merged PR (backend plain, frontend shaded), with the
+releases to `main`. The deploy (#19) shipped on 1 November: #603 to #607 merged
+into `dev` and #613 took them to `main`. Staging and the load test (#20) are still
+open, with no date.
 **Drawn from:** `gh pr list --state merged` and each PR's issue's `epic:`
 label. [Source](diagrams/07-gantt.mmd)
 
@@ -494,15 +508,21 @@ record.
 **Drawn from:** ADR 0019, 0023; `backend/ledger_service/service/settlement.py`.
 [Source](diagrams/09-settlement-sequence.mmd)
 
-### 10. Horizontal scaling, as run locally
+### 10. Horizontal scaling, in production
 
 ![Horizontal scaling](diagrams/rendered/10-horizontal-scaling.svg)
 
-One nginx listener per service round-robins across two replicas of each,
-both background jobs run safely on every replica, and each migrate step runs
-exactly once before its service starts.
-**Drawn from:** `docker-compose.scale.yml`, `deploy/nginx.conf`,
-[horizontal-scaling.md](horizontal-scaling.md), ADR 0011, 0020, 0021.
+The two app servers run the same services, so a server can be added or replaced;
+Postgres and Valkey stay at one each. Pool and overflow per service add up to 20
+connections a server, so two servers and the three migrate steps use 43 of about
+47, and a third server needs smaller pools or a bigger plan. The close sweeper runs
+on both servers, safely under SKIP LOCKED, and the leaderboard refresher on the
+first only. A server's ledger calls the auth and market on that same server. The
+same idea was first run locally, two replicas behind one nginx, in
+[horizontal-scaling.md](horizontal-scaling.md).
+**Drawn from:** ADR 0011, 0020, 0021, 0026; `deploy/production/`,
+`infra/terraform/variables.tf`, DECISIONS.md "Each service's connection pool is a
+setting, sized to the database's ceiling".
 [Source](diagrams/10-horizontal-scaling.mmd)
 
 ### 11. Live-price fan-out
