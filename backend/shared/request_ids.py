@@ -45,6 +45,14 @@ _request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
 _access_log = logging.getLogger(ACCESS_LOGGER)
 
 
+def _incoming_request_id(scope: Scope) -> str | None:
+    wanted = REQUEST_ID_HEADER.lower().encode("latin-1")
+    for name, value in scope["headers"]:
+        if name == wanted:
+            return value.decode("latin-1")
+    return None
+
+
 def current_request_id() -> str | None:
     return _request_id.get()
 
@@ -75,14 +83,6 @@ def route_template_of(scope: Scope) -> str:
     if route is None:
         return UNMATCHED_ROUTE
     return route.path
-
-
-def _incoming_request_id(scope: Scope) -> str | None:
-    wanted = REQUEST_ID_HEADER.lower().encode("latin-1")
-    for name, value in scope["headers"]:
-        if name == wanted:
-            return value.decode("latin-1")
-    return None
 
 
 class RequestContextMiddleware:
