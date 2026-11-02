@@ -1,3 +1,15 @@
+"""The `/ready` route and its checks, tested once, where they live. #599
+
+Five services answer `/ready` through this module, and one dashboard and one
+alert rule read the answer, so the timeout, the 503 shape and the "ok" /
+"down" words are asserted here directly. No settings and no service.
+
+Each service still tests its own `core/observability.py` seam: `/ready` goes
+503 when its database (realtime: Redis) is unreachable, and `/health` stays
+200. Only a test through that seam notices a service passing the wrong checks.
+ADR 0028.
+"""
+
 import asyncio
 import time
 

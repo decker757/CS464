@@ -67,6 +67,12 @@ async def readiness_of(
 
 
 def add_ready_route(app: FastAPI, checks: Mapping[str, Check]) -> None:
+    """Add `GET /ready` to `app`, answering from `checks` on every request.
+
+    200 with every dependency "ok", or 503 naming each one "down". The checks
+    run per request, each under `READY_TIMEOUT_SECONDS`; nothing is cached.
+    """
+
     @app.get(
         "/ready",
         tags=["ops"],
