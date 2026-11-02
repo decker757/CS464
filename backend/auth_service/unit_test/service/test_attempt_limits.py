@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from uuid import uuid4
 
 import pytest
@@ -25,20 +26,26 @@ async def test_a_claim_over_the_limit_is_refused_with_the_windows_remaining_time
     assert 1 <= refused.value.retry_after_seconds <= 60
 
 
-async def test_a_refused_claim_does_not_extend_the_window(make_limiter):
-    limit = Limit("login-ip", 1, 60)
-    limiter = make_limiter(login_ip=limit)
-    await limiter.claim(limit, "a")
+async def test_a_refused_claim_does_not_extend_the_window():
+    limit = Limit("login-ip", 1, 2)
+    prefix = f"auth:rl:test:{uuid4().hex}"
+    client = open_redis(get_settings())
+    limiter = AttemptLimiter(client, AttemptLimits.from_settings(get_settings()), prefix)
+    key = f"{prefix}:{limit.name}:a"
+    try:
+        await limiter.claim(limit, "a")
+        # Refusals that land in the same instant as the first claim would hide
+        # a window that was reset, so let part of the window pass first.
+        await asyncio.sleep(0.5)
+        for _ in range(3):
+            with pytest.raises(TooManyAttempts):
+                await limiter.claim(limit, "a")
 
-    retry_afters = []
-    for _ in range(5):
-        with pytest.raises(TooManyAttempts) as refused:
-            await limiter.claim(limit, "a")
-        retry_afters.append(refused.value.retry_after_seconds)
-
-    key = f"{limiter._key_prefix}:{limit.name}:a"
-    assert await limiter._client.ttl(key) <= 60
-    assert retry_afters[0] >= retry_afters[-1]
+        remaining_ms = await client.pttl(key)
+        assert 0 < remaining_ms <= limit.window_seconds * 1000 - 400
+    finally:
+        await client.delete(key)
+        await client.aclose()
 
 
 async def test_clearing_resets_the_count(make_limiter):
