@@ -201,20 +201,6 @@ async def test_a_refused_login_is_429_too_many_attempts_with_retry_after(
     assert int(second.headers["Retry-After"]) >= 1
 
 
-async def test_a_refused_registration_is_429_with_retry_after(
-    client: AsyncClient, app, make_limiter, registration_payload: dict[str, str]
-) -> None:
-    app.state.attempt_limiter = make_limiter(register_ip=Limit("register-ip", 1, 3600))
-    other = {**registration_payload, "username": "other_user", "email": "other@example.com"}
-
-    first = await client.post("/auth/register", json=registration_payload)
-    second = await client.post("/auth/register", json=other)
-
-    assert first.status_code == 201
-    assert second.status_code == 429
-    assert int(second.headers["Retry-After"]) >= 1
-
-
 async def test_the_browser_may_read_retry_after(
     client: AsyncClient, app, make_limiter, registration_payload: dict[str, str]
 ) -> None:
@@ -226,6 +212,7 @@ async def test_the_browser_may_read_retry_after(
     refused = await client.post("/auth/register", json=registration_payload, headers=headers)
 
     assert refused.status_code == 429
+    assert int(refused.headers["Retry-After"]) >= 1
     assert "retry-after" in refused.headers["access-control-expose-headers"].lower()
 
 
