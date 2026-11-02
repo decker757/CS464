@@ -455,7 +455,8 @@ checkout. `pytest.ini` says the same with `pythonpath = . ..`.
 
 It holds token verification, the settings base, the role enum, the cursor
 format, the audit writer and `actor_of`, the migration runner (`shared/migrating.py`, ADR
-0020) and the test helpers in `shared/testing.py` (the env loader, the
+0020), the readiness check behind `/ready` (`shared/readiness.py`, ADR
+0028) and the test helpers in `shared/testing.py` (the env loader, the
 import-boundary scan, the migration guard tests' `schema_catalog`,
 `drop_own_tables`, the two `assert_...` round trips and `compose_service`, plus
 `open_audit_reader`, which opens the session the writing services' suites read
