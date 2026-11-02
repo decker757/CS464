@@ -33,6 +33,7 @@ see why the code looks the way it does without reconstructing the argument.
 | [0025](0025-voiding-a-flawed-market.md) | Voiding a flawed market, by any administrator without a stake, refunded at what was paid, ledger first | Accepted |
 | [0026](0026-production-on-digitalocean.md) | Production on DigitalOcean, two or more app servers behind a load balancer, deployed from main | Proposed |
 | [0027](0027-login-rate-limits-in-redis-failing-open.md) | Login and registration limits in Redis, per username or email and address, failing open | Proposed |
+| [0028](0028-liveness-for-the-balancer-readiness-for-alerts.md) | /health is liveness for the load balancer, /ready is readiness for dashboards and alerts | Proposed |
 
 Supersede rather than edit. If a decision changes, add a new record and mark
 the old one superseded, so the reasoning trail survives.
