@@ -42,7 +42,7 @@ system in the PDF.
   `-.->|"not built: ..."|`.
 - Dotted is reserved for one other meaning, and only where the diagram
   says so in its legend: a cross-schema id that is not a foreign key (ERDs)
-  or INSERT-only access to `audit.admin_actions` (architecture). Never use it
+  or INSERT-only access to `audit.admin_actions` (security). Never use it
   decoratively.
 - A denied path is `--x`.
 
@@ -61,7 +61,7 @@ classDef audit    fill:#ECE3F7,stroke:#7048A8,color:#1A202C
 classDef realtime fill:#DDF3F3,stroke:#1F8A8A,color:#1A202C
 classDef pg       fill:#E6EBF2,stroke:#3B5068,color:#1A202C
 classDef redis    fill:#FBE0DE,stroke:#C0392B,color:#1A202C
-classDef job      fill:#FFFFFF,stroke:#4A5568,color:#1A202C,stroke-dasharray:2 2
+classDef job      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
 classDef planned  fill:#FFFFFF,stroke:#888888,color:#555555,stroke-dasharray:6 4
 classDef ext      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
 ```
