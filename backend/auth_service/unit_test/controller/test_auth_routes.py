@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import Request
 from httpx import AsyncClient
+
+from controller import transport
+from service.attempt_limits import Limit
 
 from unit_test.conftest import VALID_PASSWORD
 
@@ -173,3 +177,59 @@ async def test_health_needs_no_credentials(client: AsyncClient) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+# 429 over HTTP. The limiter's rules are tested in service/; these pin the
+# status, the envelope, the header and who may read it. #600
+
+
+async def test_a_refused_login_is_429_too_many_attempts_with_retry_after(
+    client: AsyncClient, app, make_limiter, registration_payload: dict[str, str]
+) -> None:
+    await client.post("/auth/register", json=registration_payload)
+    app.state.attempt_limiter = make_limiter(
+        login_account_ip=Limit("login-account-ip", 1, 900)
+    )
+    wrong = {"identifier": "ernest_t", "password": "not-the-password-at-all"}
+
+    first = await client.post("/auth/login", json=wrong)
+    second = await client.post("/auth/login", json=wrong)
+
+    assert first.status_code == 401
+    assert second.status_code == 429
+    assert second.json()["error"]["code"] == "too_many_attempts"
+    assert int(second.headers["Retry-After"]) >= 1
+
+
+async def test_a_refused_registration_is_429_with_retry_after(
+    client: AsyncClient, app, make_limiter, registration_payload: dict[str, str]
+) -> None:
+    app.state.attempt_limiter = make_limiter(register_ip=Limit("register-ip", 1, 3600))
+    other = {**registration_payload, "username": "other_user", "email": "other@example.com"}
+
+    first = await client.post("/auth/register", json=registration_payload)
+    second = await client.post("/auth/register", json=other)
+
+    assert first.status_code == 201
+    assert second.status_code == 429
+    assert int(second.headers["Retry-After"]) >= 1
+
+
+async def test_the_browser_may_read_retry_after(
+    client: AsyncClient, app, make_limiter, registration_payload: dict[str, str]
+) -> None:
+    # The frontend is on another origin, and Retry-After is not CORS-safelisted.
+    app.state.attempt_limiter = make_limiter(register_ip=Limit("register-ip", 1, 3600))
+    headers = {"Origin": "http://localhost:5173"}
+    await client.post("/auth/register", json=registration_payload, headers=headers)
+
+    refused = await client.post("/auth/register", json=registration_payload, headers=headers)
+
+    assert refused.status_code == 429
+    assert "retry-after" in refused.headers["access-control-expose-headers"].lower()
+
+
+def test_a_request_with_no_client_address_is_keyed_as_unknown() -> None:
+    request = Request({"type": "http", "headers": [], "client": None})
+
+    assert transport.client_ip(request) == "unknown"

@@ -104,10 +104,19 @@ async def session(clean_database):
 
 
 @pytest.fixture
-async def client(clean_database):
+def app(attempt_limiter):
+    """The app with a test limiter. A test needing small limits replaces
+    `app.state.attempt_limiter` before its first request."""
+    application = create_app()
+    application.state.attempt_limiter = attempt_limiter
+    return application
+
+
+@pytest.fixture
+async def client(clean_database, app):
     """An HTTP client bound to the app, for controller-layer tests."""
     async with AsyncClient(
-        transport=ASGITransport(app=create_app()), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
         yield c
 
