@@ -64,21 +64,15 @@ test('coming back from a market returns the browse list to where it was', async 
   await page.goBack()
 
   await expect(marketCard(page, questions[0])).toBeVisible()
-  // Every card's prices in again, as before the scroll: the list mounts afresh
-  // on the way back and re-reads them, and a card is a line shorter until its
-  // snapshot lands (#502).
-  //
-  // This wait is a guess at #502's cause, not a confirmed fix. The flake never
-  // reproduced locally: 20 runs, and 20 more each under four workers, under
-  // eight busy cores and with the batch snapshot delayed. And in both CI
-  // failures the viewport check below retried for its whole five seconds with
-  // the card at ratio 0, in runs of 6.4s and 7.4s from start to finish. So
-  // the list had settled well inside ScrollRestoration's RESTORE_WINDOW_MS,
-  // and a restore that was only late would have passed inside those five
-  // seconds; the page may be restoring to the wrong offset instead.
-  for (const question of questions) {
-    await expect(marketCard(page, question).getByText(/no trades yet/i)).toBeVisible()
-  }
+  // No wait for the prices here, unlike before the scroll: the restore keeps
+  // asking for its offset while the cards fill in, and the viewport check
+  // retries. #502's flake was not a late restore but a wrong one. The market
+  // page's jump to the top was recorded as the list's offset, because the
+  // list's scroll listener was still attached for a frame after the switch,
+  // so Back "restored" the list to 0 and the browser's own restore clamped it
+  // to a page that was still short (87px in CI). A slow machine opens that
+  // frame: under 6x CPU throttling this failed 4 runs in 10 before the fix
+  // and none in 30 after. ScrollRestoration.test.tsx pins the cause.
 
   // The card the trader was looking at is on screen again, and the list is
   // nowhere near the top — where every Back used to land, a screen and a half
