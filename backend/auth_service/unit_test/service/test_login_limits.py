@@ -15,13 +15,13 @@ from uuid import uuid4
 
 import pytest
 import redis.asyncio as redis
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import security
 from core.cache import open_redis
 from core.config import get_settings
-from core.database import get_session_factory
+from core.database import get_engine, get_session_factory
 from core.errors import InvalidCredentials, TooManyAttempts
 from model.entities import User
 from model.schemas import RegisterRequest
@@ -144,6 +144,48 @@ async def test_spacing_and_case_variants_of_an_unknown_name_share_one_count(
         await _fail_login(session, attempt_limiter, "ghost_USER")
 
 
+@pytest.mark.parametrize(
+    "exhausted",
+    [
+        {
+            "login_account_ip": Limit("login-account-ip", 1, 900),
+            "login_account": Limit("login-account", 50, 3600),
+        },
+        {
+            "login_account_ip": FIVE_PER_ACCOUNT_AND_IP,
+            "login_account": Limit("login-account", 1, 3600),
+        },
+    ],
+    ids=["account-at-address", "account"],
+)
+async def test_a_refused_login_makes_no_database_query(
+    session: AsyncSession,
+    registered_user: User,
+    make_limiter: Callable[..., AttemptLimiter],
+    exhausted: dict[str, Limit],
+) -> None:
+    """#619: the account claims come before the user lookup, so a refusal
+    never holds a pooled connection while it waits on Redis. One case per
+    claim, so either moving below the lookup turns this red. Every other
+    login limit is pinned above one, so only the exhausted one can refuse."""
+    limiter = make_limiter(login_ip=Limit("login-ip", 30, 60), **exhausted)
+    await _fail_login(session, limiter, "ernest_t")
+    statements: list[str] = []
+
+    def keep(conn, cursor, statement, parameters, context, executemany) -> None:  # noqa: ANN001
+        statements.append(statement)
+
+    engine = get_engine().sync_engine
+    event.listen(engine, "before_cursor_execute", keep)
+    try:
+        with pytest.raises(TooManyAttempts):
+            await _login(session, limiter, "ernest_t", VALID_PASSWORD)
+    finally:
+        event.remove(engine, "before_cursor_execute", keep)
+
+    assert statements == []
+
+
 async def test_a_success_clears_the_account_counters(
     session: AsyncSession,
     registered_user: User,
@@ -257,19 +299,19 @@ async def test_concurrent_wrong_logins_cannot_overshoot_the_limit(
     factory = get_session_factory()
     barrier = asyncio.Barrier(racers)
 
-    # The user lookups finish at different times and would space the racers
-    # out before the account claim, so a read-then-add limiter passed more
-    # often than not. Meeting again after the lookup puts all eight at the
-    # claim together; the wrapper returns the real lookup's answer.
-    find_by_identifier = auth_service._find_by_identifier
+    # The per-IP (`login_ip`) claims finish at different times and would space the
+    # racers out before the account claim, so a read-then-add limiter could
+    # pass. Meeting again just before the account-and-address claim, the one
+    # capped at five, puts all eight at it together; every claim still runs.
+    claim = limiter.claim
     at_the_claim = asyncio.Barrier(racers)
 
-    async def find_then_meet(session: AsyncSession, identifier: str) -> User | None:
-        user = await find_by_identifier(session, identifier)
-        await at_the_claim.wait()
-        return user
+    async def meet_then_claim(limit: Limit, subject: str) -> None:
+        if limit is limits.login_account_ip:
+            await at_the_claim.wait()
+        await claim(limit, subject)
 
-    monkeypatch.setattr(auth_service, "_find_by_identifier", find_then_meet)
+    monkeypatch.setattr(limiter, "claim", meet_then_claim)
 
     async def wrong_login() -> None:
         async with factory() as own:

@@ -171,29 +171,30 @@ async def authenticate(
     limiter: AttemptLimiter,
     client_ip: str,
 ) -> User:
-    """Return the user these credentials prove. [A-2] #30, #600
+    """Return the user these credentials prove. [A-2] #30, #600, #619
 
-    Raises TooManyAttempts before any hashing, for a real account and an
-    unknown one alike, once `client_ip` or the account has used up its
-    attempts at that identifier (ADR 0027). Raises InvalidCredentials for a wrong password and an
-    unknown account alike, and AccountSuspended only after the password is
-    proven. Locks the user's row once the password is proven, held until the
-    caller commits. May rehash `user.password_hash`, leaving that write pending
-    for the caller.
+    Raises TooManyAttempts before any database query or hashing, for a real
+    account and an unknown one alike, once `client_ip` or the account has used
+    up its attempts at that identifier (ADR 0027). Raises InvalidCredentials
+    for a wrong password and an unknown account alike, and AccountSuspended
+    only after the password is proven. Locks the user's row once the password
+    is proven, held until the caller commits. May rehash `user.password_hash`,
+    leaving that write pending for the caller.
     """
     limits = limiter.limits
     await limiter.claim(limits.login_ip, client_ip)
 
-    user = await _find_by_identifier(session, identifier)
-
     # Keyed by what was typed, known or not, so a locked username says nothing
     # about which email belongs to it, and an unknown name is refused the same
-    # way as a real one. ADR 0027.
+    # way as a real one. ADR 0027. Claimed before the lookup, so a refusal
+    # costs no query and the claims hold no pooled connection. The clears on
+    # a success still run after the lookup.
     account = f"id:{identifier.strip().lower()}"
     account_at_address = f"{account}:{client_ip}"
     await limiter.claim(limits.login_account_ip, account_at_address)
     await limiter.claim(limits.login_account, account)
 
+    user = await _find_by_identifier(session, identifier)
     if user is None:
         # Equalise timing so response latency does not confirm the account exists.
         security.dummy_verify()
