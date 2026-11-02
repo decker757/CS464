@@ -23,3 +23,6 @@ httpx==0.28.1
 asyncpg==0.31.0
 # The readiness tests are async.
 pytest-asyncio==1.4.0
+
+# #599. shared/http_metrics.py: the metrics are tested against a FastAPI app.
+prometheus-client==0.26.0
