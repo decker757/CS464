@@ -57,3 +57,7 @@ def configure_logging(*, service: str, level: int = logging.INFO) -> None:
         logger.handlers.clear()
         logger.propagate = True
     logging.getLogger("uvicorn.access").disabled = True
+
+    # At INFO, httpx logs "HTTP Request: GET <full url>", query string included.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
