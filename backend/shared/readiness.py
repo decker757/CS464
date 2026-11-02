@@ -22,6 +22,8 @@ from fastapi.responses import JSONResponse
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
 
+# A check must catch its own named errors and return False. Only a timeout is
+# turned into "down" for it; any other exception escapes and /ready answers 500.
 Check = Callable[[], Awaitable[bool]]
 
 READY_TIMEOUT_SECONDS = 2.0
@@ -53,7 +55,11 @@ async def readiness_of(
     *,
     timeout_seconds: float = READY_TIMEOUT_SECONDS,
 ) -> dict[str, bool]:
-    """Run every check at once, each under its own timeout. Order is kept."""
+    """Run every check at once, each under its own timeout. Order is kept.
+
+    Only a timeout counts as down. A check that raises anything else is a bug
+    in the check, which must catch its own named errors and return False.
+    """
     answers = await asyncio.gather(
         *(_run_check(check, timeout_seconds) for check in checks.values())
     )
