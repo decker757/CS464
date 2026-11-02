@@ -460,3 +460,33 @@ async def test_the_sweeper_stops_when_cancelled(clean_database: None) -> None:
             await task
 
     assert task.cancelled()
+
+
+async def test_each_sweep_runs_under_its_own_request_id(
+    clean_database: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sweep's log lines share one ID, and the next sweep's do not. #599"""
+    from shared.request_ids import current_request_id  # noqa: PLC0415
+
+    ids: list[str | None] = []
+
+    async def recorder(session: AsyncSession, *, limit: int) -> list[uuid.UUID]:
+        ids.append(current_request_id())
+        return []
+
+    monkeypatch.setattr(closing, "close_due_markets", recorder)
+
+    task = asyncio.create_task(
+        run_close_sweeper(get_session_factory(), interval_seconds=_TICK, batch_limit=7)
+    )
+    try:
+        async with asyncio.timeout(5):
+            while len(ids) < 2:
+                await asyncio.sleep(_TICK)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert len(set(ids[:2])) == 2
+    assert None not in ids
