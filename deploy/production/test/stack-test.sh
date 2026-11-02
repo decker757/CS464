@@ -100,6 +100,12 @@ compose() {
   (cd -P "$work/current" && docker compose --env-file "$work/app.env" --env-file release.env "$@")
 }
 
+is_ready_inside() {
+  # Asked from the gateway container, on the private network, where /ready is
+  # not hidden. ADR 0028.
+  compose exec -T gateway wget -qO- "http://$1:8000/ready" | grep -q '"status":"ready"'
+}
+
 every_image_is_at() {
   # Every image this stack pulled from the registry carries tag $1. The
   # stand-in Postgres and Redis come from Docker Hub and are not counted.
@@ -256,6 +262,8 @@ expect "the bundle was built for https://auth.$domain" \
 
 for service in auth market ledger audit realtime; do
   expect "$service answers on $service.$domain" test "$(status_of "$service.$domain" /health)" = 200
+  expect "$service's /ready is not public" test "$(status_of "$service.$domain" /ready)" = 404
+  expect "$service is ready on the private network" is_ready_inside "$service"
 done
 expect "an unknown host name gets 404" test "$(status_of nobody.test /health)" = 404
 

@@ -24,4 +24,5 @@ FROM nginx:1.29-alpine
 # The image renders templates/*.template into conf.d/ when it starts.
 COPY deploy/production/gateway/default.conf.template /etc/nginx/templates/
 COPY deploy/production/gateway/proxy-headers.inc /etc/nginx/conf.d/
+COPY deploy/production/gateway/private-paths.inc /etc/nginx/conf.d/
 COPY --from=frontend /frontend/dist /usr/share/nginx/html

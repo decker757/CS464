@@ -39,8 +39,12 @@ server {
 
     # What the load balancer asks. 503 while roll.sh is draining this server,
     # so the balancer stops sending it traffic before anything restarts.
-    # Otherwise the ledger's answer: a server that cannot trade should not
-    # get traffic. #599 makes /health check the database.
+    # Otherwise the ledger's liveness: is the process up. Not its readiness.
+    # The database is one managed instance shared by every server, so taking
+    # servers out can never fix it. It would only turn "trades fail with an
+    # error" into the balancer's bare 503 for the whole site, homepage
+    # included, and make a deploy during a blip roll back. Readiness feeds the
+    # dashboard and the alerts instead. ADR 0028.
     location = /lb-health {
         if (-f /etc/nginx/drain/on) {
             return 503;
@@ -90,6 +94,7 @@ server {
         proxy_pass $upstream;
         include /etc/nginx/conf.d/proxy-headers.inc;
     }
+    include /etc/nginx/conf.d/private-paths.inc;
 }
 
 server {
@@ -100,6 +105,7 @@ server {
         proxy_pass $upstream;
         include /etc/nginx/conf.d/proxy-headers.inc;
     }
+    include /etc/nginx/conf.d/private-paths.inc;
 }
 
 server {
@@ -110,6 +116,7 @@ server {
         proxy_pass $upstream;
         include /etc/nginx/conf.d/proxy-headers.inc;
     }
+    include /etc/nginx/conf.d/private-paths.inc;
 }
 
 server {
@@ -120,6 +127,7 @@ server {
         proxy_pass $upstream;
         include /etc/nginx/conf.d/proxy-headers.inc;
     }
+    include /etc/nginx/conf.d/private-paths.inc;
 }
 
 server {
@@ -137,4 +145,5 @@ server {
         proxy_read_timeout 1h;
         proxy_send_timeout 1h;
     }
+    include /etc/nginx/conf.d/private-paths.inc;
 }
