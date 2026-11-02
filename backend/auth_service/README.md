@@ -38,8 +38,8 @@ for the frontend sub-issues #46, #47 and #48.
 ## Tests
 
 ```bash
-docker compose up -d db redis    # from the repo root; the limiter tests need Redis
-.venv/bin/pytest                 # 97 tests
+docker compose up -d db redis    # from the repo root; the suite needs Postgres and Redis
+.venv/bin/pytest
 .venv/bin/pytest unit_test/core  # no database needed
 ```
 
@@ -47,6 +47,10 @@ The suite reads `AUTH_TEST_DATABASE_URL` from the repo-root `.env`, the same
 gitignored file docker compose reads, so no connection string lives in the
 repository. Copy `.env.example` and fill it in once. Exporting the variable
 overrides the file.
+
+It also reads `REDIS_URL` from that file. With Redis unreachable the limiter
+fails open, and the limiter tests fail as `DID NOT RAISE TooManyAttempts`,
+which looks like a code bug and is not one.
 
 | Layer | Tests | Needs Postgres |
 | --- | --- | --- |
