@@ -40,6 +40,14 @@ def _counting(real: Callable, name: str, calls: Counter[str]) -> Callable:
     return count_then_call
 
 
+def _counting_async(real: Callable, name: str, calls: Counter[str]) -> Callable:
+    async def count_then_await(*args: object, **kwargs: object) -> object:
+        calls[name] += 1
+        return await real(*args, **kwargs)
+
+    return count_then_await
+
+
 @pytest.fixture
 def hash_calls(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
     """How many times each hashing function ran, by name."""
@@ -88,15 +96,18 @@ async def test_after_five_failures_even_the_right_password_is_refused_without_ha
     assert hash_calls["verify_password"] == verified_before
 
 
-async def test_a_username_and_its_email_share_one_count(
+async def test_a_locked_username_leaves_its_email_unaffected(
     session: AsyncSession, registered_user: User, attempt_limiter: AttemptLimiter
 ) -> None:
-    for attempt in range(5):
-        identifier = "ernest_t" if attempt % 2 == 0 else "ernest@example.com"
-        await _fail_login(session, attempt_limiter, identifier)
-
+    """Locking a public username must not show which email belongs to it."""
+    for _ in range(5):
+        await _fail_login(session, attempt_limiter, "ernest_t")
     with pytest.raises(TooManyAttempts):
-        await _login(session, attempt_limiter, "ernest@example.com", VALID_PASSWORD)
+        await _login(session, attempt_limiter, "ernest_t", VALID_PASSWORD)
+
+    found = await _login(session, attempt_limiter, "ernest@example.com", VALID_PASSWORD)
+
+    assert found.id == registered_user.id
 
 
 async def test_an_unknown_account_is_refused_the_same_way(
@@ -125,15 +136,20 @@ async def test_spacing_and_case_variants_of_an_unknown_name_share_one_count(
 
 
 async def test_a_success_clears_the_account_counters(
-    session: AsyncSession, registered_user: User, attempt_limiter: AttemptLimiter
+    session: AsyncSession,
+    registered_user: User,
+    make_limiter: Callable[..., AttemptLimiter],
 ) -> None:
+    """Both counters are capped at five here, so each one's clear is needed:
+    without it the nine attempts below would overrun that counter."""
+    limiter = make_limiter(login_account=Limit("login-account", 5, 3600))
     for _ in range(4):
-        await _fail_login(session, attempt_limiter, "ernest_t")
-    await _login(session, attempt_limiter, "ernest_t", VALID_PASSWORD)
+        await _fail_login(session, limiter, "ernest_t")
+    await _login(session, limiter, "ernest_t", VALID_PASSWORD)
     await session.commit()
 
     for _ in range(4):
-        await _fail_login(session, attempt_limiter, "ernest_t")
+        await _fail_login(session, limiter, "ernest_t")
 
 
 async def test_a_lockout_from_one_address_does_not_reach_another(
@@ -178,8 +194,15 @@ async def test_registration_is_refused_per_address_before_hashing(
     session: AsyncSession,
     make_limiter: Callable[..., AttemptLimiter],
     hash_calls: Counter[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     limiter = make_limiter(register_ip=Limit("register-ip", 2, 3600))
+    lookups: Counter[str] = Counter()
+    monkeypatch.setattr(
+        auth_service,
+        "_taken_fields",
+        _counting_async(auth_service._taken_fields, "_taken_fields", lookups),
+    )
 
     def request_for(name: str) -> RegisterRequest:
         return RegisterRequest(
@@ -191,6 +214,7 @@ async def test_registration_is_refused_per_address_before_hashing(
             session, request_for(name), limiter=limiter, client_ip=TEST_IP
         )
     hashed_before = hash_calls["hash_password"]
+    looked_up_before = lookups["_taken_fields"]
 
     with pytest.raises(TooManyAttempts):
         await auth_service.register(
@@ -199,6 +223,7 @@ async def test_registration_is_refused_per_address_before_hashing(
 
     assert hashed_before == 2
     assert hash_calls["hash_password"] == hashed_before
+    assert lookups["_taken_fields"] == looked_up_before
 
 
 async def test_concurrent_wrong_logins_cannot_overshoot_the_limit(
@@ -238,8 +263,9 @@ async def test_concurrent_wrong_logins_cannot_overshoot_the_limit(
             await _login(own, limiter, "ernest_t", WRONG_PASSWORD)
 
     try:
-        outcomes = await asyncio.gather(
-            *(wrong_login() for _ in range(racers)), return_exceptions=True
+        outcomes = await asyncio.wait_for(
+            asyncio.gather(*(wrong_login() for _ in range(racers)), return_exceptions=True),
+            timeout=10,
         )
     finally:
         async for key in client.scan_iter(f"{prefix}:*"):

@@ -159,6 +159,10 @@ async def admin_client(client: AsyncClient, session) -> AsyncClient:
     return client
 
 
+# A documentation-range address (RFC 5737), so no test touches a real one.
+TEST_IP = "198.51.100.7"
+
+
 @pytest.fixture
 async def target_user_id(session, attempt_limiter) -> str:
     """A trader for an administrator to act on.
@@ -180,10 +184,6 @@ async def target_user_id(session, attempt_limiter) -> str:
         client_ip=TEST_IP,
     )
     return str(user.id)
-
-
-# A documentation-range address (RFC 5737), so no test touches a real one.
-TEST_IP = "198.51.100.7"
 
 
 async def _delete_keys(client, prefix: str) -> None:
