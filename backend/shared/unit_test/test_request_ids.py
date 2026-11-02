@@ -130,6 +130,42 @@ async def test_the_id_rides_on_an_outgoing_call():
     assert recorded["x-request-id"] == "outbound-check-1"
 
 
+async def test_an_error_that_escapes_keeps_the_id_for_the_servers_traceback():
+    # What uvicorn's run_asgi does: await the app in a task of its own, and log
+    # "Exception in ASGI application" from the except, through the JSON
+    # formatter, which reads current_request_id() at that moment.
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/boom",
+        "raw_path": b"/boom",
+        "root_path": "",
+        "query_string": b"",
+        "headers": [(b"x-request-id", b"trace-this-500")],
+        "server": ("test", 80),
+        "client": ("client", 1234),
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        pass
+
+    async def serve_like_uvicorn() -> str | None:
+        try:
+            await _build_app()(scope, receive, send)
+        except RuntimeError:
+            return current_request_id()
+        pytest.fail("the route's error should reach the server")
+
+    assert await asyncio.create_task(serve_like_uvicorn()) == "trace-this-500"
+    assert current_request_id() is None
+
+
 def test_each_background_run_gets_its_own_id():
     with background_run() as first:
         assert current_request_id() == first
