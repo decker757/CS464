@@ -8,10 +8,13 @@
 %% The firewall (servers.tf) admits :80 from the load balancer only, and :22 from
 %% anywhere, keys only, because GitHub's runners have no fixed address. The gateway
 %% is the only container publishing a port (compose.yml).
-%% app.env takes the role URLs, JWT_SECRET, LEDGER_SERVICE_KEY and REDIS_URL. The
-%% admin URL and the role passwords reach a server on stdin only (release.sh).
-%% Connections: 20 per server at full overflow (compose.yml), 40 for two, 3 more for
-%% the migrate steps, against about 47 on the 2 GB plan (ADR 0026).
+%% app.env takes the role URLs, with each role's password inside, JWT_SECRET,
+%% LEDGER_SERVICE_KEY and REDIS_URL, under umask 077. Only the admin URL stays out of
+%% it, reaching a server on stdin (release.sh). DigitalOcean makes the doadmin password
+%% and the Valkey URL, which Terraform reads; REGISTRY_TOKEN is the run's GITHUB_TOKEN.
+%% Connections: 20 per server at full overflow (compose.yml), 40 for two, against about
+%% 47 on the 2 GB plan (ADR 0026), which leaves room for the migrate steps. Those run
+%% one after another (migrate.sh), so the 3 in deployment.md is a budget, not a peak.
 %% The VPC title has right padding so the browser arrow misses it. ELK lays
 %% siblings out in reverse source order here, so app-2 is written before app-1.
 %% Mermaid 12 redraws a dashed edge solid where it hops another line; no dashed edges here.
@@ -29,7 +32,7 @@ flowchart TB
     browser["Browser"]
 
     subgraph gaps["Not built (ADR 0026)"]
-        staging["staging: own domain,<br/>own database (#19)"]
+        staging["staging: own domain,<br/>own database; no open issue"]
         limit["login rate<br/>limit (#600)"]
         mon["monitoring, alerts<br/>(#599)"]
         staging ~~~ limit
@@ -39,7 +42,7 @@ flowchart TB
     subgraph do["<span style='padding-right:330px'>DigitalOcean sgp1: VPC 10.64.0.0/20</span>"]
         lb["Load balancer: ends TLS with Let's Encrypt,<br/>sends only to servers whose /lb-health answers 200"]
 
-        subgraph fw["Firewall: :80 LB only; :22 keys only"]
+        subgraph fw["Firewall: :80 LB; :22 open, keys only"]
             subgraph s2["cs464-app-2, 1 vCPU, 2 GB"]
                 gw2["gateway: nginx, frontend,<br/>routes each subdomain to"]
                 svc2["<span style='background:#DCEBFA'>&nbsp;auth&nbsp;</span> <span style='background:#DFF2E1'>&nbsp;market&nbsp;</span> <span style='background:#FCEBCF'>&nbsp;ledger&nbsp;</span><br/><span style='background:#ECE3F7'>&nbsp;audit&nbsp;</span> <span style='background:#DDF3F3'>&nbsp;realtime&nbsp;</span>"]

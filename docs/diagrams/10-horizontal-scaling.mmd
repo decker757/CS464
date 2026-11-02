@@ -43,7 +43,7 @@ flowchart LR
         gw1 --> r1
     end
 
-    db[("Postgres × 1<br/>20 + 20 + 3 migrate steps,<br/>of about 47. A third server<br/>needs smaller pools<br/>or a bigger plan")]
+    db[("Postgres × 1<br/>20 + 20 of about 47,<br/>one migrate step at a time.<br/>A third server needs<br/>smaller pools<br/>or a bigger plan")]
     bus[("Valkey × 1<br/>PUBLISH, SUBSCRIBE")]
 
     client --> lb
