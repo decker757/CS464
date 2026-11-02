@@ -1,4 +1,4 @@
-# ADR 0027: Login and registration limits in Redis, per account and IP, failing open
+# ADR 0027: Login and registration limits in Redis, per username or email and address, failing open
 
 - **Status:** Proposed, 2026-11-02. Accepted when the #600 stack merges.
 - **Date:** 2026-11-02
@@ -129,12 +129,13 @@ include Redis.
   error types and the timeout, never a bare `Exception`. This stack
   adds it to the list in `backend/CLAUDE.md`.
 - **A production check before the per-IP limits ship.** `stack-test.sh` has no
-  real load balancer. Before the limits are released, one real request in a
-  gateway's access log must show a `$remote_addr` inside `10.64.0.0/20`, and
-  the services must see the visitor's public address. If the balancer connects
-  from outside the VPC, every visitor would share one per-IP count and the
-  whole site would be locked out. This stack adds it to `docs/deployment.md` as a
-  one-off post-deploy step.
+  real load balancer. Before the limits are released, follow the one-off step
+  in `docs/deployment.md` ("The client's address"): send one identifiable
+  request from a machine with a known public IP, and the gateway's access log
+  must show exactly that address. Only the load balancer's own `/lb-health`
+  lines show a `10.64.x` address. Anything else means `real_ip` is not working:
+  stop, because every visitor would share one per-address count and the whole
+  site would be locked out. The per-IP limits must not ship until it is fixed.
 - **Release timing.** Build it on `dev`, and release it after the showcase.
 
 ## Alternatives rejected
