@@ -382,7 +382,7 @@ disagree, the code is right.
 
 In production the browser reaches the load balancer, then the gateway on an app
 server, which serves the frontend and sends each subdomain to its service. Each
-service connects as its own Postgres role to its own schema, the ledger calls
+service but realtime connects as its own Postgres role, the ledger calls
 auth and market directly and publishes prices to Valkey after every commit, and
 the close sweeper and leaderboard refresher run inside their services. Locally
 compose publishes one port per service, no gateway runs, and the bus is Redis.
@@ -405,9 +405,11 @@ port 22 from anywhere with keys only, because GitHub's runners have no fixed
 address. Each gateway serves the frontend and routes `auth.`, `market.`,
 `ledger.`, `audit.` and `realtime.` to the containers on its own server. Managed
 Postgres and Valkey accept only servers tagged `cs464-app`, over the private
-network. Terraform generates every secret, `infra/push-secrets.sh` copies them to
-the GitHub `production` environment, and `release.sh` writes `app.env` on each
-server; the admin URL and the role passwords reach a server on stdin only. Dashed
+network. Terraform generates the application's secrets and reads the two that
+DigitalOcean makes, the `doadmin` password and the Valkey URL.
+`infra/push-secrets.sh` copies them to the GitHub `production` environment, and
+`release.sh` writes `app.env` on each server, role passwords included, inside each
+role's URL. Only the admin URL stays out of it, reaching a server on stdin. Dashed
 boxes are what ADR 0026 records as not built.
 **Drawn from:** ADR 0026, 0002, 0010, 0011, 0020, 0021; `infra/terraform/`,
 `infra/push-secrets.sh`, `deploy/production/`, `.github/workflows/deploy.yml`,
@@ -423,10 +425,12 @@ CI runs path-filtered workflows on every pull request and on pushes to `dev`,
 the deploy: six images go to GHCR, then `release.sh` copies the release directory
 to each server, ensures the roles and grants and runs each migration once from the
 first server, rolls the servers one at a time, and checks every public name. The
-deploy runs no suite and does not wait for CI; `main` is reached by promoting
-`dev`, where CI has run. A failed roll sends the servers back to the old release,
-unless a server cannot go back, in which case it stays drained and the others stay
-as they are. A failed public check rolls nothing back.
+deploy runs no suite and does not wait for CI. `main` is normally reached by
+promoting `dev`, but CI is advisory and nothing requires it green. A service that
+does not start or answer `/health` sends the servers back to the old release, unless
+a server cannot go back, in which case it stays drained and the others stay as they
+are. No `/health` reads a database or calls another service, so a release that starts
+but cannot serve is not caught. A failed public check rolls nothing back.
 **Drawn from:** `.github/workflows/*`, `deploy/production/{release,migrate,roll}.sh`,
 ADR 0020, 0026, [deployment.md](deployment.md).
 [Source](diagrams/03-cicd.mmd)
@@ -479,8 +483,9 @@ to subscribed browsers. The detailed version is
 297 merged pull requests, 13 September to 29 October 2026: one bar per epic
 from its first to its last merged PR (backend plain, frontend shaded), with the
 releases to `main`. The deploy (#19) shipped on 1 November: #603 to #607 merged
-into `dev` and #613 took them to `main`. Staging and the load test (#20) are still
-open, with no date.
+into `dev` and #613 took them to `main`; the other pull requests merged after 29
+October are not drawn. Staging and the load test (#20) are still to do, with no
+date. #19 is closed and no open issue tracks staging.
 **Drawn from:** `gh pr list --state merged` and each PR's issue's `epic:`
 label. [Source](diagrams/07-gantt.mmd)
 
@@ -514,8 +519,9 @@ record.
 
 The two app servers run the same services, so a server can be added or replaced;
 Postgres and Valkey stay at one each. Pool and overflow per service add up to 20
-connections a server, so two servers and the three migrate steps use 43 of about
-47, and a third server needs smaller pools or a bigger plan. The close sweeper runs
+connections a server, so two servers use 40 of about 47, which leaves room for the
+migrate steps, run one after another. A third server needs smaller pools or a
+bigger plan. The close sweeper runs
 on both servers, safely under SKIP LOCKED, and the leaderboard refresher on the
 first only. A server's ledger calls the auth and market on that same server. The
 same idea was first run locally, two replicas behind one nginx, in
