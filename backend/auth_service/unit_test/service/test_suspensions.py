@@ -26,8 +26,9 @@ from core.roles import UserRole
 from model.entities import User
 from model.schemas import TokenPair
 from service import auth_service, user_admin
+from service.attempt_limits import AttemptLimiter
 from service.audit import Actor
-from unit_test.conftest import VALID_PASSWORD
+from unit_test.conftest import TEST_IP, VALID_PASSWORD
 from unit_test.service.lock_waits import wait_briefly, wait_until_blocked_on_a_lock
 from unit_test.service.user_rows import admin_row, live_token_count
 
@@ -70,13 +71,15 @@ async def _active_administrators(session: AsyncSession) -> int:
 
 # --- the main flow --------------------------------------------------------
 async def test_a_suspended_user_cannot_log_in(
-    session: AsyncSession, registered_user: User
+    session: AsyncSession, registered_user: User, attempt_limiter: AttemptLimiter
 ) -> None:
     """[4.2] #14: suspension blocks login."""
     await _suspend(session, registered_user.id)
 
     with pytest.raises(AccountSuspended):
-        await auth_service.authenticate(session, "ernest_t", VALID_PASSWORD)
+        await auth_service.authenticate(
+            session, "ernest_t", VALID_PASSWORD, limiter=attempt_limiter, client_ip=TEST_IP
+        )
 
 
 async def test_a_session_from_before_the_suspension_stays_dead_after_unsuspension(
@@ -103,6 +106,7 @@ async def test_a_suspended_user_can_log_in_again_once_unsuspended(
     session: AsyncSession,
     registered_user: User,
     another_administrator: User,
+    attempt_limiter: AttemptLimiter,
     role: UserRole,
 ) -> None:
     """[4.2] #14: reversible. The admin case is the trap in the issue's comment:
@@ -114,7 +118,9 @@ async def test_a_suspended_user_can_log_in_again_once_unsuspended(
 
     await _suspend(session, registered_user.id, suspended=False)
 
-    found = await auth_service.authenticate(session, "ernest_t", VALID_PASSWORD)
+    found = await auth_service.authenticate(
+        session, "ernest_t", VALID_PASSWORD, limiter=attempt_limiter, client_ip=TEST_IP
+    )
     assert found.id == registered_user.id
     assert await _is_suspended(session, registered_user.id) is False
 
@@ -323,7 +329,7 @@ async def test_a_refresh_racing_a_suspension_keeps_no_session(
 
 
 async def test_a_login_racing_a_suspension_is_refused(
-    session: AsyncSession, registered_user: User
+    session: AsyncSession, registered_user: User, attempt_limiter: AttemptLimiter
 ) -> None:
     """DECISIONS.md, "Login decides suspension under the user's row lock".
 
@@ -346,7 +352,13 @@ async def test_a_login_racing_a_suspension_is_refused(
         await suspension.flush()
 
         login = asyncio.create_task(
-            auth_service.authenticate(login_session, "ernest_t", VALID_PASSWORD)
+            auth_service.authenticate(
+                login_session,
+                "ernest_t",
+                VALID_PASSWORD,
+                limiter=attempt_limiter,
+                client_ip=TEST_IP,
+            )
         )
         await wait_until_blocked_on_a_lock(suspension, login_pid)
         await suspension.commit()

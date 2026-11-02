@@ -14,7 +14,9 @@ from controller.errors import register_error_handlers
 from controller.internal_routes import router as internal_router
 from controller.routes import router as auth_router
 from core.config import get_settings
+from core.cache import open_redis
 from core.database import dispose_engine
+from service.attempt_limits import AttemptLimiter, AttemptLimits
 
 logging.basicConfig(level=logging.INFO)
 
@@ -25,6 +27,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # before this process started. ADR 0020.
     yield
     await dispose_engine()
+    await app.state.redis.aclose()
 
 
 def create_app() -> FastAPI:
@@ -48,6 +51,16 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Not CORS-safelisted: without this the browser hides it from the
+        # frontend, which lives on another subdomain.
+        expose_headers=["Retry-After"],
+    )
+
+    app.state.redis = open_redis(settings)
+    app.state.attempt_limiter = AttemptLimiter(
+        app.state.redis,
+        AttemptLimits.from_settings(settings),
+        settings.rate_limit_key_prefix,
     )
 
     register_error_handlers(app)
