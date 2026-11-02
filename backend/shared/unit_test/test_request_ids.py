@@ -1,3 +1,15 @@
+"""Request IDs and the access line, tested once, where they live. #599
+
+Five services take, echo, log and pass on the ID through this one middleware,
+so its promises are asserted here directly: a safe inbound ID is kept, an
+unsafe one is replaced rather than cleaned, one access line names the route
+template and never the raw path, probes write none, and the ID rides on an
+outgoing call. Each service tests its own seam instead: that the middleware
+is installed, and that the ID goes with each call it makes to another service
+and each background run it starts.
+"""
+
+import asyncio
 import logging
 import re
 

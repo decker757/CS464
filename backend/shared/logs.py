@@ -44,6 +44,14 @@ class JsonFormatter(logging.Formatter):
 
 
 def configure_logging(*, service: str, level: int = logging.INFO) -> None:
+    """Send every log line in this process to stdout as JSON, once.
+
+    Changes global logging state: adds one JSON stdout handler to the root
+    logger if it has none, and sets the root level; clears the `uvicorn` and
+    `uvicorn.error` handlers and makes them propagate to it; disables
+    `uvicorn.access`, which the request-ID middleware replaces; and caps
+    `httpx` and `httpcore` at WARNING.
+    """
     root = logging.getLogger()
     already_configured = any(isinstance(h.formatter, JsonFormatter) for h in root.handlers)
     if not already_configured:

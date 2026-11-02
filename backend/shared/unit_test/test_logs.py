@@ -1,3 +1,12 @@
+"""JSON log lines and the logging setup, tested once, where they live. #599
+
+Every service calls `configure_logging` and every line goes through
+`JsonFormatter`, so the line's shape, the field allowlist that keeps a stray
+`extra=` out of the log, the request ID on each line, and a setup that is safe
+to repeat are asserted here directly. Logging is global, so each test puts it
+back as it found it.
+"""
+
 import json
 import logging
 import sys
