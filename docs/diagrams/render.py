@@ -4,9 +4,9 @@
     python docs/diagrams/render.py 04-erd-overview  # one, by name
 
 Needs mmdc (@mermaid-js/mermaid-cli) on PATH, Node and Pillow. Every PNG
-comes out 1600 px wide on white. mmdc's --size caps the longer side, so the
-size passed is worked out from the SVG's own proportions, and Pillow corrects
-the last few pixels of rounding.
+comes out 1600 px wide on white. mmdc's --size caps the longer side and never
+enlarges, so a diagram narrower than the cap is drawn at twice its size and
+Pillow brings it down to 1600, which keeps its text sharp.
 
 Afterwards it prints how large each diagram's text would print if the SVG
 were placed at full A4 text width: 15.9 cm, which is A4 less the guidelines'
@@ -77,7 +77,7 @@ def render(name: str) -> None:
         mmdc(source, svg, size=WIDTH)
         width, height = svg_proportions(svg)
         longer_side = WIDTH if width >= height else round(WIDTH * height / width)
-        mmdc(source, png, size=longer_side)
+        mmdc(source, png, size=longer_side, scale=2)
 
     image = Image.open(png)
     if image.width != WIDTH:
