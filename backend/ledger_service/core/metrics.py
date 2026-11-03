@@ -41,6 +41,7 @@ PUBLISH_FAILURES = Counter(
 
 for _side in Side:
     TRADES_COMMITTED.labels(side=_side.value)
-# The two values of `service/bus.py`'s `PRICE_CHANNEL` and `ORDER_CHANNEL`.
+# The two values of `service/bus.py`'s `PRICE_CHANNEL` and `ORDER_CHANNEL`
+# (core cannot import service); test_business_metrics.py fails if they drift.
 for _channel in ("market.price", "order.update"):
     PUBLISH_FAILURES.labels(channel=_channel)

@@ -17,6 +17,7 @@ from prometheus_client import REGISTRY
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import InsufficientFunds
+from service.bus import ORDER_CHANNEL, PRICE_CHANNEL
 from unit_test.order_fixtures import add_order
 from unit_test.placement_fixtures import limit_upstream, open_at, place
 from unit_test.settlement_fixtures import WINNER, SettleUpstream, hold, settle
@@ -35,8 +36,8 @@ _SERIES = [
     ("ledger_order_fills_total", {}),
     ("ledger_settlements_total", {}),
     ("ledger_voids_total", {}),
-    ("ledger_publish_failures_total", {"channel": "market.price"}),
-    ("ledger_publish_failures_total", {"channel": "order.update"}),
+    ("ledger_publish_failures_total", {"channel": PRICE_CHANNEL}),
+    ("ledger_publish_failures_total", {"channel": ORDER_CHANNEL}),
 ]
 
 
