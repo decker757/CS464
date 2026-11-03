@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
+from core import observability
 from core.config import get_settings
 
 
@@ -40,6 +41,7 @@ def get_engine() -> AsyncEngine:
             # Replace a connection Postgres closed rather than hand it out.
             pool_pre_ping=True,
         )
+        observability.instrument_engine(_engine)
     return _engine
 
 

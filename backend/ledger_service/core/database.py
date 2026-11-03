@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase, Session, SessionTransaction
 
+from core import observability
 from core.config import get_settings
 
 # Created and granted in sql/02-schemas.sql. Named explicitly rather than left
@@ -50,6 +51,7 @@ def get_engine() -> AsyncEngine:
             # handing a dead one to a request.
             pool_pre_ping=True,
         )
+        observability.instrument_engine(_engine)
     return _engine
 
 
