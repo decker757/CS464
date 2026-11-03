@@ -21,8 +21,9 @@ Only the API, the SDK and the FastAPI instrumentation are imported at the top,
 because all five services install them. The exporter and the httpx, SQLAlchemy
 and Redis instrumentations are imported inside the function that needs them.
 The SQLAlchemy and Redis instrumentors are process singletons: `instrument()`
-on one already instrumented is a no-op, so the last engine instrumented is the
-one traced, and Redis keeps the first provider it was given.
+on one already instrumented is a no-op. `instrument_engine` uninstruments first,
+so the last engine instrumented is the one traced; `instrument_redis` does not,
+so Redis keeps the first provider it was given.
 """
 
 from typing import TYPE_CHECKING, Any
@@ -37,13 +38,14 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 from opentelemetry.trace import Span
 
+from shared.request_ids import QUIET_PATHS
+
 if TYPE_CHECKING:
     import httpx
     from sqlalchemy.ext.asyncio import AsyncEngine
 
-# The same three paths as `request_ids.QUIET_PATHS`, as the instrumentation's
-# comma-separated regexes.
-UNTRACED_URLS = "/health$,/ready$,/metrics$"
+# The probe paths, as the instrumentation's comma-separated regexes.
+UNTRACED_URLS = ",".join(f"{path}$" for path in sorted(QUIET_PATHS))
 
 EXPORT_TIMEOUT_SECONDS = 5
 
