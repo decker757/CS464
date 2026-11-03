@@ -12,3 +12,6 @@ asyncpg==0.31.0
 
 # Token verification only. This service never signs.
 PyJWT==2.14.0
+
+# #599. Request and readiness metrics, served at /metrics.
+prometheus-client==0.26.0

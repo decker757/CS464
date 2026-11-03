@@ -1,7 +1,7 @@
-"""Readiness, JSON logs and request IDs for this service, from shared/. #599
+"""Readiness, metrics, logs and request IDs for this service. #599
 
-Logs and request IDs are `shared/`'s, bound here to this service's name;
-metrics and traces join in later steps. The checks and the route are
+Logs, metrics and request IDs are `shared/`'s, bound here to this service's
+name; traces join in a later step. The checks and the route are
 `shared/readiness.py`'s; this file only names the service. ADR 0012, ADR 0028.
 """
 
@@ -11,6 +11,7 @@ from collections.abc import Mapping
 
 from fastapi import FastAPI
 
+from shared.http_metrics import HttpMetricsMiddleware, add_metrics_route
 from shared.logs import configure_logging as _configure_logging
 from shared.readiness import Check, add_ready_route, is_database_reachable
 from shared.request_ids import RequestContextMiddleware
@@ -32,9 +33,14 @@ def configure_logging() -> None:
 
 
 def install(app: FastAPI, *, ready_checks: Mapping[str, Check]) -> None:
-    """Add the observability routes and the request-ID middleware to `app`.
+    """Add the observability routes and middleware to `app`.
 
-    Call it last in `create_app`, so the middleware is the outermost layer.
+    Call it last in `create_app`, after CORS. Each added middleware wraps the
+    ones before it, so the order outermost first is request context, then
+    metrics, then CORS: metrics must wrap CORS or a preflight, which CORS
+    answers by itself, would never be counted.
     """
     add_ready_route(app, ready_checks)
+    add_metrics_route(app, ready_checks)
+    app.add_middleware(HttpMetricsMiddleware)
     app.add_middleware(RequestContextMiddleware)
