@@ -19,7 +19,8 @@ def test_a_response_carries_a_request_id(client: TestClient) -> None:
 
 def test_metrics_serves_this_service_s_traffic_and_readiness(client: TestClient) -> None:
     # This service's only HTTP routes are probes, which get no metric, so the
-    # one request that is counted is one no route matched.
+    # one request that is counted is one with no route template: FastAPI's docs
+    # page is a Starlette route, so it is labelled unmatched.
     client.get("/docs")
 
     body = client.get("/metrics").text
