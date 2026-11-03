@@ -6,6 +6,13 @@ the time-series database without limit, and a scanner inventing paths could
 make it do so on purpose. The probe paths in `QUIET_PATHS` get no HTTP metric
 at all, or a health check every few seconds would drown the traffic.
 
+FastAPI's own pages (`/docs`, `/openapi.json`, `/redoc`) are plain Starlette
+routes with no route template, so they are labelled `unmatched` too.
+
+It clears ADR 0012's bar because the metric names and labels are read by one
+dashboard and five alerts, so two copies drifting apart would break every
+query: a divergence would be a bug, not a design choice.
+
 `/metrics` is never published by the proxy (the design's "/metrics stays
 private"): Alloy scrapes it on the private network.
 
@@ -28,6 +35,10 @@ from shared.request_ids import QUIET_PATHS, route_template_of
 
 # Without these, every metric also exports a `_created` timestamp series.
 prometheus_client.disable_created_metrics()
+
+# A label value must come from a fixed set, or an outsider sending `PROPFIND`
+# (a 405 still carries the matched route) multiplies series past the budget.
+STANDARD_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
 
 HTTP_BUCKETS = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)
 
@@ -71,8 +82,9 @@ class HttpMetricsMiddleware:
         finally:
             # The router has put the matched route in `scope` by now.
             route = route_template_of(scope)
-            REQUESTS.labels(scope["method"], route, str(status)).inc()
-            LATENCY.labels(scope["method"], route).observe(
+            method = scope["method"] if scope["method"] in STANDARD_METHODS else "other"
+            REQUESTS.labels(method, route, str(status)).inc()
+            LATENCY.labels(method, route).observe(
                 time.perf_counter() - started
             )
 
