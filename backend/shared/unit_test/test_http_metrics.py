@@ -169,3 +169,14 @@ def test_a_websocket_is_never_counted():
     assert REGISTRY.get_sample_value(
         "http_requests_total", {"method": "GET", "route": "/ws", "status": "200"}
     ) is None
+
+
+async def test_a_non_standard_method_is_counted_as_other():
+    labels = {"method": "other", "route": "/items/{item_id}", "status": "405"}
+    before = _reading("http_requests_total", **labels)
+
+    await _get(_wrapped(_app()), "/items/42", method="PROPFIND")
+
+    assert _reading("http_requests_total", **labels) - before == 1
+    raw_method = {"method": "PROPFIND", "route": "/items/{item_id}", "status": "405"}
+    assert REGISTRY.get_sample_value("http_requests_total", raw_method) is None
