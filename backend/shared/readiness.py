@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
@@ -60,9 +61,12 @@ async def readiness_of(
     Only a timeout counts as down. A check that raises anything else is a bug
     in the check, which must catch its own named errors and return False.
     """
-    answers = await asyncio.gather(
-        *(_run_check(check, timeout_seconds) for check in checks.values())
-    )
+    # `/ready` itself is not traced, so a check's `SELECT 1` or `PING` would be a
+    # root trace of its own, every 15 seconds, from every server.
+    with suppress_instrumentation():
+        answers = await asyncio.gather(
+            *(_run_check(check, timeout_seconds) for check in checks.values())
+        )
     return dict(zip(checks, answers))
 
 

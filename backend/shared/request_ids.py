@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from opentelemetry import trace
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -96,6 +97,9 @@ class RequestContextMiddleware:
 
         request_id = accepted_request_id(_incoming_request_id(scope))
         token = _request_id.set(request_id)
+        # The tracing middleware sits outside this one, so its server span is
+        # current here: a span found in a trace leads to its log lines.
+        trace.get_current_span().set_attribute("request_id", request_id)
         if scope["type"] == "websocket":
             await self.app(scope, receive, send)
         else:

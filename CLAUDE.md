@@ -458,7 +458,8 @@ format, the audit writer and `actor_of`, the migration runner (`shared/migrating
 0020), the readiness check behind `/ready` (`shared/readiness.py`, ADR
 0028), the request-ID middleware and context (`shared/request_ids.py`), the
 JSON log formatter and setup (`shared/logs.py`), the HTTP metrics and
-`/metrics` route (`shared/http_metrics.py`) and the test helpers in
+`/metrics` route (`shared/http_metrics.py`), the tracing setup
+(`shared/tracing.py`) and the test helpers in
 `shared/testing.py` (the env loader, the import-boundary scan, the migration
 guard tests' `schema_catalog`, `drop_own_tables`, the two `assert_...` round
 trips and `compose_service`, plus `open_audit_reader`, which opens the session

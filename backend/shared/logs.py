@@ -1,4 +1,4 @@
-"""JSON log lines carrying the request ID, and the one setup every service calls. #599
+"""JSON log lines carrying the request and trace IDs, and the one setup every service calls. #599
 
 One line of JSON per record. Only the fields named here are written: an
 allowlist, so a caller's `extra={"password": ...}` can never reach the log.
@@ -16,6 +16,7 @@ import sys
 from datetime import datetime, timezone
 
 from shared.request_ids import current_request_id
+from shared.tracing import current_trace_id
 
 ACCESS_FIELDS = ("method", "route", "status", "duration_ms")
 
@@ -34,6 +35,7 @@ class JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
             "service": self.service,
             "request_id": current_request_id(),
+            "trace_id": current_trace_id(),
         }
         for field in ACCESS_FIELDS:
             if hasattr(record, field):
