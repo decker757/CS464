@@ -15,6 +15,7 @@ import pytest
 
 from shared.logs import JsonFormatter, configure_logging
 from shared.request_ids import background_run
+from shared.tracing import build_tracer_provider
 
 UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
 
@@ -114,3 +115,12 @@ def test_httpx_request_lines_are_not_emitted_because_they_carry_the_full_url(cap
     configure_logging(service="ledger")
     logging.getLogger("httpx").info("HTTP Request: GET http://x/?token=secret-q")
     assert "secret-q" not in capsys.readouterr().out
+
+
+def test_a_log_line_carries_the_trace_id_of_its_span():
+    provider = build_tracer_provider(service="ledger", endpoint="", sample_ratio=1.0)
+    with provider.get_tracer("test").start_as_current_span("work") as span:
+        inside = json.loads(_format())
+    outside = json.loads(_format())
+    assert inside["trace_id"] == format(span.get_span_context().trace_id, "032x")
+    assert outside["trace_id"] is None
