@@ -1,14 +1,39 @@
-"""The request-ID and metrics middleware, and /metrics, are on the app. #599
+"""The request-ID, metrics and tracing middleware, and /metrics, are on the app.
+#599
 
-What the ID is and what each metric means is `shared/`'s to test; this holds
-only that this service's app carries them, in the right order.
+What the ID is, what each metric means and what a span holds is `shared/`'s to
+test; this holds only that this service's app carries them, in the right order.
 """
 
 from __future__ import annotations
 
 import re
+import time
 
+import pytest
 from fastapi.testclient import TestClient
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+from core import observability
+from unit_test.conftest import bearer
+
+_SECRET = "secret-7f3a"
+_ALLOWED_ORIGIN = "http://localhost:5173"
+
+
+@pytest.fixture(scope="module")
+def _span_recorder() -> InMemorySpanExporter:
+    """On the app's own provider: the instrumentation was given that one."""
+    exporter = InMemorySpanExporter()
+    observability.tracer_provider().add_span_processor(SimpleSpanProcessor(exporter))
+    return exporter
+
+
+@pytest.fixture
+def span_exporter(_span_recorder: InMemorySpanExporter) -> InMemorySpanExporter:
+    _span_recorder.clear()
+    return _span_recorder
 
 
 def test_a_response_carries_a_request_id(client: TestClient) -> None:
@@ -44,3 +69,20 @@ def test_a_cors_preflight_is_counted_as_unmatched(client: TestClient) -> None:
     body = client.get("/metrics").text
 
     assert 'http_requests_total{method="OPTIONS",route="unmatched"' in body
+
+
+def test_a_socket_is_one_span_that_holds_no_query_string(
+    client: TestClient, span_exporter: InMemorySpanExporter
+) -> None:
+    headers = {**bearer(), "origin": _ALLOWED_ORIGIN}
+
+    with client.websocket_connect(f"/ws/prices?q={_SECRET}", headers=headers):
+        pass
+
+    # The app runs in another thread; its span ends when the handler returns.
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not span_exporter.get_finished_spans():
+        time.sleep(0.01)
+    [span] = span_exporter.get_finished_spans()
+    assert span.attributes["http.target"] == "/ws/prices"
+    assert all(_SECRET not in str(value) for value in span.attributes.values())

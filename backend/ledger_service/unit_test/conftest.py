@@ -197,6 +197,36 @@ async def clean_database():
     await dispose_engine()
 
 
+@pytest.fixture(scope="session")
+def _span_recorder():
+    """Every span this process finishes, in memory. #599
+
+    On `observability.tracer_provider()` itself, because that one provider is
+    what the app, the engine, the clients and Redis were instrumented with, and
+    the instrumentors are process-wide: a provider of the test's own would see
+    nothing. Session-scoped so the processor is added once; `span_exporter`
+    empties it per test.
+    """
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: PLC0415
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: PLC0415
+        InMemorySpanExporter,
+    )
+
+    from core import observability  # noqa: PLC0415
+
+    exporter = InMemorySpanExporter()
+    observability.tracer_provider().add_span_processor(SimpleSpanProcessor(exporter))
+    return exporter
+
+
+@pytest.fixture
+def span_exporter(_span_recorder):
+    """The spans finished during this test, and none from before it."""
+    _span_recorder.clear()
+    yield _span_recorder
+    _span_recorder.clear()
+
+
 @pytest.fixture
 async def audit_reader():
     """The audit log, read as `audit_svc`: `ledger_svc` holds INSERT on it and no SELECT."""
