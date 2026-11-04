@@ -129,6 +129,8 @@ function existingAccountsOf(adminToken) {
   return accounts
 }
 
+// GET /markets/{id} answers only the market's creator, so ADMIN_IDENTIFIER
+// must be the admin who created the throwaway market.
 function refuseUnlessThrowawayMarket(adminToken) {
   const response = http.get(`${MARKET_URL}/markets/${MARKET_ID}`,
     { ...jsonHeaders(adminToken), tags: { name: 'market' } })
@@ -148,11 +150,14 @@ function snapshotOf(token) {
 
 function loginTrader(username) {
   let response = login(username, TRADER_PASSWORD)
+  if (response.status === 429) {
+    fail(`${username}: login refused 429 too_many_attempts. Raise LOGIN_SPACING_SECONDS, or wait a minute`)
+  }
   if (response.status === 401) {
     response = register(username)
-  }
-  if (response.status === 429) {
-    fail(`${username}: 429 too_many_attempts. Registering 50 accounts from one address takes three hours: docs/load-test.md, "The first run"`)
+    if (response.status === 429) {
+      fail(`${username}: registration refused 429 too_many_attempts. Registering 50 accounts from one address takes three hours: docs/load-test.md, "The first run"`)
+    }
   }
   if (response.status !== 200 && response.status !== 201) {
     fail(`${username} could not log in or register: ${response.status} ${errorCodeOf(response)}`)

@@ -31,6 +31,7 @@ mkdir -p "$here/results"
 result="$here/results/$(date -u +%Y%m%dT%H%M%SZ).txt"
 # `-e NAME` with no value passes the variable through if it is set. tee -i
 # ignores Ctrl-C, so k6's summary and teardown still reach the terminal.
+set +e
 docker run --rm -i \
   -e DOMAIN -e AUTH_URL -e MARKET_URL -e LEDGER_URL -e MARKET_ID -e ADMIN_IDENTIFIER \
   -e USERS -e DURATION -e LOGIN_SPACING_SECONDS \
@@ -39,4 +40,13 @@ docker run --rm -i \
   -v "$trader_password_file:/secrets/trader-password:ro" \
   --add-host host.docker.internal:host-gateway \
   grafana/k6:2.3.0 run /scripts/trade.js 2>&1 | tee -i "$result"
+status=${PIPESTATUS[0]}
+set -e
 echo "run.sh: saved to $result"
+# 99 is a threshold crossed: the run finished and cleaned up. Anything else
+# may have stopped it during setup, where k6 runs no cleanup at all.
+if [[ $status -ne 0 && $status -ne 99 ]]; then
+  echo "run.sh: k6 stopped early ($status). If it was still in setup, some accounts may be" >&2
+  echo "        unsuspended; suspend them with: USERS=50 DURATION=1s loadtest/run.sh" >&2
+fi
+exit "$status"
