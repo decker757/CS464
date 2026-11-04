@@ -6,6 +6,7 @@ bound to this service's settings below. ADR 0012.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets
 import uuid
@@ -31,23 +32,29 @@ _DUMMY_HASH = _hasher.hash("timing-equalisation-placeholder")
 # --------------------------------------------------------------------------
 # Passwords
 # --------------------------------------------------------------------------
-def hash_password(plain: str) -> str:
-    return _hasher.hash(plain)
-
-
-def verify_password(stored_hash: str, plain: str) -> bool:
+# Argon2 is CPU-heavy on purpose, so each call runs in a worker thread:
+# argon2-cffi releases the GIL, and the loop keeps serving the limiter's Redis
+# calls and every other request meanwhile. #637
+def _verify_or_false(stored_hash: str, plain: str) -> bool:
     try:
         return _hasher.verify(stored_hash, plain)
     except (VerifyMismatchError, InvalidHashError):
         return False
 
 
-def dummy_verify() -> None:
+async def hash_password(plain: str) -> str:
+    """Return a fresh Argon2id hash of `plain`, computed off the event loop."""
+    return await asyncio.to_thread(_hasher.hash, plain)
+
+
+async def verify_password(stored_hash: str, plain: str) -> bool:
+    """True if `plain` matches; False for a mismatch or a corrupt hash."""
+    return await asyncio.to_thread(_verify_or_false, stored_hash, plain)
+
+
+async def dummy_verify() -> None:
     """Burn the same CPU as a real verify, for the unknown-account path."""
-    try:
-        _hasher.verify(_DUMMY_HASH, "wrong")
-    except VerifyMismatchError:
-        pass
+    await asyncio.to_thread(_verify_or_false, _DUMMY_HASH, "wrong")
 
 
 def needs_rehash(stored_hash: str) -> bool:
