@@ -317,7 +317,8 @@ receives nothing.
 
 **Alloy cannot break a deploy.** It is started last, as best effort. If it
 will not start or keeps restarting, the roll prints a warning and carries on.
-A wrong token or a wrong URL ending is quieter: Alloy runs, the deploy is
+The server then stops sending metrics, and `cs464-service-down` emails about
+it within about 8 minutes. A wrong token or a wrong URL ending is quieter: Alloy runs, the deploy is
 green, and Grafana shows no data. Alloy's log on a server says why: in
 `/opt/cs464/current`, run
 `docker compose --profile observability --env-file ../../app.env --env-file release.env logs --tail 100 alloy`.
@@ -351,13 +352,22 @@ name the datasource `grafanacloud-prom`, a Grafana Cloud stack's own
 Prometheus. Check yours under *Connections*, *Data sources*: the UID is the
 last part of the Prometheus one's URL.
 
-How to import the alerts is still to be confirmed on our stack. It is one of
-these two, and this paragraph will say which:
+`cs464-service-down` also fires for a server that has stopped sending
+metrics: one seen in the last hour and silent now. If that server stays
+silent, the alert clears by itself about an hour after it went quiet.
+Removing a server on purpose, by lowering `app_server_count`, pages once.
 
-- the UI's import of a provisioning file, under *Alerting*, *Alert rules*;
-- `POST /api/v1/provisioning/alert-rules`, once per rule, with a
-  short-lived service-account token (`Authorization: Bearer <token>`).
-  Delete the token afterwards.
+How to import the alerts is still to be confirmed on our stack, and this
+paragraph will say which way works. The file is YAML for file provisioning,
+so the API cannot take it as it is. The options:
+
+- the UI's import of a provisioning file, under *Alerting*, *Alert rules*,
+  if the stack offers one;
+- the API, with a short-lived service-account token
+  (`Authorization: Bearer <token>`): the whole group as JSON to
+  `PUT /api/v1/provisioning/folder/<folder uid>/rule-groups/cs464`, or one
+  rule at a time as JSON to `POST /api/v1/provisioning/alert-rules`. Delete
+  the token afterwards.
 
 **Linking a log line to its trace.** *Connections*, *Data sources*, the Loki
 one, *Derived fields*, *Add*. Name it `trace_id`, with the regex
@@ -381,10 +391,13 @@ The services' own JSON log lines carry no IP.
 
 **Things that look wrong and are not:**
 
-- `release.sh` sets each service's `TRACING_ENDPOINT` to the local Alloy,
-  `http://alloy:4318/v1/traces`. It must be the full path, ending in
-  `/v1/traces`. A wrong one breaks nothing else: the service's log just shows
-  OpenTelemetry warnings that it is dropping spans.
+- A trace makes two hops, and the two addresses end differently. Service to
+  the local Alloy: `release.sh` sets `TRACING_ENDPOINT` to
+  `http://alloy:4318/v1/traces`, which must be the full path, ending in
+  `/v1/traces`. Alloy to Grafana Cloud: `GRAFANA_OTLP_URL` is the base
+  address ending in `/otlp`, and Alloy adds `/v1/traces` itself (first-time
+  setup, step 4). A wrong `TRACING_ENDPOINT` breaks nothing else: the
+  service's log just shows OpenTelemetry warnings that it is dropping spans.
 - Background work makes small traces with no request behind them: the close
   sweep, every 10 s on each server, and the leaderboard refresh, every 60 s
   on the first server. In Tempo, `{ kind = server }` shows requests only.
@@ -412,8 +425,9 @@ that carries this work. That deploy comes only after the showcase.
 3. Trigger `cs464-service-down` once. **Ask Ernest before you SSH.** On one
    server, in `/opt/cs464/current`, run
    `docker compose --env-file ../../app.env --env-file release.env stop audit`.
-   Wait 4 minutes, check that the email arrives, then run the same command
-   with `start audit` and check that the alert clears.
+   Wait 6 minutes, and check that the email arrives. It can take a minute
+   more. Then run the same command with `start audit` and check that the
+   alert clears.
 
 ## Scaling
 

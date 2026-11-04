@@ -256,7 +256,7 @@ Five alerts, each emailed to the stack's default contact point:
 | `cs464-5xx-ratio` | more than 5% of a service's requests answer 5xx, while it serves more than 0.1 requests a second | 5 min |
 | `cs464-p95-latency` | a service's p95 latency is over 1 s, while it serves more than 0.1 requests a second | 5 min |
 | `cs464-close-sweep-behind` | no server has finished a close sweep in 60 s, or a live sweeper's lag is over 60 s | 1 min |
-| `cs464-service-down` | a service on a server cannot be scraped or is not ready, or no server is sending metrics at all | 3 min |
+| `cs464-service-down` | a service on a server cannot be scraped, is not ready, or has stopped sending metrics; or no server is sending metrics at all | 3 min |
 | `cs464-login-limiter-off` | the login limiter failed open even once in 5 minutes, because Redis was unreachable | at once |
 
 It costs nothing. The free tier allows 10,000 active series, 50 GB of logs,
