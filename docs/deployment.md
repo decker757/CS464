@@ -389,10 +389,10 @@ still be edited in the UI. The contact point went in the same way. Grafana's
 export of the group matched this file, apart from defaults it fills in
 itself, so the file in the repo is the commented original.
 
-**`cs464-service-down` is paused until the first release.** Until a server
-sends metrics, it has no data, and no data counts as down, so it would email
-every few minutes. Unpausing it is the first step of the post-release
-checklist below.
+**On a new stack, import `cs464-service-down` paused,** or resume it only once
+every server is sending. Until a server sends metrics the rule has no data,
+and no data counts as down, so it would email every few minutes. Ours was
+resumed after #632 reached production.
 
 **Linking a log line to its trace.** Grafana Cloud's own Loki datasource is
 read-only, so it cannot take a derived field. A *correlation* does the same
@@ -449,7 +449,8 @@ Re-measure it on the *Usage* page a week after the first release, and update
 this paragraph.
 
 **Post-release checklist.** Run it once, after the first deploy from `main`
-that carries this work. That deploy comes only after the showcase.
+that carries this work. It was run after #632, on 2026-11-04. What it found
+is under the list.
 
 1. Unpause `cs464-service-down`: *Alerting*, *Alert rules*, *CS464*, the
    rule, *Resume evaluation*. Do it once every server has been sending for
@@ -472,6 +473,18 @@ that carries this work. That deploy comes only after the showcase.
    Wait 6 minutes, and check that the email arrives. It can take a minute
    more. Then run the same command with `start audit` and check that the
    alert clears.
+
+What the first run found (2026-11-04, after #632):
+- Steps 1, 3, 4 and 6 passed. Both servers report every service and
+  dependency.
+- Alloy used 169 MB on `app-1` and 51 MB on `app-2`, so it needs no
+  `mem_limit`.
+- `audit` stopped on `app-1` at 20:08 SGT. The firing email arrived inside
+  six minutes. After the restart at 20:17, the resolved email came within
+  about five, the notification policy's batching interval.
+- The dashboard first opened on the wrong Loki, and the server commands here
+  failed as written. Both were fixed in #634.
+- Steps 2 and 5 wait for the load test's trades (#20).
 
 ## Scaling
 
@@ -504,8 +517,8 @@ today's.
 
 Grafana Cloud's free tier allows 10,000 active series, 50 GB of logs and
 50 GB of traces, kept for 14 days, and 3 users. We expect about 1,900 series
-(the series budget above). Alloy itself costs only a little memory on each
-server. Images on GHCR are free for a public repository. To stop paying, run
+(the series budget above). Alloy itself used 51–169 MB of memory per server
+in its first hour. Images on GHCR are free for a public repository. To stop paying, run
 `infra/tf destroy`. That deletes the database too, so take a backup first if
 anything in it matters.
 
@@ -532,13 +545,7 @@ certificate, and TLS to the managed databases.
   `infra/terraform` would run it as a second workspace. It is not built.
   It needs a registrable domain of its own, not `staging.<domain>`: the
   login cookie reaches every subdomain of the production domain (ADR 0026).
-- **Monitoring's first real check.** The dashboard and the five alerts are
-  built, but have not yet seen production data. The post-release checklist
-  above runs after the first deploy from `main` that carries them.
-- **Re-measuring the series budget.** A week after that release, read the
-  real series count off Grafana Cloud's *Usage* page and update the estimate
-  above and the README.
-- **Login rate limiting in production.** #600 is merged into `dev`, but
-  production deploys only from `main`, after the showcase, so it is not live
-  yet.
+- **Re-measuring the series budget.** Around 2026-11-11, a week after
+  monitoring went live with #632, read the real series count off Grafana
+  Cloud's *Usage* page and update the estimate above and the README.
 - **Load test numbers:** #20, against this deployment.

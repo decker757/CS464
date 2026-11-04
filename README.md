@@ -270,7 +270,7 @@ Five alerts, each emailed to the `cs464-email` contact point:
 
 It costs nothing. The free tier allows 10,000 active series, 50 GB of logs,
 50 GB of traces, 14 days' retention and 3 users, and two servers need about
-1,900 series. Alloy uses a little memory on each server.
+1,900 series. Alloy used 51–169 MB of memory on each server in its first hour (2 GB droplets).
 [`docs/deployment.md`](docs/deployment.md) has the setup, the import steps and
 the series estimate.
 
