@@ -25,6 +25,9 @@
 #    nothing after this step can fail the roll.
 # 6. Undrain, wait for the load balancer to send traffic again, and tidy up.
 #
+# Alloy, which ships to Grafana Cloud, is no part of steps 1 to 4: it is
+# started or removed afterwards, by refresh_alloy, and can only warn.
+#
 # Exit status: 0 on the new release; 1 failed, and on the old release (or
 # none, on a first deploy); 2 failed, and serving nothing.
 set -euo pipefail
@@ -53,9 +56,72 @@ gateway=http://127.0.0.1:${GATEWAY_PORT:-80}
 # shell's value wins over any in an env file.
 export DRAIN_DIR="$root/drain"
 
+compose_with_profiles() {
+  # compose_with_profiles <profiles> <release directory> <compose arguments...>
+  # The shell's COMPOSE_PROFILES wins over app.env's, even when it is empty.
+  (cd "$2" && COMPOSE_PROFILES=$1 docker compose --env-file "$root/app.env" --env-file release.env "${@:3}")
+}
+
 compose_in() {
-  # compose_in <release directory> <compose arguments...>
-  (cd "$1" && docker compose --env-file "$root/app.env" --env-file release.env "${@:2}")
+  # compose_in <release directory> <compose arguments...>: the app services
+  # only. Alloy's profile is off here whatever app.env says, so the pull, the
+  # wait and the way back never involve it. --remove-orphans leaves its
+  # container alone: a service the file defines under an inactive profile is
+  # not an orphan. One the file does not define at all is, so going back to a
+  # release from before Alloy removes it.
+  compose_with_profiles '' "$@"
+}
+
+grafana_is_on() {
+  # release.sh writes this line into app.env exactly when it was given
+  # Grafana Cloud settings.
+  grep -qE '^COMPOSE_PROFILES=(.*,)?observability(,|$)' "$root/app.env"
+}
+
+defines_alloy() {
+  # defines_alloy <release directory>: releases from before #599 do not.
+  local services
+  services=$(compose_with_profiles observability "$1" config --services) || return 1
+  grep -qx alloy <<< "$services"
+}
+
+# A config Alloy cannot load makes it exit within a second, and Docker
+# restarts it; after this long, a crash loop shows as a restart.
+alloy_settle_seconds=5
+
+refresh_alloy() {
+  # refresh_alloy <release directory>: once the server is serving that
+  # release, make Alloy match app.env. Grafana on: start Alloy, or recreate it
+  # if its settings or files changed. Grafana off: remove it, so it stops
+  # shipping with a token the deploy took away.
+  #
+  # Never fatal. Grafana Cloud is optional and not ours, Alloy's image comes
+  # from Docker Hub rather than GHCR, and a deploy that a Grafana outage, a
+  # wrong token or Alloy itself could fail or send back would be an outage of
+  # its own. So every failure here is a warning, and the caller adds `|| ...`,
+  # which also means `set -e` does not apply in here: each step is checked.
+  local directory=$1 container state
+  if ! defines_alloy "$directory"; then
+    return 0
+  fi
+  if ! grafana_is_on; then
+    compose_with_profiles observability "$directory" rm -fs alloy > /dev/null 2>&1 ||
+      echo "roll: WARNING: Grafana is off, but the Alloy container could not be removed" >&2
+    return 0
+  fi
+  echo "roll: starting Alloy"
+  if ! compose_with_profiles observability "$directory" up -d --no-deps --quiet-pull alloy; then
+    echo "roll: WARNING: Alloy did not start; this server is serving, but sends nothing to Grafana" >&2
+    return 0
+  fi
+  sleep "$alloy_settle_seconds"
+  container=$(compose_with_profiles observability "$directory" ps -aq alloy)
+  state=$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$container" 2> /dev/null)
+  if [ "$state" != "true 0" ]; then
+    echo "roll: WARNING: Alloy is not staying up (running, restarts: ${state:-unknown});" \
+      "this server is serving, but sends nothing to Grafana. Alloy's log says why" >&2
+  fi
+  return 0
 }
 
 wait_for_lb_health() {
@@ -112,6 +178,7 @@ if ! compose_in "$release_dir" up -d --wait --wait-timeout "$wait_seconds" --rem
     fi
     rm -f "$DRAIN_DIR/on"
     wait_for_lb_health || echo "roll: WARNING: back on $previous_tag, but /lb-health is not answering" >&2
+    refresh_alloy "$previous_dir" || echo "roll: WARNING: could not refresh Alloy" >&2
   fi
   exit 1
 fi
@@ -128,6 +195,7 @@ if wait_for_lb_health; then
 else
   echo "roll: WARNING: $new_tag is running, but /lb-health is not answering" >&2
 fi
+refresh_alloy "$release_dir" || echo "roll: WARNING: could not refresh Alloy" >&2
 # Rolling the release it was already on leaves nothing to tidy, and tidying
 # would remove the release before, which a deploy may still go back to.
 if [ "$new_tag" != "$previous_tag" ]; then
