@@ -26,7 +26,8 @@
 #   JWT_SECRET LEDGER_SERVICE_KEY, and for each of AUTH MARKET LEDGER AUDIT:
 #   <NAME>_DATABASE_URL and <NAME>_DB_PASSWORD
 # Optional: GRAFANA_CLOUD_TOKEN switches Alloy on, and with it set, these are
-# required as well, so half a group fails before any server is touched:
+# required as well, so half a group fails before any server is touched, and
+# so does a *_URL that is not https:// followed by no whitespace:
 #   GRAFANA_PROMETHEUS_URL GRAFANA_PROMETHEUS_USER GRAFANA_LOKI_URL
 #   GRAFANA_LOKI_USER GRAFANA_OTLP_URL GRAFANA_OTLP_USER
 # test/release-test.sh also sets DEPLOY_SSH, APP_DIR and SKIP_PUBLIC_CHECK.
@@ -54,6 +55,12 @@ if [ -n "${GRAFANA_CLOUD_TOKEN:-}" ]; then
   grafana_on=true
   for name in "${grafana_names[@]}"; do
     : "${!name:?$name is required when GRAFANA_CLOUD_TOKEN is set}"
+    # Alloy cannot load a config with an address it cannot parse, and would
+    # crash on every server. Caught here, nothing has been touched.
+    if [[ $name == *_URL && ! ${!name} =~ ^https://[^[:space:]]+$ ]]; then
+      echo "deploy: $name must be https:// followed by an address with no spaces" >&2
+      exit 1
+    fi
   done
 fi
 
