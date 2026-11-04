@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Iterator, Sequence
 
 import pytest
 from fastapi.testclient import TestClient
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from core import observability
@@ -22,18 +24,39 @@ _SECRET = "secret-7f3a"
 _ALLOWED_ORIGIN = "http://localhost:5173"
 
 
+class _ArmedSpanExporter(InMemorySpanExporter):
+    """Keeps a finished span only while a test has it armed.
+
+    Its processor stays on the provider after this module, so unarmed it drops
+    the spans of every later test rather than keeping them for the whole run.
+    Its twin is in ledger_service/unit_test/conftest.py.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.armed = False
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        if not self.armed:
+            return SpanExportResult.SUCCESS
+        return super().export(spans)
+
+
 @pytest.fixture(scope="module")
-def _span_recorder() -> InMemorySpanExporter:
+def _span_recorder() -> _ArmedSpanExporter:
     """On the app's own provider: the instrumentation was given that one."""
-    exporter = InMemorySpanExporter()
+    exporter = _ArmedSpanExporter()
     observability.tracer_provider().add_span_processor(SimpleSpanProcessor(exporter))
     return exporter
 
 
 @pytest.fixture
-def span_exporter(_span_recorder: InMemorySpanExporter) -> InMemorySpanExporter:
+def span_exporter(_span_recorder: _ArmedSpanExporter) -> Iterator[InMemorySpanExporter]:
     _span_recorder.clear()
-    return _span_recorder
+    _span_recorder.armed = True
+    yield _span_recorder
+    _span_recorder.armed = False
+    _span_recorder.clear()
 
 
 def test_a_response_carries_a_request_id(client: TestClient) -> None:
