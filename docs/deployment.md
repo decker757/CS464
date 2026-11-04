@@ -199,7 +199,13 @@ old name, and going back to it would start it without one.
 
 **Logs:** `ssh deploy@<server>`, `cd /opt/cs464/current`, then
 `docker compose --env-file ../../app.env --env-file release.env logs -f ledger`.
-The logs rotate at 50 MB per container. #599 adds a dashboard.
+The logs rotate at 50 MB per container. The services log JSON, one object per
+line. To follow one request, grep or filter by `request_id`: a response's
+`X-Request-ID` header is the value to search for, in the service logs and in
+the gateway's `rid=`. The gateway stamps an ID when the client sent none, or
+one the services would not keep, so a 502 or 504 the gateway answered itself
+still has a line to find. #599 adds a
+dashboard.
 
 **The client's address:** the gateway resolves it and overwrites
 `X-Forwarded-For` with that one address (`set_real_ip_from` in
@@ -212,9 +218,10 @@ it. #600.
 **One-off check after the release that carries this reaches production,
 before the release that adds the per-IP login limits:** from a machine whose
 public address you know (`curl -s https://ifconfig.me`), send one identifiable
-request: `curl -s "https://auth.<domain>/health?probe=600"`. Then, on an app
-server in `/opt/cs464/current`, find that request's line:
-`docker compose --env-file ../../app.env --env-file release.env logs --tail 200 gateway | grep probe=600`.
+request: `curl -s -H 'X-Request-ID: probe-600' https://auth.<domain>/health`.
+Then, on an app server in `/opt/cs464/current`, find that request's line by
+its ID (the gateway logs the path, never the query string):
+`docker compose --env-file ../../app.env --env-file release.env logs --tail 200 gateway | grep 'rid=probe-600'`.
 Its first field, the client address, must be exactly your public address. Ignore
 the `/lb-health` lines: the load balancer sends those itself every few
 seconds, so they are expected to show an address inside `10.64.0.0/20`. If

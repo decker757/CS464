@@ -17,6 +17,7 @@ import logging
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core import observability
 from core.config import get_settings
 from core.database import release_before_calling_out
 from core.errors import AccountSuspended, AuthUnavailable, NotAuthenticated
@@ -60,6 +61,7 @@ def open_client(
         base_url=get_settings().auth_service_url,
         transport=transport,
         timeout=_TIMEOUT,
+        event_hooks={"request": [observability.send_request_id]},
     )
 
 

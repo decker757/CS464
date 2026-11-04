@@ -1,6 +1,7 @@
-"""Readiness for this service, bound to the shared route. #599
+"""Readiness, JSON logs and request IDs for this service, from shared/. #599
 
-Logs, metrics and traces join here in later steps. This service has no
+Logs and request IDs are `shared/`'s, bound here to this service's name;
+metrics and traces join in later steps. This service has no
 database, so its one dependency is Redis, and the Redis check lives here rather
 than in `shared/`: it has one caller. ADR 0010, ADR 0012, ADR 0028.
 """
@@ -14,11 +15,14 @@ from fastapi import FastAPI
 from redis.exceptions import RedisError
 
 from core.config import Settings
+from shared.logs import configure_logging as _configure_logging
 from shared.readiness import READY_TIMEOUT_SECONDS, Check, add_ready_route
+from shared.request_ids import RequestContextMiddleware
 
 __all__ = [
-    "SERVICE_NAME",
     "Check",
+    "SERVICE_NAME",
+    "configure_logging",
     "install",
     "is_redis_reachable",
     "open_ping_client",
@@ -45,6 +49,15 @@ async def is_redis_reachable(client: redis.Redis) -> bool:
     return True
 
 
+def configure_logging() -> None:
+    """JSON log lines on stdout, tagged with this service's name."""
+    _configure_logging(service=SERVICE_NAME)
+
+
 def install(app: FastAPI, *, ready_checks: Mapping[str, Check]) -> None:
-    """Add the observability routes to `app`. Call it last in `create_app`."""
+    """Add the observability routes and the request-ID middleware to `app`.
+
+    Call it last in `create_app`, so the middleware is the outermost layer.
+    """
     add_ready_route(app, ready_checks)
+    app.add_middleware(RequestContextMiddleware)

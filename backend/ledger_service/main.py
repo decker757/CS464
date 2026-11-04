@@ -23,7 +23,7 @@ from core.database import dispose_engine, get_engine, get_session_factory
 from service import account_status, market_terms
 from service.leaderboard_refresher import run_leaderboard_refresher
 
-logging.basicConfig(level=logging.INFO)
+observability.configure_logging()
 logger = logging.getLogger(__name__)
 
 # Seconds, for connect and every read and write on the bus (D-051).
