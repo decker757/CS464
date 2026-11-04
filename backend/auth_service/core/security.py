@@ -6,10 +6,14 @@ bound to this service's settings below. ADR 0012.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets
 import uuid
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from typing import TypeVar
 
 import jwt
 from argon2 import PasswordHasher
@@ -27,27 +31,45 @@ _hasher = PasswordHasher()
 # reveal whether the account exists.
 _DUMMY_HASH = _hasher.hash("timing-equalisation-placeholder")
 
+# Argon2's own two threads, not asyncio's default pool: that pool also resolves
+# hostnames for new Redis and database connections, so a burst of logins
+# filling it would stall the limiter's reconnect past its 0.5 s timeout. Two
+# also caps Argon2's memory at two hashes' worth (64 MiB each). #637
+_ARGON2_THREADS = ThreadPoolExecutor(max_workers=2, thread_name_prefix="argon2")
+
+_Result = TypeVar("_Result")
+
 
 # --------------------------------------------------------------------------
 # Passwords
 # --------------------------------------------------------------------------
-def hash_password(plain: str) -> str:
-    return _hasher.hash(plain)
-
-
-def verify_password(stored_hash: str, plain: str) -> bool:
+def _verify_or_false(stored_hash: str, plain: str) -> bool:
     try:
         return _hasher.verify(stored_hash, plain)
     except (VerifyMismatchError, InvalidHashError):
         return False
 
 
-def dummy_verify() -> None:
+# Argon2 is CPU-heavy on purpose, so the three calls below run on its threads:
+# argon2-cffi releases the GIL, and the loop keeps serving the limiter's Redis
+# calls and every other request meanwhile. #637
+async def _off_the_loop(work: Callable[..., _Result], *args: str) -> _Result:
+    return await asyncio.get_running_loop().run_in_executor(_ARGON2_THREADS, work, *args)
+
+
+async def hash_password(plain: str) -> str:
+    """Return a fresh Argon2id hash of `plain`, computed off the event loop."""
+    return await _off_the_loop(_hasher.hash, plain)
+
+
+async def verify_password(stored_hash: str, plain: str) -> bool:
+    """True if `plain` matches; False for a mismatch or a corrupt hash."""
+    return await _off_the_loop(_verify_or_false, stored_hash, plain)
+
+
+async def dummy_verify() -> None:
     """Burn the same CPU as a real verify, for the unknown-account path."""
-    try:
-        _hasher.verify(_DUMMY_HASH, "wrong")
-    except VerifyMismatchError:
-        pass
+    await _off_the_loop(_verify_or_false, _DUMMY_HASH, "wrong")
 
 
 def needs_rehash(stored_hash: str) -> bool:

@@ -145,7 +145,7 @@ async def register(
     user = User(
         username=data.username,
         email=data.email,
-        password_hash=security.hash_password(data.password),
+        password_hash=await security.hash_password(data.password),
     )
     session.add(user)
 
@@ -197,10 +197,10 @@ async def authenticate(
     user = await _find_by_identifier(session, identifier)
     if user is None:
         # Equalise timing so response latency does not confirm the account exists.
-        security.dummy_verify()
+        await security.dummy_verify()
         raise InvalidCredentials
 
-    if not security.verify_password(user.password_hash, password):
+    if not await security.verify_password(user.password_hash, password):
         raise InvalidCredentials
 
     # The claims above reserved a slot each; a proven password hands them back.
@@ -219,7 +219,7 @@ async def authenticate(
         raise AccountSuspended
 
     if security.needs_rehash(user.password_hash):
-        user.password_hash = security.hash_password(password)
+        user.password_hash = await security.hash_password(password)
 
     return user
 
