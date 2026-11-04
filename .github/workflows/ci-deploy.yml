@@ -80,6 +80,11 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      # The config Alloy runs on every server, checked by Alloy itself.
+      - name: Validate Alloy's config
+        run: >-
+          docker run --rm -v "$PWD/deploy/production/alloy:/etc/alloy:ro"
+          grafana/alloy:v1.21.3 validate /etc/alloy/config.alloy
       - run: deploy/production/test/stack-test.sh
 
   notify:

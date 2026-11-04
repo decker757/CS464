@@ -83,6 +83,7 @@ install_release() {
   cp "${2:-$repo/deploy/production/compose.yml}" "$directory/compose.yml"
   cp "$repo/deploy/production/sql/ensure-roles.sql" "$repo/sql/02-schemas.sql" "$directory/sql/"
   cp "$repo/deploy/production/test/backing.yml" "$directory/"
+  cp -r "$repo/deploy/production/alloy" "$directory/"
   echo "IMAGE_TAG=$1" > "$directory/release.env"
 }
 
@@ -387,9 +388,27 @@ expect "and auth runs release one's image" \
   test "$(compose ps --format '{{.Image}}' auth)" = "$registry/cs464-auth:one"
 expect "and it is undrained and serving" status_becomes 127.0.0.1 /lb-health 200
 
+echo "Grafana Cloud is configured, and unreachable"
+# Phase two: Alloy on, pointed at an address nothing answers. A deploy that a
+# Grafana outage could fail would be an outage of its own.
+cat >> "$work/app.env" <<EOF
+COMPOSE_PROFILES=observability
+TRACING_ENDPOINT=http://alloy:4318/v1/traces
+SERVER_LABEL=app-1
+GRAFANA_PROMETHEUS_URL=http://grafana.invalid/api/prom/push
+GRAFANA_PROMETHEUS_USER=1
+GRAFANA_LOKI_URL=http://grafana.invalid/loki/api/v1/push
+GRAFANA_LOKI_USER=2
+GRAFANA_OTLP_URL=http://grafana.invalid/otlp
+GRAFANA_OTLP_USER=3
+GRAFANA_CLOUD_TOKEN=not-a-real-token
+EOF
+
 echo "roll.sh, release two"
 install_release two
 expect "roll.sh moves to a good release" "$work/releases/two/roll.sh"
+expect "Alloy runs beside the release, and a Grafana it cannot reach does not fail the roll" \
+  test "$(compose ps --format '{{.State}}' alloy)" = running
 expect "and the server is on two" test "$(current_release)" = two
 expect "and every service runs release two" every_image_is_at two
 expect "and only two and the release before it are kept" releases_kept_are "one two"

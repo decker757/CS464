@@ -122,6 +122,15 @@ jobs:
           REDIS_URL: ${{ secrets.REDIS_URL }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           LEDGER_SERVICE_KEY: ${{ secrets.LEDGER_SERVICE_KEY }}
+          # [BE][5.5] #599. Optional: with no token, Alloy is not started.
+          # The addresses and user numbers are not secret; the token is.
+          GRAFANA_PROMETHEUS_URL: ${{ vars.GRAFANA_PROMETHEUS_URL }}
+          GRAFANA_PROMETHEUS_USER: ${{ vars.GRAFANA_PROMETHEUS_USER }}
+          GRAFANA_LOKI_URL: ${{ vars.GRAFANA_LOKI_URL }}
+          GRAFANA_LOKI_USER: ${{ vars.GRAFANA_LOKI_USER }}
+          GRAFANA_OTLP_URL: ${{ vars.GRAFANA_OTLP_URL }}
+          GRAFANA_OTLP_USER: ${{ vars.GRAFANA_OTLP_USER }}
+          GRAFANA_CLOUD_TOKEN: ${{ secrets.GRAFANA_CLOUD_TOKEN }}
 
   notify:
     needs: [images, release]

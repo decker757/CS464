@@ -9,6 +9,8 @@
 #   - every server gets the release's files in the release's own directory,
 #     its own app.env shared by every release, and a registry login
 #   - only the first server rebuilds the leaderboard
+#   - every server is labelled for the dashboard, and Alloy is switched on
+#     only when Grafana Cloud is configured, whole or not at all
 #   - the database is migrated once, from the first server, before any roll
 #   - a failed migration rolls no server
 #   - a server that fails to roll sends every server rolled before it back,
@@ -114,8 +116,12 @@ new_servers() {
   done
 }
 
+# Extra settings for the next deploy, as NAME=value words. Empty by default.
+extra_env=()
+
 deploy() {
-  FAKE_ROOT=$root PATH="$root/bin:$PATH" DEPLOY_SSH="$root/bin/ssh" \
+  env ${extra_env[@]+"${extra_env[@]}"} \
+    FAKE_ROOT="$root" PATH="$root/bin:$PATH" DEPLOY_SSH="$root/bin/ssh" \
     APP_DIR=. SKIP_PUBLIC_CHECK=1 APP_HOSTS="${servers[*]}" \
     PRODUCTION_DOMAIN=cs464.test IMAGE_REGISTRY=ghcr.io/example \
     REGISTRY_USER=bot REGISTRY_TOKEN=token DEPLOY_SSH_KEY=key DEPLOY_KNOWN_HOSTS=hosts \
@@ -134,6 +140,8 @@ never_called() { test ! -e "$root/$1/$2"; }
 mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 app_env_of() { echo "$root/$1/app.env"; }
 log_says() { grep -q "$1" "$root/deploy.log"; }
+
+app_env_lacks() { ! grep -q "$1" "$(app_env_of "$2")"; }
 
 admin_url_in_no_app_env() {
   ! grep -q DATABASE_ADMIN_URL "$(app_env_of server-a)" "$(app_env_of server-b)"
@@ -157,6 +165,36 @@ expect "the database is migrated once, from the first server, with the admin URL
   test "$(calls server-a migrate-calls)" = "new with-admin-url"
 expect "and not from the second" never_called server-b migrate-calls
 expect "the admin URL is in no server's app.env" admin_url_in_no_app_env
+
+# --- Grafana Cloud, optional ---------------------------------------------------
+
+echo "a deploy with no Grafana settings"
+expect "app.env names no profile, so Alloy stays off" app_env_lacks '^COMPOSE_PROFILES=' server-a
+expect "app.env sends no tracing endpoint" app_env_lacks '^TRACING_ENDPOINT=' server-a
+expect "every server is labelled for the dashboard" grep -qx SERVER_LABEL=app-2 "$(app_env_of server-b)"
+expect "the first is app-1" grep -qx SERVER_LABEL=app-1 "$(app_env_of server-a)"
+
+echo "a deploy with every Grafana setting"
+reset_servers
+extra_env=(GRAFANA_CLOUD_TOKEN=token-placeholder GRAFANA_PROMETHEUS_URL=http://p.invalid
+  GRAFANA_PROMETHEUS_USER=1 GRAFANA_LOKI_URL=http://l.invalid GRAFANA_LOKI_USER=2
+  GRAFANA_OTLP_URL=http://o.invalid GRAFANA_OTLP_USER=3)
+expect "the deploy succeeds" deploy grafana
+expect "Alloy is switched on" grep -qx COMPOSE_PROFILES=observability "$(app_env_of server-a)"
+expect "and on the second server too" grep -qx COMPOSE_PROFILES=observability "$(app_env_of server-b)"
+expect "services send their traces to Alloy" \
+  grep -qx TRACING_ENDPOINT=http://alloy:4318/v1/traces "$(app_env_of server-a)"
+expect "Alloy gets the token" grep -qx GRAFANA_CLOUD_TOKEN=token-placeholder "$(app_env_of server-a)"
+expect "and the Loki address" grep -qx GRAFANA_LOKI_URL=http://l.invalid "$(app_env_of server-a)"
+
+echo "a deploy with the Grafana token and nothing else"
+reset_servers
+extra_env=(GRAFANA_CLOUD_TOKEN=token-placeholder)
+expect "the deploy fails" deploy_fails halfset
+expect "before any server is touched" never_called server-a roll-calls
+expect "or migrated" never_called server-a migrate-calls
+expect "and says which setting is missing" log_says "GRAFANA_PROMETHEUS_URL"
+extra_env=()
 
 # --- A migration that fails ---------------------------------------------------
 
