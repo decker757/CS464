@@ -309,11 +309,16 @@ hand. Alloy starts after the roll, once the new release is serving.
 **Mistakes fail early.** If the token is set, `release.sh` needs all six
 values, and each URL must start with `https://`. It checks this before it
 touches any server, so a missing or malformed value stops the deploy and
-changes nothing. The Loki URL must end in `/loki/api/v1/push` and the
-Prometheus one in `/api/prom/push`.
+changes nothing. It does not check the endings: the Loki URL must end in
+`/loki/api/v1/push` and the Prometheus one in `/api/prom/push`, or Grafana
+receives nothing.
 
 **Alloy cannot break a deploy.** It is started last, as best effort. If it
-fails (a wrong token, say), the roll prints a warning and carries on.
+will not start or keeps restarting, the roll prints a warning and carries on.
+A wrong token or a wrong URL ending is quieter: Alloy runs, the deploy is
+green, and Grafana shows no data. Alloy's log on a server says why: in
+`/opt/cs464/current`, run
+`docker compose --profile observability --env-file ../../app.env --env-file release.env logs --tail 100 alloy`.
 
 **To switch Alloy off,** delete the token and deploy:
 
