@@ -42,6 +42,9 @@ def get_engine() -> AsyncEngine:
             max_overflow=settings.database_max_overflow,
             # Replace a connection Postgres closed rather than hand it out.
             pool_pre_ping=True,
+            # Parameter values (emails, password hashes, idempotency keys)
+            # never reach a log line or a span's error status.
+            hide_parameters=True,
         )
         observability.instrument_engine(_engine)
     return _engine
