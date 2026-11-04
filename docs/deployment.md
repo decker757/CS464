@@ -318,8 +318,11 @@ receives nothing.
 **Alloy cannot break a deploy.** It is started last, as best effort. If it
 will not start or keeps restarting, the roll prints a warning and carries on.
 The server then stops sending metrics, and `cs464-service-down` emails about
-it within about 8 minutes. A wrong token or a wrong URL ending is quieter: Alloy runs, the deploy is
-green, and Grafana shows no data. Alloy's log on a server says why: in
+it within about 8 minutes. A wrong token or a wrong URL ending looks the same
+from Grafana: Alloy runs and the deploy is green, but no data arrives, so the
+same alert fires. After an hour that alert clears by itself, even if the
+server is still silent, so a "resolved" email is not proof that data is back:
+check the dashboard. Alloy's log on a server says why: in
 `/opt/cs464/current`, run
 `docker compose --profile observability --env-file ../../app.env --env-file release.env logs --tail 100 alloy`.
 
