@@ -57,12 +57,14 @@ def open_client(
     `main.py`'s lifespan opens one for the process. `transport` is the
     suite's seam.
     """
-    return httpx.AsyncClient(
+    client = httpx.AsyncClient(
         base_url=get_settings().auth_service_url,
         transport=transport,
         timeout=_TIMEOUT,
         event_hooks={"request": [observability.send_request_id]},
     )
+    observability.instrument_client(client)
+    return client
 
 
 async def refuse_if_suspended(

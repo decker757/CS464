@@ -12,7 +12,7 @@ audit writer (ADR 0006's #135 amendment), the migration runner (ADR 0020), and t
 `/ready` (`readiness.py`, ADR 0028), and the request-ID middleware and
 context (`request_ids.py`, #599), and the JSON log formatter and its setup
 (`logs.py`, #599), and the HTTP metrics and `/metrics` route
-(`http_metrics.py`, #599).
+(`http_metrics.py`, #599), and the tracing setup (`tracing.py`, #599).
 
 **The LMSR engine is not here, and that is deliberate.** [F-3] #43 put it in
 `ledger_service/core/lmsr.py`. ADR 0010 settled that the ledger owns the trade

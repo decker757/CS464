@@ -50,6 +50,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             socket_timeout=_REDIS_TIMEOUT_SECONDS,
             socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
         )
+        observability.instrument_redis()
 
         # One market_service client for the process too, because the gate
         # calls it on every trade that is not a replay (ADR 0017, D-047), and

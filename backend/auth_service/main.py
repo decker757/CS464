@@ -57,6 +57,7 @@ def create_app() -> FastAPI:
     )
 
     app.state.redis = open_redis(settings)
+    observability.instrument_redis()
     app.state.attempt_limiter = AttemptLimiter(
         app.state.redis,
         AttemptLimits.from_settings(settings),
