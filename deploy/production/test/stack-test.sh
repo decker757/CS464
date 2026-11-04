@@ -12,6 +12,8 @@
 #
 #   - the frontend is served on the domain, and was built for it
 #   - each service answers on its own subdomain
+#   - ensure-database.sh puts the database admin's password on no command
+#     line, docker's or psql's
 #   - a trader can register and log in, and the login cookie names the domain
 #   - the ledger, market service and database work together through the gateway
 #   - the price websocket upgrades through the gateway, for the site's origin only
@@ -227,7 +229,12 @@ build_stand_in "$registry/cs464-extra:three"
 
 # --- A server's directory, as the deploy lays it out --------------------
 
-admin_password=$(random_secret)
+# The admin's password ends in the four characters a URL has to escape, so
+# ensure-database.sh has to decode the URL to log in. admin_secret is the part
+# that reads the same in the URL and out of it, which the command-line check
+# below looks for.
+admin_secret=$(random_secret)
+admin_password="$admin_secret@:/%"
 export TEST_POSTGRES_PASSWORD
 TEST_POSTGRES_PASSWORD=$(random_secret)
 export AUTH_DB_PASSWORD MARKET_DB_PASSWORD LEDGER_DB_PASSWORD AUDIT_DB_PASSWORD
@@ -283,7 +290,7 @@ backing exec -T postgres psql -q -U postgres -v ON_ERROR_STOP=1 \
 
 # --- Deploy release one --------------------------------------------------
 
-export DATABASE_ADMIN_URL="postgresql://doadmin:$admin_password@postgres:5432/cs464"
+export DATABASE_ADMIN_URL="postgresql://doadmin:$admin_secret%40%3A%2F%25@postgres:5432/cs464"
 export DOCKER_NETWORK="${project}_default"
 export DRAIN_SECONDS=1 WAIT_SECONDS=90
 
@@ -291,6 +298,41 @@ echo "migrate.sh, release one"
 "$work/releases/one/migrate.sh"
 echo "migrate.sh, release one, again: it must be safe to repeat"
 "$work/releases/one/migrate.sh"
+
+# #611. Run ensure-database.sh once more with every command line recorded:
+# docker's, by a docker on the PATH that logs and passes through, and psql's
+# inside the container, by a psql earlier on the container's PATH that logs
+# and runs the real one. psql's is the one that matters: a shell inside the
+# container expanding the URL into psql's arguments is invisible from here.
+echo "ensure-database.sh, with every command line recorded"
+spy=$work/spy
+mkdir -p "$spy/host" "$spy/container"
+cat > "$spy/host/docker" <<'SPY'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SPY_DIR/host-argv"
+if [ "$1" = run ]; then
+  shift
+  exec "$REAL_DOCKER" run -v "$SPY_DIR/container:/spy" \
+    -e PATH=/spy:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$@"
+fi
+exec "$REAL_DOCKER" "$@"
+SPY
+cat > "$spy/container/psql" <<'SPY'
+#!/bin/sh
+printf '%s\n' "$*" >> /spy/argv
+exec /usr/local/bin/psql "$@"
+SPY
+chmod +x "$spy/host/docker" "$spy/container/psql"
+REAL_DOCKER=$(command -v docker) SPY_DIR=$spy PATH="$spy/host:$PATH" \
+  "$work/releases/one/ensure-database.sh"
+expect "ensure-database's psql ran with its command line recorded" test -s "$spy/container/argv"
+in_no_file() {
+  # in_no_file <text> <file>...
+  ! grep -qF "$1" "${@:2}"
+}
+expect "the database admin's password is on no command line" \
+  in_no_file "$admin_secret" "$spy/host-argv" "$spy/container/argv"
+
 echo "roll.sh, release one"
 "$work/releases/one/roll.sh"
 
