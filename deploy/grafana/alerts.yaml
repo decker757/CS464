@@ -159,12 +159,13 @@ groups:
           receiver: grafana-default-email
 
       # 1 for each service on each server that Alloy cannot scrape (up is 0)
-      # or that has a dependency not ready, 0 otherwise. It is the one rule
-      # that always returns a series, so "no data" really means no Alloy is
-      # sending anything. Written with `1 -` rather than `== 0`, because
-      # `== 0` keeps the value 0, which the `> 0` threshold would never fire on.
+      # or that has a dependency not ready, 0 otherwise. Written with `1 -`
+      # rather than `== 0`, because `== 0` keeps the value 0, which the `> 0`
+      # threshold would never fire on. The last arm is 1 for a pair seen in
+      # the last hour and missing now: a server whose Alloy or droplet has
+      # stopped sending. So "no data" really means no Alloy is sending at all.
       - uid: cs464-service-down
-        title: A service is down or not ready
+        title: A service is down, not ready, or has stopped sending
         condition: B
         data:
           - refId: A
@@ -177,6 +178,8 @@ groups:
               expr: >-
                 max by (service, server) (
                 (1 - up{job="cs464"}) or (1 - service_dependency_ready))
+                or (group by (service, server) (max_over_time(up{job="cs464"}[1h]))
+                unless on (service, server) up{job="cs464"})
               instant: true
               range: false
               intervalMs: 1000
@@ -201,7 +204,7 @@ groups:
         execErrState: Error
         for: 3m
         annotations:
-          summary: "{{ $labels.service }} on {{ $labels.server }} is down or not ready, or no server is sending metrics"
+          summary: "{{ if $labels.service }}{{ $labels.service }} on {{ $labels.server }} cannot be scraped, is not ready, or has stopped sending metrics{{ else }}No server is sending metrics{{ end }}"
         labels:
           severity: page
         isPaused: false

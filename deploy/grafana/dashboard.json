@@ -72,10 +72,10 @@
           "uid": "${prometheus}"
         },
         "query": {
-          "query": "label_values(http_requests_total, service)",
+          "query": "label_values(up{job=\"cs464\"}, service)",
           "refId": "service-values"
         },
-        "definition": "label_values(http_requests_total, service)",
+        "definition": "label_values(up{job=\"cs464\"}, service)",
         "refresh": 2,
         "hide": 0,
         "includeAll": true,
