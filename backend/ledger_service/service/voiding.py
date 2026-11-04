@@ -46,6 +46,7 @@ from core.errors import (
     VoidIncomplete,
     VoidReplayMismatch,
 )
+from core.metrics import VOIDS
 from core.pricing import QUANTUM
 from core.voiding import (
     Cut,
@@ -543,6 +544,8 @@ async def void_market(
     # Commits everything above once, or nothing. No statement may follow it
     # before the call below.
     await posting.post_all(session, movements, now=now)
+    # After the commit, on a fresh void only: a repeat returned above.
+    VOIDS.inc()
 
     # 8. After the commit, never before: the money moves first (ADR 0025).
     await market_terms.mark_voided(

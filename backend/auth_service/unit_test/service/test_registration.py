@@ -14,7 +14,8 @@ from core.roles import UserRole
 from model.entities import User
 from model.schemas import RegisterRequest
 from service import auth_service
-from unit_test.conftest import VALID_PASSWORD
+from service.attempt_limits import AttemptLimiter
+from unit_test.conftest import TEST_IP, VALID_PASSWORD
 
 
 async def _account_count(session: AsyncSession) -> int:
@@ -22,9 +23,11 @@ async def _account_count(session: AsyncSession) -> int:
 
 
 async def test_register_creates_exactly_one_account(
-    session: AsyncSession, register_request: RegisterRequest
+    session: AsyncSession, register_request: RegisterRequest, attempt_limiter: AttemptLimiter
 ) -> None:
-    user, _ = await auth_service.register(session, register_request)
+    user, _ = await auth_service.register(
+        session, register_request, limiter=attempt_limiter, client_ip=TEST_IP
+    )
 
     count = await _account_count(session)
     assert count == 1
@@ -42,9 +45,11 @@ async def test_the_password_is_stored_only_as_an_argon2_hash(
 
 
 async def test_register_opens_a_first_session(
-    session: AsyncSession, register_request: RegisterRequest
+    session: AsyncSession, register_request: RegisterRequest, attempt_limiter: AttemptLimiter
 ) -> None:
-    _, tokens = await auth_service.register(session, register_request)
+    _, tokens = await auth_service.register(
+        session, register_request, limiter=attempt_limiter, client_ip=TEST_IP
+    )
 
     assert tokens.access_token
     assert tokens.refresh_token
@@ -62,6 +67,7 @@ async def test_a_duplicate_is_refused_and_names_the_clashing_field(
     session: AsyncSession,
     registered_user: User,
     registration_payload: dict[str, str],
+    attempt_limiter: AttemptLimiter,
     field: str,
     value: str,
     expected_clash: str,
@@ -69,7 +75,7 @@ async def test_a_duplicate_is_refused_and_names_the_clashing_field(
     second = RegisterRequest(**{**registration_payload, field: value})
 
     with pytest.raises(DuplicateUser) as caught:
-        await auth_service.register(session, second)
+        await auth_service.register(session, second, limiter=attempt_limiter, client_ip=TEST_IP)
 
     assert [problem.field for problem in caught.value.problems] == [expected_clash]
 
@@ -78,12 +84,13 @@ async def test_a_duplicate_names_every_clashing_field(
     session: AsyncSession,
     registered_user: User,
     registration_payload: dict[str, str],
+    attempt_limiter: AttemptLimiter,
 ) -> None:
     """Both clashes are reported together, not one submission at a time."""
     second = RegisterRequest(**registration_payload)
 
     with pytest.raises(DuplicateUser) as caught:
-        await auth_service.register(session, second)
+        await auth_service.register(session, second, limiter=attempt_limiter, client_ip=TEST_IP)
 
     assert [problem.field for problem in caught.value.problems] == ["username", "email"]
 
@@ -92,6 +99,7 @@ async def test_a_lost_race_still_names_the_clashing_field(
     session: AsyncSession,
     registered_user: User,
     registration_payload: dict[str, str],
+    attempt_limiter: AttemptLimiter,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A lost race, simulated by forcing the pre-check to miss once.
@@ -110,7 +118,12 @@ async def test_a_lost_race_still_names_the_clashing_field(
     monkeypatch.setattr(auth_service, "_taken_fields", _miss_once)
 
     with pytest.raises(DuplicateUser) as caught:
-        await auth_service.register(session, RegisterRequest(**registration_payload))
+        await auth_service.register(
+            session,
+            RegisterRequest(**registration_payload),
+            limiter=attempt_limiter,
+            client_ip=TEST_IP,
+        )
 
     assert calls["n"] == 2
     assert [problem.field for problem in caught.value.problems] == ["username", "email"]
@@ -121,6 +134,7 @@ async def test_username_uniqueness_ignores_case(
     session: AsyncSession,
     registered_user: User,
     registration_payload: dict[str, str],
+    attempt_limiter: AttemptLimiter,
     variant: str,
 ) -> None:
     clashing = RegisterRequest(
@@ -128,27 +142,34 @@ async def test_username_uniqueness_ignores_case(
     )
 
     with pytest.raises(DuplicateUser):
-        await auth_service.register(session, clashing)
+        await auth_service.register(session, clashing, limiter=attempt_limiter, client_ip=TEST_IP)
 
 
 async def test_email_uniqueness_ignores_case(
-    session: AsyncSession, registered_user: User, registration_payload: dict[str, str]
+    session: AsyncSession,
+    registered_user: User,
+    registration_payload: dict[str, str],
+    attempt_limiter: AttemptLimiter,
 ) -> None:
     clashing = RegisterRequest(
         **{**registration_payload, "username": "other_user", "email": "ERNEST@example.com"}
     )
 
     with pytest.raises(DuplicateUser):
-        await auth_service.register(session, clashing)
+        await auth_service.register(session, clashing, limiter=attempt_limiter, client_ip=TEST_IP)
 
 
 async def test_a_retry_leaves_exactly_one_account(
-    session: AsyncSession, register_request: RegisterRequest
+    session: AsyncSession, register_request: RegisterRequest, attempt_limiter: AttemptLimiter
 ) -> None:
-    await auth_service.register(session, register_request)
+    await auth_service.register(
+        session, register_request, limiter=attempt_limiter, client_ip=TEST_IP
+    )
 
     with pytest.raises(DuplicateUser):
-        await auth_service.register(session, register_request)
+        await auth_service.register(
+            session, register_request, limiter=attempt_limiter, client_ip=TEST_IP
+        )
 
     count = await _account_count(session)
     assert count == 1
@@ -165,4 +186,4 @@ def test_register_takes_no_ledger_dependency() -> None:
 
     params = set(inspect.signature(auth_service.register).parameters)
 
-    assert params == {"session", "data"}
+    assert params == {"session", "data", "limiter", "client_ip"}

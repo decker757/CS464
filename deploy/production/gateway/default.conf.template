@@ -32,6 +32,20 @@ map $http_upgrade $connection_upgrade {
     ''      close;
 }
 
+# [BE][5.5] #599. The client's own request ID if it is safe by the services'
+# rule (shared/request_ids.py), else nginx's. Checked here, not only there: it
+# goes into the gateway's own log line, and an ID the service then replaced
+# would no longer match. A 502 or 504 the gateway answers itself has no
+# service log line, so its gateway line carries the ID. Quoted for the braces.
+map $http_x_request_id $forwarded_request_id {
+    "~^[A-Za-z0-9._-]{1,64}$" $http_x_request_id;
+    default                   $request_id;
+}
+
+# The path, never the query string, which can hold a token or an email. The
+# services log the route template for the same reason.
+log_format cs464 '$remote_addr [$time_iso8601] "$request_method $uri" $status $body_bytes_sent rid=$forwarded_request_id';
+
 # The load balancer's health check arrives by IP address, not by one of our
 # names, so it lands here.
 server {
@@ -39,8 +53,12 @@ server {
 
     # What the load balancer asks. 503 while roll.sh is draining this server,
     # so the balancer stops sending it traffic before anything restarts.
-    # Otherwise the ledger's answer: a server that cannot trade should not
-    # get traffic. #599 makes /health check the database.
+    # Otherwise the ledger's liveness: is the process up. Not its readiness.
+    # The database is one managed instance shared by every server, so taking
+    # servers out can never fix it. It would only turn "trades fail with an
+    # error" into the balancer's bare 503 for the whole site, homepage
+    # included, and make a deploy during a blip roll back. Readiness feeds the
+    # dashboard and the alerts instead. ADR 0028.
     location = /lb-health {
         if (-f /etc/nginx/drain/on) {
             return 503;
@@ -90,6 +108,7 @@ server {
         proxy_pass $upstream;
         include /etc/nginx/conf.d/proxy-headers.inc;
     }
+    include /etc/nginx/conf.d/private-paths.inc;
 }
 
 server {
@@ -100,6 +119,7 @@ server {
         proxy_pass $upstream;
         include /etc/nginx/conf.d/proxy-headers.inc;
     }
+    include /etc/nginx/conf.d/private-paths.inc;
 }
 
 server {
@@ -110,6 +130,7 @@ server {
         proxy_pass $upstream;
         include /etc/nginx/conf.d/proxy-headers.inc;
     }
+    include /etc/nginx/conf.d/private-paths.inc;
 }
 
 server {
@@ -120,6 +141,7 @@ server {
         proxy_pass $upstream;
         include /etc/nginx/conf.d/proxy-headers.inc;
     }
+    include /etc/nginx/conf.d/private-paths.inc;
 }
 
 server {
@@ -137,4 +159,5 @@ server {
         proxy_read_timeout 1h;
         proxy_send_timeout 1h;
     }
+    include /etc/nginx/conf.d/private-paths.inc;
 }

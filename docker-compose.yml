@@ -83,6 +83,16 @@ services:
       LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      # [A-2] #600, ADR 0027. Login and registration limits count in Redis.
+      # Spelled out rather than read from .env, whose REDIS_URL is the
+      # host-side address. No `depends_on: redis`, as for realtime: the limiter
+      # fails open, so an unreachable Redis costs the limit and not a login.
+      REDIS_URL: redis://redis:6379/0
+      # e2e and `seed:demo` log in and register many times from one machine,
+      # so the per-address limits are raised. The account limits stay at their
+      # production values, so #601's e2e can drive them on a fresh account.
+      LOGIN_ATTEMPTS_PER_IP: "10000"
+      REGISTRATIONS_PER_IP: "10000"
     ports:
       - "${AUTH_PORT:-8000}:8000"
     restart: unless-stopped

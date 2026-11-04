@@ -19,3 +19,15 @@ PyJWT==2.15.0
 # Note what is NOT here: SQLAlchemy and asyncpg. This service owns no schema,
 # holds no role and opens no connection to Postgres. Adding either is a
 # decision to give it durable state, which ADR 0010 argues it must not have.
+
+# #599. Request and readiness metrics, served at /metrics.
+prometheus-client==0.26.0
+
+# #599. Tracing: one trace per request across every service it touches,
+# exported over OTLP only when TRACING_ENDPOINT is set. shared/tracing.py.
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-instrumentation-fastapi==0.66b2
+# No Redis instrumentation here: only the handshake is traced. The Redis this
+# service talks to is the bus loop and the /ready ping, neither of them a
+# request.

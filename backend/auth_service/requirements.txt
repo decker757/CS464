@@ -16,3 +16,19 @@ alembic==1.20.0
 # Password hashing and tokens
 argon2-cffi==25.1.0
 PyJWT==2.15.0
+
+# Login and registration rate limits (#600, ADR 0027). Same pin as the ledger
+# and realtime services.
+redis==8.1.0
+
+# #599. Request and readiness metrics, served at /metrics.
+prometheus-client==0.26.0
+
+# #599. Tracing: one trace per request across every service it touches,
+# exported over OTLP only when TRACING_ENDPOINT is set. shared/tracing.py.
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-instrumentation-fastapi==0.66b2
+# A span per SQL statement, and per command on the limiter's Redis.
+opentelemetry-instrumentation-sqlalchemy==0.66b2
+opentelemetry-instrumentation-redis==0.66b2

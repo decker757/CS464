@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import { useLocation, useNavigationType } from 'react-router-dom'
 
 // How far down each history entry was left, by the key React Router stamps on
@@ -31,15 +31,29 @@ const RESTORE_WINDOW_MS = 3_000
 export default function ScrollRestoration() {
   const { key } = useLocation()
   const navigationType = useNavigationType()
+  const currentKey = useRef(key)
+
+  // Which entry a scroll belongs to is decided when the scroll happens, by
+  // the entry on screen then. Switched in a layout effect, which runs in the
+  // same task as the commit and so before the browser can deliver any scroll
+  // that commit causes: the new page's jump to the top, or the browser
+  // clamping to a shorter page. A listener per entry, removed in an effect
+  // cleanup, was not enough: React Router renders a navigation as a
+  // transition, React runs that commit's cleanups in a later task, and a
+  // frame in between handed the new page's 0 to the old page's listener —
+  // so Back restored the list to the top (#502).
+  useLayoutEffect(() => {
+    currentKey.current = key
+  }, [key])
 
   // Recorded as the page scrolls rather than when it is left: by the time the
   // next location has rendered the browser may already have clamped `scrollY`
   // to a shorter page, and that clamped number is not where the trader was.
   useEffect(() => {
-    const remember = () => offsetByKey.set(key, window.scrollY)
+    const remember = () => offsetByKey.set(currentKey.current, window.scrollY)
     window.addEventListener('scroll', remember, { passive: true })
     return () => window.removeEventListener('scroll', remember)
-  }, [key])
+  }, [])
 
   useLayoutEffect(() => {
     // A Back or a Forward returns to an entry this has already seen; anything

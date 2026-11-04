@@ -17,7 +17,12 @@ import pytest
 # asserts fail with no diff.
 pytest.register_assert_rewrite("shared.testing")
 
-from shared.testing import load_repo_env, open_audit_reader  # noqa: E402
+from shared.testing import (  # noqa: E402
+    attach_span_recorder,
+    load_repo_env,
+    open_audit_reader,
+    recording,
+)
 
 
 # Before any project module is imported: `get_settings` is cached on first call.
@@ -103,11 +108,41 @@ async def session(clean_database):
         yield s
 
 
+@pytest.fixture(scope="session")
+def _span_recorder():
+    """The spans this process finishes while a test is watching, in memory. #599
+
+    On `observability.tracer_provider()` itself: the app and Redis were
+    instrumented with that one provider, and the Redis instrumentor is
+    process-wide, so a provider of the test's own would see nothing.
+    Session-scoped so the processor is added once.
+    """
+    from core import observability  # noqa: PLC0415
+
+    return attach_span_recorder(observability.tracer_provider())
+
+
 @pytest.fixture
-async def client(clean_database):
+def span_exporter(_span_recorder):
+    """The spans finished during this test, and none from before or after it."""
+    with recording(_span_recorder) as spans:
+        yield spans
+
+
+@pytest.fixture
+def app(attempt_limiter):
+    """The app with a test limiter. A test needing small limits replaces
+    `app.state.attempt_limiter` before its first request."""
+    application = create_app()
+    application.state.attempt_limiter = attempt_limiter
+    return application
+
+
+@pytest.fixture
+async def client(clean_database, app):
     """An HTTP client bound to the app, for controller-layer tests."""
     async with AsyncClient(
-        transport=ASGITransport(app=create_app()), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
         yield c
 
@@ -150,8 +185,12 @@ async def admin_client(client: AsyncClient, session) -> AsyncClient:
     return client
 
 
+# A documentation-range address (RFC 5737), so no test touches a real one.
+TEST_IP = "198.51.100.7"
+
+
 @pytest.fixture
-async def target_user_id(session) -> str:
+async def target_user_id(session, attempt_limiter) -> str:
     """A trader for an administrator to act on.
 
     Registered through the service layer: a second /auth/register on the
@@ -167,5 +206,49 @@ async def target_user_id(session) -> str:
             email="michelle@example.com",
             password=VALID_PASSWORD,
         ),
+        limiter=attempt_limiter,
+        client_ip=TEST_IP,
     )
     return str(user.id)
+
+
+async def _delete_keys(client, prefix: str) -> None:
+    async for key in client.scan_iter(f"{prefix}:*"):
+        await client.delete(key)
+
+
+@pytest.fixture
+async def make_limiter():
+    """A factory for limiters over the real Redis, each under its own prefix.
+
+    `overrides` replace named limits (e.g. `login_ip=Limit("login-ip", 3, 60)`)
+    so a test can use a small count. Every key a limiter wrote is deleted at
+    teardown; a fresh prefix keeps tests and parallel runs from sharing counts.
+    """
+    from dataclasses import replace  # noqa: PLC0415
+    from uuid import uuid4  # noqa: PLC0415
+
+    from core.cache import open_redis  # noqa: PLC0415
+    from core.config import get_settings  # noqa: PLC0415
+    from service.attempt_limits import AttemptLimiter, AttemptLimits  # noqa: PLC0415
+
+    opened: list[tuple] = []
+
+    def build(**overrides) -> AttemptLimiter:
+        client = open_redis(get_settings())
+        prefix = f"auth:rl:test:{uuid4().hex}"
+        limits = replace(AttemptLimits.from_settings(get_settings()), **overrides)
+        opened.append((client, prefix))
+        return AttemptLimiter(client, limits, prefix)
+
+    yield build
+
+    for client, prefix in opened:
+        await _delete_keys(client, prefix)
+        await client.aclose()
+
+
+@pytest.fixture
+async def attempt_limiter(make_limiter):
+    """One limiter with the configured limits."""
+    return make_limiter()

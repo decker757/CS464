@@ -8,7 +8,11 @@ test env loader, the test helpers (the import-boundary scan, the migration
 guard tests' `schema_catalog`, `drop_own_tables`,
 `assert_migrating_an_empty_schema_builds_the_models` and
 `assert_baseline_downgrades_and_upgrades_again`, and `compose_service`), the
-audit writer (ADR 0006's #135 amendment), and the migration runner (ADR 0020).
+audit writer (ADR 0006's #135 amendment), the migration runner (ADR 0020), and the readiness check behind
+`/ready` (`readiness.py`, ADR 0028), and the request-ID middleware and
+context (`request_ids.py`, #599), and the JSON log formatter and its setup
+(`logs.py`, #599), and the HTTP metrics and `/metrics` route
+(`http_metrics.py`, #599), and the tracing setup (`tracing.py`, #599).
 
 **The LMSR engine is not here, and that is deliberate.** [F-3] #43 put it in
 `ledger_service/core/lmsr.py`. ADR 0010 settled that the ledger owns the trade

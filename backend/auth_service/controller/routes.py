@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, Response, status
 
 from controller import transport
-from controller.dependencies import CurrentUser, DbSession
+from controller.dependencies import CurrentUser, DbSession, Limiter
 from core.errors import InvalidToken
 from model.schemas import (
     AuthResponse,
@@ -31,10 +31,14 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 )
 async def register(
     payload: RegisterRequest,
+    request: Request,
     session: DbSession,
+    limiter: Limiter,
     response: Response,
 ) -> AuthResponse:
-    user, tokens = await auth_service.register(session, payload)
+    user, tokens = await auth_service.register(
+        session, payload, limiter=limiter, client_ip=transport.client_ip(request)
+    )
     transport.set_auth_cookies(response, tokens)
     return AuthResponse(user=UserOut.model_validate(user), tokens=tokens)
 
@@ -47,10 +51,18 @@ async def register(
 )
 async def login(
     payload: LoginRequest,
+    request: Request,
     session: DbSession,
+    limiter: Limiter,
     response: Response,
 ) -> AuthResponse:
-    user = await auth_service.authenticate(session, payload.identifier, payload.password)
+    user = await auth_service.authenticate(
+        session,
+        payload.identifier,
+        payload.password,
+        limiter=limiter,
+        client_ip=transport.client_ip(request),
+    )
     tokens = await auth_service.issue_tokens(session, user)
     await session.commit()
     transport.set_auth_cookies(response, tokens)

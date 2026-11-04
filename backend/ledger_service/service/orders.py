@@ -50,6 +50,7 @@ from core.limit_orders import (
     executable_fill_of,
     refuse_if_crosses_book,
 )
+from core.metrics import ORDER_FILLS
 from core.pricing import QUANTUM, Side, per_share, quantize_cost
 from model.entities import (
     Account,
@@ -388,6 +389,8 @@ async def _commit_fill(
             log_refused_fill(refusal)
             raise CascadeFillRefused from refusal
         raise _placement_refusal_of(refusal, order.budget) from None
+    # After `post_all`'s commit: the order's own fill and the cascade's.
+    ORDER_FILLS.inc(1 + len(cascade))
 
     # After the commit, never before it, as on the trade path (ADR 0010).
     event = price_event_of(

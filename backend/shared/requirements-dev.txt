@@ -13,3 +13,24 @@ pytest==9.1.1
 
 # [F-12] #342. The coverage figure CI reports, one number per side.
 pytest-cov==7.1.0
+
+# #599. shared/readiness.py: the /ready route is tested here against a
+# FastAPI app. The services' own pins.
+fastapi==0.141.1
+# ASGITransport, to call that app without a server.
+httpx==0.28.1
+# The driver for the unreachable-Postgres test.
+asyncpg==0.31.0
+# The readiness tests are async.
+pytest-asyncio==1.4.0
+
+# #599. shared/http_metrics.py: the metrics are tested against a FastAPI app.
+prometheus-client==0.26.0
+
+# #599. shared/tracing.py: spans are recorded in memory and asserted here. The
+# services' own pins; the exporter is built only when an endpoint is set.
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-instrumentation-fastapi==0.66b2
+opentelemetry-instrumentation-httpx==0.66b2
+opentelemetry-instrumentation-sqlalchemy==0.66b2

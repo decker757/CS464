@@ -17,12 +17,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from controller.errors import register_error_handlers
 from controller.routes import router as ledger_router
+from core import observability
 from core.config import get_settings
-from core.database import dispose_engine, get_session_factory
+from core.database import dispose_engine, get_engine, get_session_factory
 from service import account_status, market_terms
 from service.leaderboard_refresher import run_leaderboard_refresher
 
-logging.basicConfig(level=logging.INFO)
+observability.configure_logging()
 logger = logging.getLogger(__name__)
 
 # Seconds, for connect and every read and write on the bus (D-051).
@@ -49,6 +50,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             socket_timeout=_REDIS_TIMEOUT_SECONDS,
             socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
         )
+        observability.instrument_redis()
 
         # One market_service client for the process too, because the gate
         # calls it on every trade that is not a replay (ADR 0017, D-047), and
@@ -132,9 +134,16 @@ def create_app() -> FastAPI:
     register_error_handlers(app)
     app.include_router(ledger_router)
 
-    @app.get("/health", tags=["ops"], summary="Liveness and readiness probe")
+    @app.get("/health", tags=["ops"], summary="Liveness: the process is up")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    observability.install(
+        app,
+        ready_checks={
+            "database": lambda: observability.is_database_reachable(get_engine())
+        },
+    )
 
     return app
 

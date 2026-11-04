@@ -118,6 +118,7 @@ from core.errors import (
 )
 from core.limit_orders import PlannedFill, RestingOrder, cascade_of
 from core.lmsr import prices as lmsr_prices
+from core.metrics import ORDER_FILLS, TRADES_COMMITTED
 from core.pricing import QUANTUM, Side, TradeCost, release_basis, trade_cost_of
 from model.entities import (
     Account,
@@ -911,6 +912,10 @@ async def execute(
     transactions = await _post_trade_batch(
         session, [movement, *(fill.movement for fill in fills)], trade_key=key, now=now
     )
+    # After `post_all`'s commit: a refusal has raised by here, and a replay
+    # returned at step 1 or 6.
+    TRADES_COMMITTED.labels(side=side.value).inc()
+    ORDER_FILLS.inc(len(fills))
 
     # 12. The response, from the trade's transaction `post_all` committed.
     result = result_of(transactions[0])

@@ -19,6 +19,9 @@
 #   - a release that cannot be pulled leaves the server untouched
 #   - a release that starts unhealthy is rolled back to the one before
 #   - a good release replaces the one before, which is kept, and nothing older
+#   - with Grafana configured but unreachable, Alloy runs steadily beside it,
+#     and Alloy failing outright still lets a roll succeed
+#   - switching Grafana off removes Alloy
 #   - going back from a release that added a service runs the old release
 #     from its own files, without that service, and with today's secrets: a
 #     database password changed since the old release was deployed
@@ -83,6 +86,7 @@ install_release() {
   cp "${2:-$repo/deploy/production/compose.yml}" "$directory/compose.yml"
   cp "$repo/deploy/production/sql/ensure-roles.sql" "$repo/sql/02-schemas.sql" "$directory/sql/"
   cp "$repo/deploy/production/test/backing.yml" "$directory/"
+  cp -r "$repo/deploy/production/alloy" "$directory/"
   echo "IMAGE_TAG=$1" > "$directory/release.env"
 }
 
@@ -100,6 +104,22 @@ compose() {
   (cd -P "$work/current" && docker compose --env-file "$work/app.env" --env-file release.env "$@")
 }
 
+is_ready_inside() {
+  # Asked from the gateway container, on the private network, where /ready is
+  # not hidden. ADR 0028.
+  compose exec -T gateway wget -qO- "http://$1:8000/ready" | grep -q '"status":"ready"'
+}
+
+metric_inside() {
+  # metric_inside <service> <metric name>: the service exports that metric.
+  # Asked from the gateway container, on the private network, where /metrics
+  # is not hidden. The body is fetched before grep reads it: grep -q quitting
+  # on its first match would kill wget with SIGPIPE under pipefail.
+  local body
+  body=$(compose exec -T gateway wget -qO- "http://$1:8000/metrics") || return 1
+  grep -q "^$2" <<<"$body"
+}
+
 every_image_is_at() {
   # Every image this stack pulled from the registry carries tag $1. The
   # stand-in Postgres and Redis come from Docker Hub and are not counted.
@@ -108,9 +128,39 @@ every_image_is_at() {
   test "$others" = 0
 }
 
-no_container_runs_for() {
-  test -z "$(docker ps -q --filter "label=com.docker.compose.project=$project" \
+no_container_for() {
+  # Running or not: a crash-looping container is briefly in neither list.
+  test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$project" \
     --filter "label=com.docker.compose.service=$1")"
+}
+
+alloy_is_steady() {
+  # Running, and never restarted. The state alone passes a crash loop, which
+  # reads "running" between restarts.
+  local container state
+  container=$(compose ps -aq alloy) || return 1
+  test -n "$container" || return 1
+  state=$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$container") || return 1
+  test "$state" = "true 0"
+}
+
+roll_log=""
+roll_records() {
+  # roll_records <tag>: roll that release, keeping what roll.sh printed.
+  local status=0
+  roll_log=$("$work/releases/$1/roll.sh" 2>&1) || status=$?
+  printf '%s\n' "$roll_log" | sed 's/^/        /'
+  return "$status"
+}
+roll_said() { grep -q "$1" <<< "$roll_log"; }
+
+without_lines() {
+  # without_lines <pattern...>: drop those lines from app.env, as a deploy
+  # that no longer sets them would.
+  local pattern arguments=()
+  for pattern in "$@"; do arguments+=(-e "$pattern"); done
+  grep -v "${arguments[@]}" "$work/app.env" > "$work/app.env.next"
+  mv "$work/app.env.next" "$work/app.env"
 }
 
 releases_kept_are() {
@@ -156,22 +206,24 @@ for service in auth market ledger audit realtime gateway; do
   push_as two "$service"
   push_as broken "$service"
 done
-publish() {
-  # publish <source image> <image to push>
-  docker tag "$1" "$2"
-  docker push -q "$2" > /dev/null
+# "broken" is release one, except that auth's image is built from the real one
+# with its command replaced by `sleep`: it keeps auth's own HEALTHCHECK, which
+# never passes because nothing listens on 8000.
+build_stand_in() {
+  # build_stand_in <image to push>
+  printf 'FROM %s/cs464-auth:one\nCMD ["sleep", "infinity"]\n' "$registry" \
+    | docker build -q -t "$1" - > /dev/null
+  docker push -q "$1" > /dev/null
 }
-# "broken" is release one, except that auth's image is the realtime service,
-# which cannot start without REDIS_URL. Its health check never passes.
-publish "$registry/cs464-realtime:one" "$registry/cs464-auth:broken"
+build_stand_in "$registry/cs464-auth:broken"
 # "three" is broken the same way, and also adds a service, `extra`, whose
 # image exists only at tag three. Going back to two with three's files would
 # look for cs464-extra:two, which nobody pushed.
 for service in market ledger audit realtime gateway; do
   push_as three "$service"
 done
-publish "$registry/cs464-realtime:one" "$registry/cs464-auth:three"
-publish "$registry/cs464-realtime:one" "$registry/cs464-extra:three"
+build_stand_in "$registry/cs464-auth:three"
+build_stand_in "$registry/cs464-extra:three"
 
 # --- A server's directory, as the deploy lays it out --------------------
 
@@ -254,18 +306,10 @@ expect "the bundle was built for https://auth.$domain" \
 
 for service in auth market ledger audit realtime; do
   expect "$service answers on $service.$domain" test "$(status_of "$service.$domain" /health)" = 200
+  expect "$service's /ready is not public" test "$(status_of "$service.$domain" /ready)" = 404
+  expect "$service is ready on the private network" is_ready_inside "$service"
 done
 expect "an unknown host name gets 404" test "$(status_of nobody.test /health)" = 404
-
-# [BE][A-2] #600. uvicorn trusts the leftmost X-Forwarded-For entry, which the
-# visitor writes. The gateway must replace the header, not append to it.
-forged=203.0.113.77
-curl -s -o /dev/null -H "Host: auth.$domain" -H "X-Forwarded-For: $forged" "$gateway/health"
-auth_log=$(compose logs auth 2>&1)
-expect "the auth log shows the requests it served" \
-  grep -q 'GET /health' <<< "$auth_log"
-expect "a forged X-Forwarded-For never reaches a service" \
-  test -z "$(grep "$forged" <<< "$auth_log")"
 
 username="stack$(date +%s)"
 password=$(random_secret)
@@ -282,6 +326,60 @@ token=$(curl -fsS -D "$login_headers" -H "Host: auth.$domain" -H 'Content-Type: 
 expect "the login cookie names the parent domain, so every subdomain gets it" \
   grep -qi "set-cookie: access_token=.*Domain=$domain" "$login_headers"
 expect "the login cookie is Secure" grep -qi "set-cookie: access_token=.*Secure" "$login_headers"
+
+# [BE][5.5] #599. /metrics is for Alloy on the private network, never the
+# internet. Every metric an alert reads exists from boot (labels are
+# pre-created), so a renamed one fails here. After login, so auth has counted
+# a request.
+for service in auth market ledger audit realtime; do
+  expect "$service's /metrics is not public" test "$(status_of "$service.$domain" /metrics)" = 404
+  expect "$service's /metrics answers on the private network" \
+    metric_inside "$service" service_dependency_ready
+done
+for pair in ledger:ledger_trades_committed_total market:market_close_sweep_last_success_timestamp_seconds \
+            market:market_close_sweep_lag_seconds auth:auth_limiter_fail_open_total \
+            realtime:realtime_open_websockets auth:http_requests_total; do
+  expect "${pair#*:} is exported" metric_inside "${pair%%:*}" "${pair#*:}"
+done
+
+# [BE][A-2] #600. Each registration forges a different X-Forwarded-For. If the
+# gateway passed them on, every one would count against a different address
+# and none would ever be refused.
+refused=no
+for attempt in $(seq 1 25); do
+  name="forge$attempt$(date +%s)"
+  status=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: auth.$domain" \
+    -H "X-Forwarded-For: 198.51.100.$attempt" -H 'Content-Type: application/json' \
+    -d "{\"username\":\"$name\",\"email\":\"$name@example.com\",\"password\":\"$password\"}" \
+    "$gateway/auth/register")
+  if [ "$status" = 429 ]; then refused=yes; break; fi
+done
+expect "forged addresses still share one registration limit" test "$refused" = yes
+
+# [BE][5.5] #599. Request IDs: stamped by the gateway, kept from the client,
+# and on the services' JSON log lines.
+request_id_of() {
+  curl -s -D - -o /dev/null -H "Host: auth.$domain" "$@" "$gateway/health" \
+    | tr -d '\r' | sed -n 's/^[Xx]-[Rr]equest-[Ii][Dd]: //p'
+}
+gateway_logged() { test -n "$1" || return 1; compose logs --no-log-prefix gateway 2>/dev/null | grep -q "rid=$1"; }
+ledger_logged_json() {
+  curl -s -o /dev/null -H "Host: ledger.$domain" -H 'X-Request-ID: stack-test-0002' \
+    -H "Authorization: Bearer $token" "$gateway/ledger/portfolio/me"
+  compose logs --no-log-prefix ledger 2>/dev/null | grep -q '"request_id": "stack-test-0002"'
+}
+rid=$(request_id_of)
+expect "a response carries a request ID" sh -c "echo '$rid' | grep -qE '^[0-9a-f]{32}$'"
+expect "the gateway logged the same ID the service answered with" gateway_logged "$rid"
+expect "a client's own request ID comes back unchanged" \
+  test "$(request_id_of -H 'X-Request-ID: stack-test-0001')" = stack-test-0001
+# 65 characters, one past the services' rule. The gateway must replace it
+# itself, or its log line names an ID the service then threw away.
+unsafe_rid=$(request_id_of -H "X-Request-ID: $(printf '%65s' '' | tr ' ' a)")
+expect "an unsafe request ID is replaced, not echoed" \
+  sh -c "echo '$unsafe_rid' | grep -qE '^[0-9a-f]{32}$'"
+expect "the gateway logged the ID that replaced an unsafe one" gateway_logged "$unsafe_rid"
+expect "the ledger's log line for a request is JSON and carries its ID" ledger_logged_json
 
 expect "the ledger mints the starting grant on first read" has_starting_grant
 expect "the market service reads its schema" \
@@ -323,19 +421,46 @@ expect "and auth runs release one's image" \
   test "$(compose ps --format '{{.Image}}' auth)" = "$registry/cs464-auth:one"
 expect "and it is undrained and serving" status_becomes 127.0.0.1 /lb-health 200
 
+echo "Grafana Cloud is configured, and unreachable"
+# Phase two: Alloy on, pointed at an address nothing answers. A deploy that a
+# Grafana outage could fail would be an outage of its own.
+cat >> "$work/app.env" <<EOF
+COMPOSE_PROFILES=observability
+TRACING_ENDPOINT=http://alloy:4318/v1/traces
+SERVER_LABEL=app-1
+GRAFANA_PROMETHEUS_URL=http://grafana.invalid/api/prom/push
+GRAFANA_PROMETHEUS_USER=1
+GRAFANA_LOKI_URL=http://grafana.invalid/loki/api/v1/push
+GRAFANA_LOKI_USER=2
+GRAFANA_OTLP_URL=http://grafana.invalid/otlp
+GRAFANA_OTLP_USER=3
+GRAFANA_CLOUD_TOKEN=not-a-real-token
+EOF
+
 echo "roll.sh, release two"
 install_release two
 expect "roll.sh moves to a good release" "$work/releases/two/roll.sh"
+expect "Alloy runs beside the release, steadily, and a Grafana it cannot reach does not fail the roll" \
+  alloy_is_steady
 expect "and the server is on two" test "$(current_release)" = two
 expect "and every service runs release two" every_image_is_at two
 expect "and only two and the release before it are kept" releases_kept_are "one two"
 expect "and release one's images are kept, for going back" image_is_here "$registry/cs464-auth:one"
 
-echo "the ledger's database password changes, as a deploy would change it"
+echo "roll.sh, release two again, with a Grafana address Alloy cannot parse"
+# release.sh refuses an address like this one, and this one it would accept;
+# it stands for Alloy failing in any way at all. Alloy exits as it starts.
+without_lines '^GRAFANA_PROMETHEUS_URL='
+echo 'GRAFANA_PROMETHEUS_URL=https://[bad' >> "$work/app.env"
+expect "roll.sh still succeeds" roll_records two
+expect "and warns that Alloy is not staying up" roll_said "WARNING: Alloy is not staying up"
+expect "and the server is on two" test "$(current_release)" = two
+expect "and serving" status_becomes 127.0.0.1 /lb-health 200
+
+echo "the ledger's database password changes, and Grafana is switched off, as a deploy would"
 LEDGER_DB_PASSWORD=$(random_secret)
-grep -v '^LEDGER_DATABASE_URL=' "$work/app.env" > "$work/app.env.next"
-echo "LEDGER_DATABASE_URL=postgresql+asyncpg://ledger_svc:$LEDGER_DB_PASSWORD@postgres:5432/cs464" >> "$work/app.env.next"
-mv "$work/app.env.next" "$work/app.env"
+without_lines '^LEDGER_DATABASE_URL=' '^COMPOSE_PROFILES=' '^TRACING_ENDPOINT=' '^GRAFANA_'
+echo "LEDGER_DATABASE_URL=postgresql+asyncpg://ledger_svc:$LEDGER_DB_PASSWORD@postgres:5432/cs464" >> "$work/app.env"
 "$work/releases/two/migrate.sh"
 
 echo "roll.sh, a release that adds a service and never becomes healthy"
@@ -343,7 +468,8 @@ install_release three "$work/compose-three.yml"
 expect "roll.sh refuses it" roll_is_refused three
 expect "and the server is back on two" test "$(current_release)" = two
 expect "and every service runs release two" every_image_is_at two
-expect "and the service only three has is not running" no_container_runs_for extra
+expect "and the service only three has is not running" no_container_for extra
+expect "and Alloy, with Grafana now off, is removed" no_container_for alloy
 expect "and it is serving" status_becomes 127.0.0.1 /lb-health 200
 expect "and its ledger reaches the database with today's password" has_starting_grant
 

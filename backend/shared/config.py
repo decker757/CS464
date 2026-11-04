@@ -80,3 +80,9 @@ class ServiceSettings(BaseSettings):
         if isinstance(v, str):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
+
+    # --- Tracing (#599) ---------------------------------------------------
+    # The OTLP/HTTP traces URL. Empty means no exporter: spans are still made,
+    # so `traceparent` propagates and logs carry a trace ID, but none is sent.
+    tracing_endpoint: str = ""
+    tracing_sample_ratio: float = Field(default=1.0, ge=0.0, le=1.0)

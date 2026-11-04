@@ -22,7 +22,12 @@ import pytest
 # asserts fail with no diff.
 pytest.register_assert_rewrite("shared.testing")
 
-from shared.testing import load_repo_env, open_audit_reader  # noqa: E402
+from shared.testing import (  # noqa: E402
+    attach_span_recorder,
+    load_repo_env,
+    open_audit_reader,
+    recording,
+)
 
 
 # Before any project module is imported. `get_settings` is lru_cached, so the
@@ -195,6 +200,28 @@ async def clean_database():
     yield
 
     await dispose_engine()
+
+
+@pytest.fixture(scope="session")
+def _span_recorder():
+    """The spans this process finishes while a test is watching, in memory. #599
+
+    On `observability.tracer_provider()` itself, because that one provider is
+    what the app, the engine, the clients and Redis were instrumented with, and
+    the instrumentors are process-wide: a provider of the test's own would see
+    nothing. Session-scoped so the processor is added once; it records only
+    while `span_exporter` has it armed.
+    """
+    from core import observability  # noqa: PLC0415
+
+    return attach_span_recorder(observability.tracer_provider())
+
+
+@pytest.fixture
+def span_exporter(_span_recorder):
+    """The spans finished during this test, and none from before or after it."""
+    with recording(_span_recorder) as spans:
+        yield spans
 
 
 @pytest.fixture

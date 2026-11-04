@@ -26,3 +26,17 @@ httpx==0.28.1
 # backend, the same rule this file already states for the JWT and Postgres
 # libraries.
 redis==8.1.0
+
+# #599. Request and readiness metrics, served at /metrics.
+prometheus-client==0.26.0
+
+# #599. Tracing: one trace per request across every service it touches,
+# exported over OTLP only when TRACING_ENDPOINT is set. shared/tracing.py.
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-instrumentation-fastapi==0.66b2
+# A span per SQL statement, per call to market_service and auth (with
+# `traceparent` sent along), and per command on the price bus.
+opentelemetry-instrumentation-sqlalchemy==0.66b2
+opentelemetry-instrumentation-httpx==0.66b2
+opentelemetry-instrumentation-redis==0.66b2

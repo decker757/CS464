@@ -91,7 +91,8 @@ docker compose -f docker-compose.yml -f docker-compose.scale.yml \
 cd backend/auth_service       # or market_service, audit_service, ledger_service
 .venv/bin/pip install -r requirements-dev.txt   # again after pulling #75 (Alembic)
                                                 # and #342 (pytest-cov)
-.venv/bin/pytest              # needs `docker compose up -d db`
+.venv/bin/pytest              # needs `docker compose up -d db`; auth's also needs
+                              # `redis` (its login limits, #600)
 .venv/bin/pytest unit_test/core unit_test/model   # no database needed
 COVERAGE_RCFILE=../.coveragerc .venv/bin/pytest --cov=. --cov-report=term-missing
                               # the figure CI reports, for one suite [F-12] #342
@@ -454,11 +455,16 @@ checkout. `pytest.ini` says the same with `pythonpath = . ..`.
 
 It holds token verification, the settings base, the role enum, the cursor
 format, the audit writer and `actor_of`, the migration runner (`shared/migrating.py`, ADR
-0020) and the test helpers in `shared/testing.py` (the env loader, the
-import-boundary scan, the migration guard tests' `schema_catalog`,
-`drop_own_tables`, the two `assert_...` round trips and `compose_service`, plus
-`open_audit_reader`, which opens the session the writing services' suites read
-the log back through).
+0020), the readiness check behind `/ready` (`shared/readiness.py`, ADR
+0028), the request-ID middleware and context (`shared/request_ids.py`), the
+JSON log formatter and setup (`shared/logs.py`), the HTTP metrics and
+`/metrics` route (`shared/http_metrics.py`), the tracing setup
+(`shared/tracing.py`) and the test helpers in
+`shared/testing.py` (the env loader, the import-boundary scan, the migration
+guard tests' `schema_catalog`, `drop_own_tables`, the two `assert_...` round
+trips and `compose_service`, plus `open_audit_reader`, which opens the session
+the writing services' suites read the log back through, and the span recorder
+the tracing tests arm with `recording`).
 That is the whole list, and ADR 0012 spends most of its length on what was
 left copied and why — `core/database.py` above all, because one shared `Base`
 would enrol every service's tables in every other service's metadata and the
@@ -703,6 +709,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0025** voiding a flawed market, by any admin without a stake, refunded at cost
 - **0026** production on DigitalOcean, two or more app servers behind a load balancer, deployed from main
 - **0027** login and registration limits in Redis, per username or email and address, failing open
+- **0028** /health is liveness for the balancer, /ready is readiness for dashboards and alerts
 
 Four known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

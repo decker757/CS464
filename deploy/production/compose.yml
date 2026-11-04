@@ -25,6 +25,8 @@ x-logging: &logging
   options:
     max-size: "10m"
     max-file: "5"
+    # Names the compose service on every line, so Alloy can label the stream.
+    labels: "com.docker.compose.service"
 
 x-migrate: &migrate
   # Run only when named: `docker compose run --rm auth-migrate`. Once per
@@ -47,6 +49,15 @@ x-app-environment: &app-environment
   FORWARDED_ALLOW_IPS: "*"
   JWT_SECRET: ${JWT_SECRET:?}
   CORS_ORIGINS: https://${DOMAIN:?}
+  # [BE][5.5] #599. Empty means no traces; release.sh sets both when Grafana
+  # Cloud is configured.
+  TRACING_ENDPOINT: ${TRACING_ENDPOINT:-}
+  TRACING_SAMPLE_RATIO: ${TRACING_SAMPLE_RATIO:-1.0}
+
+volumes:
+  # Alloy's read positions in the container logs, so a restart resumes. Above
+  # `services` because test/stack-test.sh appends a service to the file's end.
+  alloy-data: {}
 
 services:
   auth-migrate:
@@ -82,6 +93,8 @@ services:
       DATABASE_POOL_SIZE: 3
       DATABASE_MAX_OVERFLOW: 1
       LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
+      # [A-2] #600, ADR 0027. Login and registration limits; fails open.
+      REDIS_URL: ${REDIS_URL:?}
       COOKIE_SECURE: "true"
       # The cookie is set by auth.<domain> and read by market., ledger.,
       # audit. and realtime.<domain>, so it names the parent domain. ADR 0002.
@@ -161,3 +174,30 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # [BE][5.5] #599. Metrics, logs and traces to Grafana Cloud. Started only
+  # under the `observability` profile, which release.sh switches on when it is
+  # given Grafana settings. Its settings are all optional here (never `:?`):
+  # a server with Grafana off must still read this file.
+  #
+  # No Docker socket: it would hand a third-party container root on the host,
+  # and the container logs are readable from the json-file directory instead.
+  # No healthcheck: roll.sh's `up --wait` must never wait on Grafana, and
+  # Alloy retries a Grafana it cannot reach rather than failing.
+  alloy:
+    <<: *app
+    image: grafana/alloy:v1.21.3
+    profiles: ["observability"]
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - alloy-data:/var/lib/alloy/data
+    environment:
+      SERVER_LABEL: ${SERVER_LABEL:-}
+      GRAFANA_PROMETHEUS_URL: ${GRAFANA_PROMETHEUS_URL:-}
+      GRAFANA_PROMETHEUS_USER: ${GRAFANA_PROMETHEUS_USER:-}
+      GRAFANA_LOKI_URL: ${GRAFANA_LOKI_URL:-}
+      GRAFANA_LOKI_USER: ${GRAFANA_LOKI_USER:-}
+      GRAFANA_OTLP_URL: ${GRAFANA_OTLP_URL:-}
+      GRAFANA_OTLP_USER: ${GRAFANA_OTLP_USER:-}
+      GRAFANA_CLOUD_TOKEN: ${GRAFANA_CLOUD_TOKEN:-}

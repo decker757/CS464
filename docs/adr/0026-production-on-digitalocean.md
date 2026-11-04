@@ -1,6 +1,8 @@
 # ADR 0026: Production on DigitalOcean, two or more app servers behind a load balancer, deployed from main
 
 - **Status:** Proposed, 2026-11-01. Accepted when the #19 stack merges.
+  Superseded in part by [ADR 0028](0028-liveness-for-the-balancer-readiness-for-alerts.md):
+  `/health` stays liveness, and `/ready` is what the alerts watch.
 - **Date:** 2026-11-01
 - **Decided by:** Ernest, on 2026-11-01: DigitalOcean, more than one app
   server rather than one, and deploys from `main` only for now. The details

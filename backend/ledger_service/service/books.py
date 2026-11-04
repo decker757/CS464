@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import has_pending_writes, release_before_calling_out
 from core.errors import MarketNotPublished, MarketTermsUnavailable
+from core.metrics import BOOK_LOCK_WAIT
 from model.entities import (
     AccountKind,
     MarketBook,
@@ -216,7 +217,10 @@ async def lock_book(session: AsyncSession, market_id: uuid.UUID) -> MarketBook:
         .with_for_update()
         .execution_options(populate_existing=True)
     )
-    return (await session.execute(stmt)).scalar_one()
+    # The statement only: the wait for the lock is what this measures.
+    with BOOK_LOCK_WAIT.time():
+        result = await session.execute(stmt)
+    return result.scalar_one()
 
 
 async def find_result(

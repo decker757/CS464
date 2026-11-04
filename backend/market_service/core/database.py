@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
+from core import observability
 from core.config import get_settings
 
 # This service's schema, created and granted in sql/02-schemas.sql. Named
@@ -40,7 +41,11 @@ def get_engine() -> AsyncEngine:
             # Recycles a connection Postgres closed under us rather than
             # handing a dead one to a request.
             pool_pre_ping=True,
+            # Parameter values (emails, password hashes, idempotency keys)
+            # never reach a log line or a span's error status.
+            hide_parameters=True,
         )
+        observability.instrument_engine(_engine)
     return _engine
 
 
