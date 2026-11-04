@@ -9,6 +9,8 @@
 # Needs `gh` logged in as an admin of the repository, and the same
 # DIGITALOCEAN_TOKEN and TF_VAR_domain as `infra/tf`. Every value is piped
 # into `gh` on stdin, so none appears on a command line or in the terminal.
+# The Grafana Cloud values are not Terraform's, so this script does not push
+# them. They are set by hand: docs/deployment.md, "Monitoring: first-time setup".
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)

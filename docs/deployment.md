@@ -261,6 +261,71 @@ subdomain, and only Alloy, on the private network, reads it. To look
 yourself, use the `exec gateway wget` command above with `/metrics` in place
 of `/ready`.
 
+## Monitoring: first-time setup
+
+Each server runs Grafana Alloy, which sends metrics, logs and traces to
+Grafana Cloud. It needs six values and one token from your Grafana Cloud
+stack. Alloy is optional: with no token, no Alloy runs and the deploy works
+as before.
+
+1. Make a free Grafana Cloud stack: grafana.com, *My Account*, *Add stack*.
+2. *Prometheus* tile, *Details*. Copy the **remote write endpoint**
+   (`https://prometheus-<...>.grafana.net/api/prom/push`) and the numeric
+   **username / instance ID**.
+3. *Loki* tile, *Details*. Copy the **URL** and add `/loki/api/v1/push` to
+   the end of it. Copy the **user** too.
+4. *OpenTelemetry* tile (*Connections*, *OpenTelemetry (OTLP)*). Copy the
+   **OTLP endpoint** (`https://otlp-gateway-<...>.grafana.net/otlp`) and the
+   **instance ID**. Use it exactly as shown, ending in `/otlp`. Alloy adds
+   `/v1/traces` itself, so a longer value would send traces to the wrong
+   address.
+5. *Access policies*: make a policy with the scopes `metrics:write`,
+   `logs:write` and `traces:write`, and nothing else. It needs no read scope.
+   Then make a token for that policy and copy it. Grafana shows it once.
+6. Put them in the GitHub `production` environment. Only a run on `main` can
+   use it (ADR 0026). The six values are web addresses and numbers, not
+   secrets, so they are variables:
+
+   ```bash
+   gh variable set GRAFANA_PROMETHEUS_URL  --env production --body '<remote write URL>'
+   gh variable set GRAFANA_PROMETHEUS_USER --env production --body '<instance id>'
+   gh variable set GRAFANA_LOKI_URL        --env production --body '<loki push URL>'
+   gh variable set GRAFANA_LOKI_USER       --env production --body '<loki user>'
+   gh variable set GRAFANA_OTLP_URL        --env production --body '<otlp endpoint>'
+   gh variable set GRAFANA_OTLP_USER       --env production --body '<instance id>'
+   gh secret   set GRAFANA_CLOUD_TOKEN     --env production
+   ```
+
+   The last one is the only secret. `gh` asks for it on stdin: paste the
+   token there, so it never appears on a command line.
+
+If your stack's pages name these differently, follow what they show and fix
+this list.
+
+**The next deploy from `main` picks them up.** `release.sh` rewrites each
+server's `app.env` on every deploy, so nothing on a server needs editing by
+hand. Alloy starts after the roll, once the new release is serving.
+
+**Mistakes fail early.** If the token is set, `release.sh` needs all six
+values, and each URL must start with `https://`. It checks this before it
+touches any server, so a missing or malformed value stops the deploy and
+changes nothing. The Loki URL must end in `/loki/api/v1/push` and the
+Prometheus one in `/api/prom/push`.
+
+**Alloy cannot break a deploy.** It is started last, as best effort. If it
+fails (a wrong token, say), the roll prints a warning and carries on.
+
+**To switch Alloy off,** delete the token and deploy:
+
+```bash
+gh secret delete GRAFANA_CLOUD_TOKEN --env production
+```
+
+With no token, the next deploy removes the Alloy container from each server.
+The variables can stay. They do nothing without the token.
+
+`infra/push-secrets.sh` does not set any of these. They are not Terraform's.
+
 ## Scaling
 
 - **More app servers:** raise `app_server_count` in
