@@ -25,15 +25,19 @@ installing.
 - **What it records:**
   - `http_req_duration{name:trade}`: every trade request's latency, the
     retries included. Its p95 is the number the ticket asks for.
-  - `trade_errors`: the share of trades that ended in anything other than a
-    commit.
+  - `trade_errors`: the share of trades refused for anything but a stale
+    quote. A 5xx, or a 4xx that is not `quote_stale`, is the server's fault
+    or the script's.
   - `trades_committed`, `quote_stale_retries` and `trades_given_up`
-    (five stale quotes in a row): counts.
+    (five stale quotes in a row): counts. A trade given up is contention on
+    the book, not an error, so it is not in `trade_errors`. Read the two
+    together.
   - `http_req_duration{name:snapshot}`: the price read before each trade.
-- **Two thresholds,** so a run says pass or fail by itself:
+- **Three thresholds,** so a run says pass or fail by itself:
   - a trade's p95 is under 1 s, the same line as the latency alert
     (`deploy/grafana/alerts.yaml`)
-  - fewer than 1% of trades fail
+  - a snapshot's p95 is under 1 s too
+  - fewer than 1% of trades end in an error
 - **It measures from the machine that runs it.** Against production, every
   number includes the trip from that machine to the load balancer and back.
 
@@ -43,8 +47,13 @@ suspension and logs each one in. After it, it suspends them again, with a
 reason in the audit log, because a suspended account is left off the
 leaderboard (`docs/api/ledger-service.md`, "Who is ranked"). They are reused
 because one address may register only 20 accounts an hour, and log in 30
-times a minute (ADR 0027). So the first run registers them, and every login
-is spaced 2.1 s apart. Setup takes about two minutes.
+times a minute (ADR 0027). So every login is spaced 2.5 s apart, and setup
+takes about two minutes. The script touches only `loadtest_01` up to
+`USERS`, by exact name, so a real account whose name starts `loadtest_` is
+never unsuspended.
+
+**The test trades only a market whose question starts "Load test".** Given
+any other `MARKET_ID`, setup refuses and nothing is traded.
 
 ## Running it
 
@@ -54,10 +63,16 @@ is spaced 2.1 s apart. Setup takes about two minutes.
    ("Load test: ignore"). Publish it, and copy its id from the address bar.
    The test never touches any other market's prices.
 2. **Put your admin password in a file,** without typing it on a command
-   line: copy it, then run `pbpaste > ~/.cs464-loadtest-admin-password &&
-   chmod 600 ~/.cs464-loadtest-admin-password`. Delete the file after the
-   run. The traders' password is made for you on the first run, in
+   line: copy it, then run
+   `(umask 077; pbpaste > ~/.cs464-loadtest-admin-password)`. Delete the file
+   after the run. The traders' password is made for you on the first run, in
    `~/.cs464-loadtest-trader-password`. Keep that one: the accounts need it.
+   Run the test from the machine that holds it.
+
+**The first run** registers the 50 accounts. One address may register only 20
+an hour, so on a site with the limits on, register them over three hours:
+`USERS=20 DURATION=10s`, then `USERS=40` an hour later, then `USERS=50`. A
+register refused with 429 stops setup and says so.
 
 **The run:**
 
@@ -66,9 +81,11 @@ DOMAIN=<domain> MARKET_ID=<market id> ADMIN_IDENTIFIER=<your admin username> \
   loadtest/run.sh
 ```
 
-Against a local stack, give the two services' addresses instead of `DOMAIN`.
-For example, for the scaled stack (`docs/horizontal-scaling.md`):
-`AUTH_URL=http://host.docker.internal:18000 LEDGER_URL=http://host.docker.internal:18003`.
+Against a local stack, give the three services' addresses instead of
+`DOMAIN`. For example, for the scaled stack (`docs/horizontal-scaling.md`):
+`AUTH_URL=http://host.docker.internal:18000 MARKET_URL=http://host.docker.internal:18001 LEDGER_URL=http://host.docker.internal:18003`.
+The local stack raises the per-address limits, so `LOGIN_SPACING_SECONDS=0.2`
+is fine there.
 A local stack needs an admin and a market first. Promote yourself the way the
 root README says ("Creating a market needs an administrator"), adding
 `-p cs464scale -f docker-compose.yml -f docker-compose.scale.yml` to its
@@ -79,25 +96,33 @@ root README says ("Creating a market needs an administrator"), adding
 The summary is printed and saved in `loadtest/results/`, which git ignores.
 Copy the numbers into the table below.
 
-**If you stop it with Ctrl-C once,** k6 still suspends the accounts. Twice
-skips that, and the next run lifts them anyway.
+**If you stop it with Ctrl-C once,** k6 stops the traders and still suspends
+the accounts. If setup fails partway, it suspends every account it had
+unsuspended before it stops. **Twice skips all of that,** and the accounts
+stay unsuspended, so on the leaderboard. Suspend them again with a one-second
+run (`USERS=50 DURATION=1s`), or by hand from Admin → Users: search
+`loadtest_`.
 
 **After it:** close the throwaway market early, then void it from its admin
-page. Voiding refunds every trade at cost (ADR 0025), so the 50 accounts end
-where they started.
+page (ADR 0025). Voiding refunds, at cost, the shares still held when the run
+stopped. Each trader sells back what it buys, so few are held. What a round
+trip gained or lost stays, a few credits at most.
 
 ## Results
 
 | When | Where | Traders, for | Trades committed | Trade p95 | Trade p99 | Errors | Stale quotes retried | Trades given up |
 |---|---|---|---|---|---|---|---|---|
-| 2026-11-04 | a laptop, the scaled stack (two of each service) | 10, 30 s | 469 (14 a second) | 78 ms | 210 ms | 0% | 609 | 41 |
-| 2026-11-04 | a laptop, the scaled stack (two of each service) | 50, 1 min | 1,137 (15 a second) | 258 ms | 431 ms | 0% | 9,603 | 1,346 |
+| 2026-11-04 | a laptop, the scaled stack (two of each service) | 10, 30 s | 469 (16 a second) | 78 ms | 210 ms | 0% | 609 | 41 |
+| 2026-11-04 | a laptop, the scaled stack (two of each service) | 50, 1 min | 1,137 (19 a second) | 258 ms | 431 ms | 0% | 9,603 | 1,346 |
+
+"A second" is over the trading time alone. k6's own `/s` figure divides by a
+time that includes setup.
 
 **What the numbers say.**
 - **Latency holds.** With 50 traders the p95 is a quarter of the alert's
   line, and no trade failed with an error.
-- **One market's throughput does not grow with traders.** It was about 15
-  trades a second with 10 traders and with 50. With 50, more than half the
+- **One market's throughput barely grows with traders.** Five times the
+  traders committed 16 trades a second, then 19. With 50, more than half the
   attempts gave up after five stale quotes.
 - **That is two rules doing their jobs.**
   - Every trade moves the price, so it makes every other trader's quote stale.
