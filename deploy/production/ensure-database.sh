@@ -27,10 +27,13 @@ here=$(cd "$(dirname "$0")" && pwd)
 # connection argument. Given the URL as an argument, the password would be in
 # psql's command line, where `ps` on the server shows it (#611). libpq does not
 # read a whole URL from one variable, so it is split here. Bash does the work
-# with builtins only, so no step puts the URL in a command line either.
-url_decode() {
-  # %40 back to @, and so on. printf is a bash builtin.
-  printf '%b' "${1//%/\\x}"
+# with builtins only, so no step puts the URL in a command line either. The
+# twin is frontend/e2e/seed/production.ts, connectionVariablesOf.
+url_decode_into() {
+  # url_decode_into <variable> <text>: %40 back to @, and so on. Any backslash
+  # already in the text is doubled first, so printf's %b reads it literally.
+  local escaped=${2//\\/\\\\}
+  printf -v "$1" '%b' "${escaped//%/\\x}"
 }
 
 url=${DATABASE_ADMIN_URL#*://}        # user:password@host:port/database?query
@@ -43,17 +46,18 @@ credentials=${url%@*}                  # up to the last @
 location=${url##*@}
 host_and_port=${location%%/*}
 
-PGUSER=$(url_decode "${credentials%%:*}")
-PGPASSWORD=$(url_decode "${credentials#*:}")
+url_decode_into PGUSER "${credentials%%:*}"
+url_decode_into PGPASSWORD "${credentials#*:}"
 PGHOST=${host_and_port%:*}
 PGPORT=5432
 if [[ $host_and_port == *:* ]]; then
   PGPORT=${host_and_port##*:}
 fi
-PGDATABASE=$(url_decode "${location#*/}")
-# Only what the URL asks for. Production's says sslmode=require; the stack
-# test's stand-in has no TLS, and libpq's default, prefer, is what psql used
-# when it was handed the URL.
+url_decode_into PGDATABASE "${location#*/}"
+# Only what the URL asks for, and no other parameter. Production's says
+# sslmode=require; the stack test's stand-in has no TLS, and libpq's default,
+# prefer, is what psql used when it was handed the URL. The seed's twin
+# defaults to require instead: it only ever reaches production.
 PGSSLMODE=
 if [[ -n $query ]]; then
   IFS='&' read -ra parameters <<< "$query"
