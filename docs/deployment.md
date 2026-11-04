@@ -206,7 +206,8 @@ line. To follow one request, grep or filter by `request_id`: a response's
 the gateway's `rid=`. The gateway stamps an ID when the client sent none, or
 one the services would not keep, so a 502 or 504 the gateway answered itself
 still has a line to find. With Grafana on, the dashboard does the same
-search across both servers at once: see "Following one request" below.
+search of the services' lines across both servers at once, though not of the
+gateway's: see "Following one request" below.
 
 **The client's address:** the gateway resolves it and overwrites
 `X-Forwarded-For` with that one address (`set_real_ip_from` in
@@ -281,8 +282,9 @@ as before.
    **instance ID**. Use it exactly as shown, ending in `/otlp`. Alloy adds
    `/v1/traces` itself, so a longer value would send traces to the wrong
    address.
-5. *Access policies*: make a policy with the scopes `metrics:write`,
-   `logs:write` and `traces:write`, and nothing else. It needs no read scope.
+5. *Access policies*: make a policy named `cs464-servers` with the scopes
+   `metrics:write`, `logs:write` and `traces:write`, and nothing else. It
+   needs no read scope.
    Then make a token for that policy and copy it. Grafana shows it once.
 6. Put them in the GitHub `production` environment. Only a run on `main` can
    use it (ADR 0026). The six values are web addresses and numbers, not
@@ -317,8 +319,10 @@ receives nothing.
 
 **Alloy cannot break a deploy.** It is started last, as best effort. If it
 will not start or keeps restarting, the roll prints a warning and carries on.
-The server then stops sending metrics, and `cs464-service-down` emails about
-it within about 8 minutes. A wrong token or a wrong URL ending looks the same
+The server then stops sending metrics, and if it was sending in the last
+hour, `cs464-service-down` emails about it within about 8 minutes. A server
+that has never sent, or has been silent for over an hour, pages nobody: the
+checklist's `server` step is what catches that. A wrong token or a wrong URL ending looks the same
 from Grafana: Alloy runs and the deploy is green, but no data arrives, so the
 same alert fires. After an hour that alert clears by itself, even if the
 server is still silent, so a "resolved" email is not proof that data is back:
@@ -334,6 +338,10 @@ gh secret delete GRAFANA_CLOUD_TOKEN --env production
 
 With no token, the next deploy removes the Alloy container from each server.
 The variables can stay. They do nothing without the token.
+
+Until a deploy succeeds, Alloy keeps the old token and keeps shipping. To stop
+it at once, also revoke the token in Grafana Cloud: *Access policies*, the
+`cs464-servers` policy, its token, *Delete*.
 
 `infra/push-secrets.sh` does not set any of these. They are not Terraform's.
 
@@ -355,7 +363,8 @@ email contact point at all, so make that one first: *Alerting*, *Contact
 points*, *Add*, type *Email*, with the addresses to page. Its queries
 name the datasource `grafanacloud-prom`, a Grafana Cloud stack's own
 Prometheus. Check yours under *Connections*, *Data sources*: the UID is the
-last part of the Prometheus one's URL.
+last part of the Prometheus one's URL. If it differs, change every
+`datasourceUid: grafanacloud-prom` in alerts.yaml before importing.
 
 `cs464-service-down` also fires for a server that has stopped sending
 metrics: one seen in the last hour and silent now. If that server stays
@@ -400,7 +409,11 @@ panel leaves them out. To find one, use *Explore* on Loki with
 **What a trace keeps.** Spans carry no query string, cookie or Authorization
 header. They do keep the client address and the user agent, by decision, for
 chasing abuse. The gateway's access lines start with the client address too.
-The services' own JSON log lines carry no IP.
+The services' own JSON log lines carry no IP, except realtime's websocket
+handshake lines, which uvicorn writes as
+`<client ip>:<port> - "WebSocket <path>" [accepted]` (or `403`), with the path
+as requested, query string included. The socket never takes a token in its
+query string, by design (ADR 0002), so nothing secret is in that line.
 
 **Things that look wrong and are not:**
 
@@ -411,6 +424,8 @@ The services' own JSON log lines carry no IP.
   address ending in `/otlp`, and Alloy adds `/v1/traces` itself (first-time
   setup, step 4). A wrong `TRACING_ENDPOINT` breaks nothing else: the
   service's log just shows OpenTelemetry warnings that it is dropping spans.
+- The same "dropping span" warnings appear while Alloy is down, including
+  the moments between a roll and Alloy starting. They are harmless.
 - Background work makes small traces with no request behind them: the close
   sweep, every 10 s on each server, and the leaderboard refresh, every 60 s
   on the first server. In Tempo, `{ kind = server }` shows requests only.
@@ -435,10 +450,17 @@ that carries this work. That deploy comes only after the showcase.
    a few minutes, or it pages at once.
 2. Every panel on *CS464 / Overview* has data. Make a trade first, or the
    trading panels have nothing to show.
-3. Tempo shows a trade as one trace across ledger, market and auth, and its
+3. The dashboard's `server` box lists every server, `app-1` up to the last
+   `app-N`. A server missing there has never sent, and no alert covers it.
+4. **Ask Ernest before you SSH.** On one server, run
+   `docker stats --no-stream` and put Alloy's memory use in the README's
+   cost paragraph, in place of "a little memory". If it is over about
+   300 MB, consider a `mem_limit` on `alloy` in
+   `deploy/production/compose.yml`.
+5. Tempo shows a trade as one trace across ledger, market and auth, and its
    spans carry no query string, cookie or Authorization header (the client
    address and user agent are kept, by decision).
-4. Trigger `cs464-service-down` once. **Ask Ernest before you SSH.** On one
+6. Trigger `cs464-service-down` once. **Ask Ernest before you SSH.** On one
    server, in `/opt/cs464/current`, run
    `docker compose --env-file ../../app.env --env-file release.env stop audit`.
    Wait 6 minutes, and check that the email arrives. It can take a minute
@@ -510,5 +532,7 @@ certificate, and TLS to the managed databases.
 - **Re-measuring the series budget.** A week after that release, read the
   real series count off Grafana Cloud's *Usage* page and update the estimate
   above and the README.
-- **Login rate limiting:** #600.
+- **Login rate limiting in production.** #600 is merged into `dev`, but
+  production deploys only from `main`, after the showcase, so it is not live
+  yet.
 - **Load test numbers:** #20, against this deployment.

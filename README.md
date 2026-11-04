@@ -246,10 +246,13 @@ What it shows:
 
 Traces keep the client's address and user agent, by decision, and the
 gateway's access log starts with the client's address. The services' own log
-lines carry no IP, and no trace carries a query string, cookie or
-Authorization header.
+lines carry no IP, with one exception: realtime logs each websocket handshake
+as `<client ip>:<port> - "WebSocket <path>" [accepted]` (or `403`), with the
+path as requested, query string included. The socket never takes a token in
+its query string, by design (ADR 0002), so nothing secret is in that line. No
+trace carries a query string, cookie or Authorization header.
 
-Five alerts, each emailed to the stack's default contact point:
+Five alerts, each emailed to the `cs464-email` contact point:
 
 | Alert | Fires when | For |
 | --- | --- | --- |

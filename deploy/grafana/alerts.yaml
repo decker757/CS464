@@ -207,6 +207,7 @@ groups:
           summary: "{{ if $labels.service }}{{ $labels.service }} on {{ $labels.server }} cannot be scraped, is not ready, or has stopped sending metrics{{ else }}No server is sending metrics{{ end }}"
         labels:
           severity: page
+        # Paused in Grafana until the first release, so re-importing this file resumes it.
         isPaused: false
         notification_settings:
           receiver: cs464-email

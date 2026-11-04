@@ -17,7 +17,8 @@ attributes are cut back to the path as each span starts. Request and response
 headers, cookies and Authorization included, are not captured in 0.66b2 unless
 asked for, and nothing here asks. The query-string hook is the only attribute
 rewrite: a server span keeps the client address and user agent on purpose, a
-decision for chasing abuse. Logs still carry no IP.
+decision for chasing abuse. Log lines carry no IP, except uvicorn's websocket
+handshake lines in realtime, which start with the client address.
 
 Only the API, the SDK and the FastAPI instrumentation are imported at the top,
 because all five services install them. The exporter and the httpx, SQLAlchemy
