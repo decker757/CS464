@@ -13,10 +13,13 @@ installing.
 - **50 traders, for 5 minutes.** Each one, once a second, reads the market's
   snapshot, buys one share of an outcome at that `state_version`, and sells it
   back.
-- **All 50 trade on one market.** That is the hardest case for the ledger:
-  every trade locks the same book row (ADR 0015), so trades on one market
-  queue behind each other however many servers there are. More markets
-  spread the load. One busy market cannot.
+- **On one market, or spread across several.** `MARKET_IDS` takes one id or
+  several separated by commas, and the traders are dealt across them in turn.
+  One market is the hardest case for the ledger: every trade locks the same
+  book row (ADR 0015), so trades on one market queue behind each other however
+  many servers there are. Spread across markets, they mostly do not wait for
+  each other. Run both: the first finds one market's ceiling, the second what
+  the servers carry.
 - **A refused quote is retried, as a person would.** When another trader has
   just moved the price, the trade is refused `409 quote_stale` with the
   current `state_version`. The trader retries at that version, up to five
@@ -53,13 +56,13 @@ takes about two minutes. The script touches only `loadtest_01` up to
 never unsuspended.
 
 **The test trades only a market whose question starts "Load test".** Given
-any other `MARKET_ID`, setup refuses and nothing is traded.
+any other market id, setup refuses and nothing is traded.
 
 ## Running it
 
 **Before it:**
-1. **Make a throwaway market** as an administrator, with two outcomes and a
-   closing time after the run. Name it so nobody trades it by mistake
+1. **Make the throwaway markets** as an administrator, one or several, each
+   with two outcomes and a closing time after the run. Name it so nobody trades it by mistake
    ("Load test: ignore"). Publish it, and copy its id from the address bar.
    Make it as the admin who will run the test: setup reads the market's
    question, and the market service shows it only to its creator.
@@ -81,7 +84,7 @@ setup and says so.
 **The run:**
 
 ```bash
-DOMAIN=<domain> MARKET_ID=<market id> ADMIN_IDENTIFIER=<your admin username> \
+DOMAIN=<domain> MARKET_IDS=<id>[,<id>...] ADMIN_IDENTIFIER=<your admin username> \
   loadtest/run.sh
 ```
 
@@ -109,7 +112,7 @@ k6 stops early. Suspend them again with a one-second run
 (`USERS=50 DURATION=1s loadtest/run.sh`), or by hand from Admin → Users:
 search `loadtest_`.
 
-**After it:** close the throwaway market early, then void it from its admin
+**After it:** close each throwaway market early, then void it from its admin
 page (ADR 0025). Voiding refunds, at cost, the shares still held when the run
 stopped. Each trader sells back what it buys, so few are held. What a round
 trip gained or lost stays, a few credits at most.
@@ -120,6 +123,8 @@ trip gained or lost stays, a few credits at most.
 |---|---|---|---|---|---|---|---|---|
 | 2026-11-04 | a laptop, the scaled stack (two of each service) | 10, 30 s | 469 (16 a second) | 78 ms | 210 ms | 0% | 609 | 41 |
 | 2026-11-04 | a laptop, the scaled stack (two of each service) | 50, 1 min | 1,137 (19 a second) | 258 ms | 431 ms | 0% | 9,603 | 1,346 |
+| 2026-11-04 | a laptop, the scaled stack, 1 market | 20, 20 s | 354 (18 a second) | 122 ms | 231 ms | 0% | — | 151 |
+| 2026-11-04 | a laptop, the scaled stack, 5 markets | 20, 20 s | 702 (35 a second) | 196 ms | 263 ms | 0% | — | 3 |
 
 "A second" is over the trading time alone. k6's own `/s` figure divides by a
 time that includes setup.
@@ -136,5 +141,6 @@ time that includes setup.
     so each of those traders has to quote again.
   - Trades on one market commit one at a time, because each locks the same
     book row (ADR 0015).
-- **So a second server adds capacity across many markets, and none for one
-  busy market.**
+- **Spread across five markets, the same 20 traders committed twice the
+  trades, and almost none gave up.** So a second server adds capacity across
+  many markets, and none for one busy market.
