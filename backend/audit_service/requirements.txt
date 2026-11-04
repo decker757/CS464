@@ -11,7 +11,7 @@ SQLAlchemy[asyncio]==2.0.52
 asyncpg==0.31.0
 
 # Token verification only. This service never signs.
-PyJWT==2.14.0
+PyJWT==2.15.0
 
 # #599. Request and readiness metrics, served at /metrics.
 prometheus-client==0.26.0
