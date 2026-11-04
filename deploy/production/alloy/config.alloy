@@ -40,12 +40,16 @@ prometheus.remote_write "grafana" {
 
 local.file_match "containers" {
   path_targets = [{"__path__" = "/var/lib/docker/containers/*/*-json.log"}]
+  // Every roll makes new containers, so new files: look for them each second.
+  sync_period  = "1s"
 }
 
 loki.source.file "containers" {
   targets    = local.file_match.containers.targets
   // A file Alloy has no saved position for is read from its end, so a first
   // start ships new lines, not every log already on disk (50 MB a container).
+  // That holds for every new container's file too: whatever it writes before
+  // the next sync above, about its first second, is never shipped.
   tail_from_end = true
   forward_to    = [loki.process.containers.receiver]
 }

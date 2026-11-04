@@ -85,15 +85,16 @@ alloy_up_seconds=120
 
 alloy_up() {
   # alloy_up <release directory>: start or recreate Alloy, for at most
-  # $alloy_up_seconds where timeout(1) exists, which is every server. Its image
-  # is pulled from Docker Hub when missing, and a Docker Hub that hangs would
+  # $alloy_up_seconds where timeout(1) exists, which is every server, and
+  # killed 10 s later if it ignores the TERM. Its image is pulled from
+  # Docker Hub when missing, and a Docker Hub that hangs would
   # otherwise hold this server, and the deploy waiting on it, until the job's
   # own timeout cancels the deploy before it can send servers back. A Mac
   # running the stack test may lack timeout(1), and waits. timeout(1) cannot
   # run a shell function, hence compose_with_profiles' command, written out.
   local limit=()
   if command -v timeout > /dev/null; then
-    limit=(timeout "$alloy_up_seconds")
+    limit=(timeout -k 10 "$alloy_up_seconds")
   fi
   (cd "$1" && COMPOSE_PROFILES=observability ${limit[@]+"${limit[@]}"} docker compose \
     --env-file "$root/app.env" --env-file release.env up -d --no-deps --quiet-pull alloy)
@@ -127,7 +128,8 @@ refresh_alloy() {
   echo "roll: starting Alloy"
   status=0
   alloy_up "$directory" || status=$?
-  if [ "$status" = 124 ]; then
+  # 124: timed out and stopped on the TERM; 137: killed 10 s after it.
+  if [ "$status" = 124 ] || [ "$status" = 137 ]; then
     echo "roll: WARNING: Alloy timed out starting, after ${alloy_up_seconds}s; this server is serving, but sends nothing to Grafana" >&2
     return 0
   elif [ "$status" != 0 ]; then
