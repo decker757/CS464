@@ -41,6 +41,7 @@ from core.errors import (
     MarketNotApproved,
     MarketTermsUnavailable,
 )
+from core.metrics import SETTLEMENTS
 from core.pricing import QUANTUM
 from model.audit import AdminAction
 from model.entities import (
@@ -437,6 +438,8 @@ async def pay_out(
     # Commits everything above once, or nothing. No statement may follow it
     # before the call below, and no ORM instance is read after it.
     await posting.post_all(session, movements, now=now)
+    # After the commit, on a fresh settlement only: a replay returned above.
+    SETTLEMENTS.inc()
 
     # 7. After the commit, never before: the money moves first (ADR 0019).
     await market_terms.mark_settled(

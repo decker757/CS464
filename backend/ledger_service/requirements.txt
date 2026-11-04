@@ -26,3 +26,6 @@ httpx==0.28.1
 # backend, the same rule this file already states for the JWT and Postgres
 # libraries.
 redis==8.1.0
+
+# #599. Request and readiness metrics, served at /metrics.
+prometheus-client==0.26.0

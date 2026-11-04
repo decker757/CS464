@@ -106,6 +106,16 @@ is_ready_inside() {
   compose exec -T gateway wget -qO- "http://$1:8000/ready" | grep -q '"status":"ready"'
 }
 
+metric_inside() {
+  # metric_inside <service> <metric name>: the service exports that metric.
+  # Asked from the gateway container, on the private network, where /metrics
+  # is not hidden. The body is fetched before grep reads it: grep -q quitting
+  # on its first match would kill wget with SIGPIPE under pipefail.
+  local body
+  body=$(compose exec -T gateway wget -qO- "http://$1:8000/metrics") || return 1
+  grep -q "^$2" <<<"$body"
+}
+
 every_image_is_at() {
   # Every image this stack pulled from the registry carries tag $1. The
   # stand-in Postgres and Redis come from Docker Hub and are not counted.
@@ -282,6 +292,21 @@ token=$(curl -fsS -D "$login_headers" -H "Host: auth.$domain" -H 'Content-Type: 
 expect "the login cookie names the parent domain, so every subdomain gets it" \
   grep -qi "set-cookie: access_token=.*Domain=$domain" "$login_headers"
 expect "the login cookie is Secure" grep -qi "set-cookie: access_token=.*Secure" "$login_headers"
+
+# [BE][5.5] #599. /metrics is for Alloy on the private network, never the
+# internet. Every metric an alert reads exists from boot (labels are
+# pre-created), so a renamed one fails here. After login, so auth has counted
+# a request.
+for service in auth market ledger audit realtime; do
+  expect "$service's /metrics is not public" test "$(status_of "$service.$domain" /metrics)" = 404
+  expect "$service's /metrics answers on the private network" \
+    metric_inside "$service" service_dependency_ready
+done
+for pair in ledger:ledger_trades_committed_total market:market_close_sweep_last_success_timestamp_seconds \
+            market:market_close_sweep_lag_seconds auth:auth_limiter_fail_open_total \
+            realtime:realtime_open_websockets auth:http_requests_total; do
+  expect "${pair#*:} is exported" metric_inside "${pair%%:*}" "${pair#*:}"
+done
 
 # [BE][A-2] #600. Each registration forges a different X-Forwarded-For. If the
 # gateway passed them on, every one would count against a different address

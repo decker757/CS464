@@ -19,3 +19,6 @@ PyJWT==2.14.0
 # Note what is NOT here: SQLAlchemy and asyncpg. This service owns no schema,
 # holds no role and opens no connection to Postgres. Adding either is a
 # decision to give it durable state, which ADR 0010 argues it must not have.
+
+# #599. Request and readiness metrics, served at /metrics.
+prometheus-client==0.26.0

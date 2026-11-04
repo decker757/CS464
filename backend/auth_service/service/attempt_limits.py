@@ -15,6 +15,7 @@ from redis.exceptions import RedisError
 
 from core.config import Settings
 from core.errors import TooManyAttempts
+from core.metrics import LIMITER_DECISIONS, LIMITER_FAIL_OPEN
 
 logger = logging.getLogger(__name__)
 
@@ -92,10 +93,13 @@ class AttemptLimiter:
         # everyone out, so the limiter answers "allowed". Only Redis's own
         # error types, which include its timeouts - never bare Exception.
         except RedisError:
+            LIMITER_FAIL_OPEN.labels(limit=limit.name).inc()
             logger.warning("attempt limiter unavailable; allowing the request (limit=%s)", limit.name)
             return
         if count > limit.max_attempts:
+            LIMITER_DECISIONS.labels(limit=limit.name, outcome="refused").inc()
             raise TooManyAttempts(max(ttl, 1))
+        LIMITER_DECISIONS.labels(limit=limit.name, outcome="allowed").inc()
 
     async def clear(self, limit: Limit, subject: str) -> None:
         """Reset the count; fails open like `claim`."""
@@ -103,4 +107,5 @@ class AttemptLimiter:
             await self._client.delete(self._key(limit, subject))
         # Sanctioned fail-open catch, as in `claim` (ADR 0027).
         except RedisError:
+            LIMITER_FAIL_OPEN.labels(limit=limit.name).inc()
             logger.warning("attempt limiter unavailable; the count was not cleared (limit=%s)", limit.name)

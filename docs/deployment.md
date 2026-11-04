@@ -255,6 +255,12 @@ Ready prints `{"status":"ready",...}`. Not ready prints no body: busybox
 `wget` shows only `wget: server returned error: HTTP/1.1 503 ...`, and that
 line is the answer.
 
+Every service also exposes `/metrics`, the counters and gauges Grafana Alloy
+scrapes. It is private the same way: the gateway returns 404 for it on every
+subdomain, and only Alloy, on the private network, reads it. To look
+yourself, use the `exec gateway wget` command above with `/metrics` in place
+of `/ready`.
+
 ## Scaling
 
 - **More app servers:** raise `app_server_count` in

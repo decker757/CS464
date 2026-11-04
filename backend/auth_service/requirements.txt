@@ -20,3 +20,6 @@ PyJWT==2.14.0
 # Login and registration rate limits (#600, ADR 0027). Same pin as the ledger
 # and realtime services.
 redis==8.1.0
+
+# #599. Request and readiness metrics, served at /metrics.
+prometheus-client==0.26.0
