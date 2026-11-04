@@ -22,7 +22,12 @@ import pytest
 # asserts fail with no diff.
 pytest.register_assert_rewrite("shared.testing")
 
-from shared.testing import load_repo_env, open_audit_reader  # noqa: E402
+from shared.testing import (  # noqa: E402
+    attach_span_recorder,
+    load_repo_env,
+    open_audit_reader,
+    recording,
+)
 
 
 # Before any project module is imported. `get_settings` is lru_cached, so the
@@ -61,11 +66,6 @@ from decimal import Decimal  # noqa: E402
 import httpx  # noqa: E402
 import jwt  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
-from opentelemetry.sdk.trace import ReadableSpan  # noqa: E402
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult  # noqa: E402
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: E402
-    InMemorySpanExporter,
-)
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from core.config import get_settings  # noqa: E402
@@ -146,25 +146,6 @@ def active_auth_transport() -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
-class ArmedSpanExporter(InMemorySpanExporter):
-    """Keeps a finished span only while a test has it armed. #599
-
-    The processor it sits behind is added once and sees every span the process
-    finishes; unarmed, those are dropped rather than kept for the whole run.
-    Its twins: auth_service/unit_test/conftest.py and realtime_service's
-    unit_test/controller/test_observability.py.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.armed = False
-
-    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        if not self.armed:
-            return SpanExportResult.SUCCESS
-        return super().export(spans)
-
-
 class ManualClock:
     """A monotonic clock a test moves by hand."""
 
@@ -233,19 +214,14 @@ def _span_recorder():
     """
     from core import observability  # noqa: PLC0415
 
-    exporter = ArmedSpanExporter()
-    observability.tracer_provider().add_span_processor(SimpleSpanProcessor(exporter))
-    return exporter
+    return attach_span_recorder(observability.tracer_provider())
 
 
 @pytest.fixture
 def span_exporter(_span_recorder):
     """The spans finished during this test, and none from before or after it."""
-    _span_recorder.clear()
-    _span_recorder.armed = True
-    yield _span_recorder
-    _span_recorder.armed = False
-    _span_recorder.clear()
+    with recording(_span_recorder) as spans:
+        yield spans
 
 
 @pytest.fixture

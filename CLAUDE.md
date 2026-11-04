@@ -463,7 +463,8 @@ JSON log formatter and setup (`shared/logs.py`), the HTTP metrics and
 `shared/testing.py` (the env loader, the import-boundary scan, the migration
 guard tests' `schema_catalog`, `drop_own_tables`, the two `assert_...` round
 trips and `compose_service`, plus `open_audit_reader`, which opens the session
-the writing services' suites read the log back through).
+the writing services' suites read the log back through, and the span recorder
+the tracing tests arm with `recording`).
 That is the whole list, and ADR 0012 spends most of its length on what was
 left copied and why — `core/database.py` above all, because one shared `Base`
 would enrol every service's tables in every other service's metadata and the
