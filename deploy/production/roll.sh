@@ -78,16 +78,26 @@ grafana_is_on() {
   grep -qE '^COMPOSE_PROFILES=(.*,)?observability(,|$)' "$root/app.env"
 }
 
-defines_alloy() {
-  # defines_alloy <release directory>: releases from before #599 do not.
-  local services
-  services=$(compose_with_profiles observability "$1" config --services) || return 1
-  grep -qx alloy <<< "$services"
-}
-
 # A config Alloy cannot load makes it exit within a second, and Docker
 # restarts it; after this long, a crash loop shows as a restart.
 alloy_settle_seconds=5
+alloy_up_seconds=120
+
+alloy_up() {
+  # alloy_up <release directory>: start or recreate Alloy, for at most
+  # $alloy_up_seconds where timeout(1) exists, which is every server. Its image
+  # is pulled from Docker Hub when missing, and a Docker Hub that hangs would
+  # otherwise hold this server, and the deploy waiting on it, until the job's
+  # own timeout cancels the deploy before it can send servers back. A Mac
+  # running the stack test may lack timeout(1), and waits. timeout(1) cannot
+  # run a shell function, hence compose_with_profiles' command, written out.
+  local limit=()
+  if command -v timeout > /dev/null; then
+    limit=(timeout "$alloy_up_seconds")
+  fi
+  (cd "$1" && COMPOSE_PROFILES=observability ${limit[@]+"${limit[@]}"} docker compose \
+    --env-file "$root/app.env" --env-file release.env up -d --no-deps --quiet-pull alloy)
+}
 
 refresh_alloy() {
   # refresh_alloy <release directory>: once the server is serving that
@@ -100,8 +110,13 @@ refresh_alloy() {
   # wrong token or Alloy itself could fail or send back would be an outage of
   # its own. So every failure here is a warning, and the caller adds `|| ...`,
   # which also means `set -e` does not apply in here: each step is checked.
-  local directory=$1 container state
-  if ! defines_alloy "$directory"; then
+  local directory=$1 services status container state
+  if ! services=$(compose_with_profiles observability "$directory" config --services); then
+    echo "roll: WARNING: could not read $(basename "$directory")'s compose file; Alloy is left as it was" >&2
+    return 0
+  fi
+  if ! grep -qx alloy <<< "$services"; then
+    # A release from before #599. Going back to one removed Alloy as an orphan.
     return 0
   fi
   if ! grafana_is_on; then
@@ -110,7 +125,12 @@ refresh_alloy() {
     return 0
   fi
   echo "roll: starting Alloy"
-  if ! compose_with_profiles observability "$directory" up -d --no-deps --quiet-pull alloy; then
+  status=0
+  alloy_up "$directory" || status=$?
+  if [ "$status" = 124 ]; then
+    echo "roll: WARNING: Alloy timed out starting, after ${alloy_up_seconds}s; this server is serving, but sends nothing to Grafana" >&2
+    return 0
+  elif [ "$status" != 0 ]; then
     echo "roll: WARNING: Alloy did not start; this server is serving, but sends nothing to Grafana" >&2
     return 0
   fi
