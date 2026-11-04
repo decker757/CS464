@@ -116,7 +116,8 @@ admin of this repository.
    Seeded the day before, everything else is there and those two are not.
 
    The seed registers eleven accounts from one address in a few seconds.
-   Login rate limiting (#600) must allow that, or the seed runs before it.
+   That fits inside #600's limits, 20 registrations an hour and 30 logins a
+   minute from one address (ADR 0027).
 9. **Your own administrator account.** Register on the site.
    - If you seeded, log in as `admin_rachel` and promote yourself from Admin →
      Users. That is how every administrator after the first is made, and the
@@ -198,8 +199,14 @@ package's settings on GitHub; the repository already is), or log in first:
 remove a setting's name there, only add: the release before still reads the
 old name, and going back to it would start it without one.
 
+**Running compose on a server by hand:** every command on this page names
+the shared `app.env` by its absolute path, because `current` is a symlink and
+`../../app.env` from inside it is `/opt/app.env`. Each also sets `DRAIN_DIR`,
+which `roll.sh` sets for itself: compose reads the whole file for any command,
+and refuses to run without it.
+
 **Logs:** `ssh deploy@<server>`, `cd /opt/cs464/current`, then
-`docker compose --env-file ../../app.env --env-file release.env logs -f ledger`.
+`DRAIN_DIR=/opt/cs464/drain docker compose --env-file /opt/cs464/app.env --env-file release.env logs -f ledger`.
 The logs rotate at 50 MB per container. The services log JSON, one object per
 line. To follow one request, grep or filter by `request_id`: a response's
 `X-Request-ID` header is the value to search for, in the service logs and in
@@ -223,7 +230,7 @@ public address you know (`curl -s https://ifconfig.me`), send one identifiable
 request: `curl -s -H 'X-Request-ID: probe-600' https://auth.<domain>/health`.
 Then, on an app server in `/opt/cs464/current`, find that request's line by
 its ID (the gateway logs the path, never the query string):
-`docker compose --env-file ../../app.env --env-file release.env logs --tail 200 gateway | grep 'rid=probe-600'`.
+`DRAIN_DIR=/opt/cs464/drain docker compose --env-file /opt/cs464/app.env --env-file release.env logs --tail 200 gateway | grep 'rid=probe-600'`.
 Its first field, the client address, must be exactly your public address. Ignore
 the `/lb-health` lines: the load balancer sends those itself every few
 seconds, so they are expected to show an address inside `10.64.0.0/20`. If
@@ -253,7 +260,7 @@ reasoning.
 The gateway returns 404 for `/ready` on every service's subdomain. It names
 the failing dependency, and only the monitoring on the private network needs
 it. To look yourself:
-`docker compose --env-file ../../app.env --env-file release.env exec gateway wget -qO- http://ledger:8000/ready`.
+`DRAIN_DIR=/opt/cs464/drain docker compose --env-file /opt/cs464/app.env --env-file release.env exec gateway wget -qO- http://ledger:8000/ready`.
 Ready prints `{"status":"ready",...}`. Not ready prints no body: busybox
 `wget` shows only `wget: server returned error: HTTP/1.1 503 ...`, and that
 line is the answer.
@@ -328,7 +335,7 @@ same alert fires. After an hour that alert clears by itself, even if the
 server is still silent, so a "resolved" email is not proof that data is back:
 check the dashboard. Alloy's log on a server says why: in
 `/opt/cs464/current`, run
-`docker compose --profile observability --env-file ../../app.env --env-file release.env logs --tail 100 alloy`.
+`DRAIN_DIR=/opt/cs464/drain docker compose --profile observability --env-file /opt/cs464/app.env --env-file release.env logs --tail 100 alloy`.
 
 **To switch Alloy off,** delete the token and deploy:
 
@@ -383,10 +390,10 @@ still be edited in the UI. The contact point went in the same way. Grafana's
 export of the group matched this file, apart from defaults it fills in
 itself, so the file in the repo is the commented original.
 
-**`cs464-service-down` is paused until the first release.** Until a server
-sends metrics, it has no data, and no data counts as down, so it would email
-every few minutes. Unpausing it is the first step of the post-release
-checklist below.
+**On a new stack, import `cs464-service-down` paused,** or resume it only once
+every server is sending. Until a server sends metrics the rule has no data,
+and no data counts as down, so it would email every few minutes. Ours was
+resumed after #632 reached production.
 
 **Linking a log line to its trace.** Grafana Cloud's own Loki datasource is
 read-only, so it cannot take a derived field. A *correlation* does the same
@@ -439,14 +446,15 @@ query string, by design (docs/api/realtime-service.md), so nothing secret is in 
 method-route pairs × 12 histogram series ≈ 540, plus about 135
 request-counter series, about 200 process/Python series, and about 40
 business series. That is ≈ 950 per server, ≈ 1,900 for two, well under 10k.
-Re-measure it on the *Usage* page a week after the first release, and update
-this paragraph.
+Re-measure it on the *Usage* page around 2026-11-11, a week after monitoring
+went live, and update this paragraph.
 
 **Post-release checklist.** Run it once, after the first deploy from `main`
-that carries this work. That deploy comes only after the showcase.
+that carries this work. It was run after #632, on 2026-11-04. What it found
+is under the list.
 
-1. Unpause `cs464-service-down`: *Alerting*, *Alert rules*, *CS464*, the
-   rule, *Resume evaluation*. Do it once every server has been sending for
+1. Unpause `cs464-service-down`, which a new stack imports paused:
+   *Alerting*, *Alert rules*, *CS464*, the rule, *Resume evaluation*. Do it once every server has been sending for
    a few minutes, or it pages at once.
 2. Every panel on *CS464 / Overview* has data. Make a trade first, or the
    trading panels have nothing to show.
@@ -462,10 +470,22 @@ that carries this work. That deploy comes only after the showcase.
    address and user agent are kept, by decision).
 6. Trigger `cs464-service-down` once. **Ask Ernest before you SSH.** On one
    server, in `/opt/cs464/current`, run
-   `docker compose --env-file ../../app.env --env-file release.env stop audit`.
+   `DRAIN_DIR=/opt/cs464/drain docker compose --env-file /opt/cs464/app.env --env-file release.env stop audit`.
    Wait 6 minutes, and check that the email arrives. It can take a minute
    more. Then run the same command with `start audit` and check that the
    alert clears.
+
+What the first run found (2026-11-04, after #632):
+- Steps 1, 3, 4 and 6 passed. Both servers report every service and
+  dependency.
+- Alloy used 169 MB on `app-1` and 51 MB on `app-2`, so it needs no
+  `mem_limit`.
+- `audit` stopped on `app-1` at 20:08 SGT. The firing email arrived inside
+  six minutes. After the restart at 20:17, the resolved email came within
+  about five, the notification policy's batching interval.
+- The dashboard first opened on the wrong Loki, and the server commands here
+  failed as written. Both were fixed in #634.
+- Steps 2 and 5 wait for the load test's trades (#20).
 
 ## Scaling
 
@@ -498,9 +518,9 @@ today's.
 
 Grafana Cloud's free tier allows 10,000 active series, 50 GB of logs and
 50 GB of traces, kept for 14 days, and 3 users. We expect about 1,900 series
-(the series budget above). Alloy itself costs only a little memory on each
-server. Images on GHCR are free for a public repository. To stop paying, run
-`infra/tf destroy`. That deletes the database too, so take a backup first if
+(the series budget above). Alloy itself used 51–169 MB of memory per server,
+minutes after its first deploy. Images on GHCR are free for a public
+repository. To stop paying, run `infra/tf destroy`. That deletes the database too, so take a backup first if
 anything in it matters.
 
 ## Tests
@@ -526,13 +546,7 @@ certificate, and TLS to the managed databases.
   `infra/terraform` would run it as a second workspace. It is not built.
   It needs a registrable domain of its own, not `staging.<domain>`: the
   login cookie reaches every subdomain of the production domain (ADR 0026).
-- **Monitoring's first real check.** The dashboard and the five alerts are
-  built, but have not yet seen production data. The post-release checklist
-  above runs after the first deploy from `main` that carries them.
-- **Re-measuring the series budget.** A week after that release, read the
-  real series count off Grafana Cloud's *Usage* page and update the estimate
-  above and the README.
-- **Login rate limiting in production.** #600 is merged into `dev`, but
-  production deploys only from `main`, after the showcase, so it is not live
-  yet.
+- **Re-measuring the series budget.** Around 2026-11-11, a week after
+  monitoring went live with #632, read the real series count off Grafana
+  Cloud's *Usage* page and update the estimate above and the README.
 - **Load test numbers:** #20, against this deployment.

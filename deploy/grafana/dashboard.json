@@ -59,9 +59,10 @@
         "hide": 0,
         "includeAll": false,
         "multi": false,
-        "regex": "",
+        "regex": "/^(?!.*alert-state-history).*$/",
         "current": {},
-        "options": []
+        "options": [],
+        "description": "Grafana Cloud also lists its alert-state-history Loki, which holds alert changes, not our logs; the regex leaves it out."
       },
       {
         "name": "service",
