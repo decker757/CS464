@@ -1,6 +1,8 @@
 // [5.4] #20. Load test of the trade endpoint: USERS traders (50 by default)
 // each buy one share of an outcome and sell it back, once a second, on one
 // market, for DURATION. A trade given five stale quotes in a row is given up.
+// MARKET_IDS names one market, or several separated by commas: the traders
+// are dealt across them in turn, so 50 traders on 5 markets is 10 a market.
 // Run it with loadtest/run.sh; docs/load-test.md explains it.
 //
 // The traders are the same accounts every run, loadtest_01 to loadtest_50:
@@ -17,7 +19,7 @@ const DOMAIN = __ENV.DOMAIN
 const AUTH_URL = __ENV.AUTH_URL || `https://auth.${DOMAIN}`
 const MARKET_URL = __ENV.MARKET_URL || `https://market.${DOMAIN}`
 const LEDGER_URL = __ENV.LEDGER_URL || `https://ledger.${DOMAIN}`
-const MARKET_ID = __ENV.MARKET_ID
+const MARKET_IDS = (__ENV.MARKET_IDS || '').split(',').map((id) => id.trim()).filter((id) => id)
 const USERS = Number(__ENV.USERS || 50)
 // At most about 12 minutes: the traders' access tokens, minted in setup, last
 // 15 (auth's access_token_ttl_seconds), and nothing here refreshes them.
@@ -30,7 +32,7 @@ const LOGIN_SPACING_SECONDS = Number(__ENV.LOGIN_SPACING_SECONDS || 2.5)
 // The trader retries at that version, like a person pressing Buy again.
 const MAX_QUOTE_RETRIES = 5
 // The test trades only a market whose question starts with this, so a wrong
-// MARKET_ID cannot move a real market's price.
+// market id cannot move a real market's price.
 const THROWAWAY_MARKET_PREFIX = 'Load test'
 const USERNAME_PREFIX = 'loadtest_'
 const SUSPENSION_REASON = 'Load test account (#20), suspended between runs to keep it off the leaderboard.'
@@ -131,20 +133,20 @@ function existingAccountsOf(adminToken) {
 
 // GET /markets/{id} answers only the market's creator, so ADMIN_IDENTIFIER
 // must be the admin who created the throwaway market.
-function refuseUnlessThrowawayMarket(adminToken) {
-  const response = http.get(`${MARKET_URL}/markets/${MARKET_ID}`,
+function refuseUnlessThrowawayMarket(adminToken, marketId) {
+  const response = http.get(`${MARKET_URL}/markets/${marketId}`,
     { ...jsonHeaders(adminToken), tags: { name: 'market' } })
   if (response.status !== 200) {
-    fail(`GET /markets/${MARKET_ID} answered ${response.status} ${errorCodeOf(response)}`)
+    fail(`GET /markets/${marketId} answered ${response.status} ${errorCodeOf(response)}`)
   }
   const question = response.json('question')
   if (!question.startsWith(THROWAWAY_MARKET_PREFIX)) {
-    fail(`market ${MARKET_ID} is "${question}"; the test trades only a market whose question starts "${THROWAWAY_MARKET_PREFIX}"`)
+    fail(`market ${marketId} is "${question}"; the test trades only a market whose question starts "${THROWAWAY_MARKET_PREFIX}"`)
   }
 }
 
-function snapshotOf(token) {
-  return http.get(`${LEDGER_URL}/ledger/markets/${MARKET_ID}/snapshot`,
+function snapshotOf(token, marketId) {
+  return http.get(`${LEDGER_URL}/ledger/markets/${marketId}/snapshot`,
     { ...jsonHeaders(token), tags: { name: 'snapshot' } })
 }
 
@@ -166,7 +168,7 @@ function loginTrader(username) {
 }
 
 /** One trade, retried at the current state_version while it is quote_stale. */
-function trade({ token, runId, outcomeId, side, stateVersion }) {
+function trade({ token, runId, marketId, outcomeId, side, stateVersion }) {
   let version = stateVersion
   for (let attempt = 0; attempt <= MAX_QUOTE_RETRIES; attempt++) {
     const body = {
@@ -178,7 +180,7 @@ function trade({ token, runId, outcomeId, side, stateVersion }) {
       // the earlier run's trade instead of making a new one.
       idempotency_key: `${runId}-${exec.vu.idInTest}-${exec.vu.iterationInScenario}-${side}-${attempt}`,
     }
-    const response = http.post(`${LEDGER_URL}/ledger/markets/${MARKET_ID}/trades`, JSON.stringify(body), {
+    const response = http.post(`${LEDGER_URL}/ledger/markets/${marketId}/trades`, JSON.stringify(body), {
       ...jsonHeaders(token),
       tags: { name: 'trade' },
       // A 409 is the book doing its job, not a failed request.
@@ -247,28 +249,32 @@ export function setup() {
   if (!DOMAIN && !(__ENV.AUTH_URL && __ENV.MARKET_URL && __ENV.LEDGER_URL)) {
     fail('DOMAIN is required, or all of AUTH_URL, MARKET_URL and LEDGER_URL')
   }
-  if (!MARKET_ID || !ADMIN_IDENTIFIER) {
-    fail('MARKET_ID and ADMIN_IDENTIFIER are required')
+  if (MARKET_IDS.length === 0 || !ADMIN_IDENTIFIER) {
+    fail('MARKET_IDS and ADMIN_IDENTIFIER are required')
   }
   const adminToken = loginAdmin()
-  refuseUnlessThrowawayMarket(adminToken)
-
-  const snapshot = snapshotOf(adminToken)
-  if (snapshot.status !== 200) {
-    fail(`the market's snapshot answered ${snapshot.status} ${errorCodeOf(snapshot)}`)
+  const markets = []
+  for (const marketId of MARKET_IDS) {
+    refuseUnlessThrowawayMarket(adminToken, marketId)
+    const snapshot = snapshotOf(adminToken, marketId)
+    if (snapshot.status !== 200) {
+      fail(`market ${marketId}'s snapshot answered ${snapshot.status} ${errorCodeOf(snapshot)}`)
+    }
+    markets.push({ marketId, outcomeIds: snapshot.json('prices').map((price) => price.outcome_id) })
   }
-  const outcomeIds = snapshot.json('prices').map((price) => price.outcome_id)
 
-  return { runId: Date.now(), outcomeIds, traders: prepareTraders(adminToken) }
+  return { runId: Date.now(), markets, traders: prepareTraders(adminToken) }
 }
 
 export default function (data) {
-  const trader = data.traders[exec.vu.idInTest - 1]
-  const outcomeId = data.outcomeIds[exec.vu.idInTest % data.outcomeIds.length]
-  const snapshot = snapshotOf(trader.token)
+  const index = exec.vu.idInTest - 1
+  const trader = data.traders[index]
+  const market = data.markets[index % data.markets.length]
+  const outcomeId = market.outcomeIds[index % market.outcomeIds.length]
+  const snapshot = snapshotOf(trader.token, market.marketId)
   check(snapshot, { 'snapshot is 200': (response) => response.status === 200 })
   if (snapshot.status === 200) {
-    const order = { token: trader.token, runId: data.runId, outcomeId }
+    const order = { token: trader.token, runId: data.runId, marketId: market.marketId, outcomeId }
     const afterBuy = trade({ ...order, side: 'buy', stateVersion: snapshot.json('state_version') })
     if (afterBuy !== null) {
       trade({ ...order, side: 'sell', stateVersion: afterBuy })

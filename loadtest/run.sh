@@ -2,7 +2,7 @@
 # [5.4] #20. Runs loadtest/trade.js in k6's own image, so nothing needs
 # installing. docs/load-test.md is the walkthrough.
 #
-#   DOMAIN=<domain> MARKET_ID=<id> ADMIN_IDENTIFIER=<admin username> loadtest/run.sh
+#   DOMAIN=<domain> MARKET_IDS=<id>[,<id>...] ADMIN_IDENTIFIER=<admin username> loadtest/run.sh
 #
 # Or AUTH_URL, MARKET_URL and LEDGER_URL instead of DOMAIN, for a local stack. USERS,
 # DURATION and LOGIN_SPACING_SECONDS are optional (trade.js has the defaults).
@@ -33,7 +33,7 @@ result="$here/results/$(date -u +%Y%m%dT%H%M%SZ).txt"
 # ignores Ctrl-C, so k6's summary and teardown still reach the terminal.
 set +e
 docker run --rm -i \
-  -e DOMAIN -e AUTH_URL -e MARKET_URL -e LEDGER_URL -e MARKET_ID -e ADMIN_IDENTIFIER \
+  -e DOMAIN -e AUTH_URL -e MARKET_URL -e LEDGER_URL -e MARKET_IDS -e ADMIN_IDENTIFIER \
   -e USERS -e DURATION -e LOGIN_SPACING_SECONDS \
   -v "$here/trade.js:/scripts/trade.js:ro" \
   -v "$admin_password_file:/secrets/admin-password:ro" \
