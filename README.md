@@ -23,7 +23,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot and the ledger's price producer |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
-| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440 | containers, CI and the replicated stack shipped; every push to `main` deploys to DigitalOcean (ADR 0026); staging (#19), the load test [5.4] #20 and monitoring #599 are open |
+| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440 | containers, CI and the replicated stack shipped; every push to `main` deploys to DigitalOcean (ADR 0026); monitoring (#599) is built and waits for its first check after a release; staging (#19) and the load test [5.4] #20 are open |
 
 ## Running it
 
@@ -222,6 +222,48 @@ deploy does, rollback, scaling and the cost breakdown.
 ```bash
 deploy/production/test/stack-test.sh   # the production stack on this machine; needs only Docker
 ```
+
+## Monitoring
+
+[5.5] #599. Each production server runs Grafana Alloy, which sends metrics,
+logs and traces to a free Grafana Cloud stack. The dashboard is in your
+Grafana Cloud stack (`https://<stack>.grafana.net`), under *Dashboards*,
+*CS464 / Overview*. Its file and the alert rules are in `deploy/grafana/`.
+
+What it shows:
+
+- **Traffic:** requests per second, the share that failed with a 5xx, and
+  p50 and p95 latency, by route.
+- **Health:** whether each service is up and ready, on each server.
+- **Trading:** trades and fills per minute, the wait for a market's book
+  lock, settlements, voids, and price frames that failed to publish.
+- **The close sweep:** how far behind it is, on each server.
+- **Live prices and logins:** open websockets, login-limiter refusals, and
+  any time the limiter was off.
+- **Logs and traces:** paste a response's `X-Request-ID` into the
+  `request_id` box to see that request's log lines from every service, and
+  open its trace from there.
+
+Traces keep the client's address and user agent, by decision, and the
+gateway's access log starts with the client's address. The services' own log
+lines carry no IP, and no trace carries a query string, cookie or
+Authorization header.
+
+Five alerts, each emailed to the stack's default contact point:
+
+| Alert | Fires when | For |
+| --- | --- | --- |
+| `cs464-5xx-ratio` | more than 5% of a service's requests answer 5xx, while it serves more than 0.1 requests a second | 5 min |
+| `cs464-p95-latency` | a service's p95 latency is over 1 s, while it serves more than 0.1 requests a second | 5 min |
+| `cs464-close-sweep-behind` | no server has finished a close sweep in 60 s, or a live sweeper's lag is over 60 s | 1 min |
+| `cs464-service-down` | a service on a server cannot be scraped or is not ready, or no server is sending metrics at all | 3 min |
+| `cs464-login-limiter-off` | the login limiter failed open even once in 5 minutes, because Redis was unreachable | at once |
+
+It costs nothing. The free tier allows 10,000 active series, 50 GB of logs,
+50 GB of traces, 14 days' retention and 3 users, and two servers need about
+1,900 series. Alloy uses a little memory on each server.
+[`docs/deployment.md`](docs/deployment.md) has the setup, the import steps and
+the series estimate.
 
 ## Tests
 

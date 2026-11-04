@@ -39,6 +39,7 @@ flowchart LR
 | `/opt/cs464/current` | on a server: a link to the live release's directory |
 | `/opt/cs464/app.env` | on a server: the secrets and that server's settings, shared by every release and rewritten by every deploy |
 | `deploy/production/test/` | the two tests below, run by `ci-deploy.yml` |
+| `deploy/grafana/` | the dashboard and the five alert rules, imported into Grafana Cloud by hand |
 | `.github/workflows/deploy.yml` | push to `main`: build and push the images, then run `release.sh` |
 
 ## Setting it up for the first time
@@ -204,8 +205,8 @@ line. To follow one request, grep or filter by `request_id`: a response's
 `X-Request-ID` header is the value to search for, in the service logs and in
 the gateway's `rid=`. The gateway stamps an ID when the client sent none, or
 one the services would not keep, so a 502 or 504 the gateway answered itself
-still has a line to find. #599 adds a
-dashboard.
+still has a line to find. With Grafana on, the dashboard does the same
+search across both servers at once: see "Following one request" below.
 
 **The client's address:** the gateway resolves it and overwrites
 `X-Forwarded-For` with that one address (`set_real_ip_from` in
@@ -242,10 +243,11 @@ managed instance shared by every server, so taking a server out of rotation
 cannot fix it. It would only turn "trades fail with an error" into the load
 balancer's bare 503 for the whole site, homepage included, and make a deploy
 during a blip roll back. So a server whose auth or market service is broken
-keeps its traffic, and the alert on "a service is down or not ready, per
-service per server" is what tells you. That alert arrives with #599's
-dashboard PR; until then, nothing watches `/ready` and you have to look. ADR
-0028 has the reasoning.
+keeps its traffic, and the `cs464-service-down` alert ("a service is down or
+not ready, per service per server") is what tells you. It reads the same
+checks through each service's `service_dependency_ready` metric. With Grafana
+off, nothing watches `/ready` and you have to look. ADR 0028 has the
+reasoning.
 
 The gateway returns 404 for `/ready` on every service's subdomain. It names
 the failing dependency, and only the monitoring on the private network needs
@@ -331,6 +333,88 @@ The variables can stay. They do nothing without the token.
 
 `infra/push-secrets.sh` does not set any of these. They are not Terraform's.
 
+## Monitoring: dashboard and alerts
+
+`deploy/grafana/` holds the dashboard and the five alert rules. Import them
+once into your Grafana Cloud stack (`https://<stack>.grafana.net`). The
+README's "Monitoring" section says what they show and when each alert fires.
+
+**The dashboard.** *Dashboards*, *New*, *Import*, then upload
+`deploy/grafana/dashboard.json` into a folder named `CS464`. It is then
+*CS464 / Overview*. It names no datasource of its own: the `prometheus` and
+`loki` boxes at its top pick them, so it imports into any stack unchanged.
+
+**The alerts.** `deploy/grafana/alerts.yaml` is in Grafana's alert-rule
+provisioning format. It puts the rules in a `CS464` folder and sends each to
+the stack's default email contact point, `grafana-default-email`. Its queries
+name the datasource `grafanacloud-prom`, a Grafana Cloud stack's own
+Prometheus. Check yours under *Connections*, *Data sources*: the UID is the
+last part of the Prometheus one's URL.
+
+How to import the alerts is still to be confirmed on our stack. It is one of
+these two, and this paragraph will say which:
+
+- the UI's import of a provisioning file, under *Alerting*, *Alert rules*;
+- `POST /api/v1/provisioning/alert-rules`, once per rule, with a
+  short-lived service-account token (`Authorization: Bearer <token>`).
+  Delete the token afterwards.
+
+**Linking a log line to its trace.** *Connections*, *Data sources*, the Loki
+one, *Derived fields*, *Add*. Name it `trace_id`, with the regex
+`"trace_id": "(\w+)"`, the query `${__value.raw}`, and *Internal link* on,
+pointing at the Tempo datasource. Save. A log line's details then show a
+button that opens its trace. The regex matches the services' JSON lines
+exactly: `json.dumps` writes a space after the colon.
+
+**Following one request.** Copy the `X-Request-ID` header from a response
+(the browser's developer tools, *Network*). Paste it into the dashboard's
+`request_id` box. The *Logs* panel then shows only that request's lines, from
+every service it touched, and a line's `trace_id` opens the trace. The
+gateway's own lines are not JSON, so they carry no `service` label and the
+panel leaves them out. To find one, use *Explore* on Loki with
+`{container="gateway"} |= "rid=<request id>"`.
+
+**What a trace keeps.** Spans carry no query string, cookie or Authorization
+header. They do keep the client address and the user agent, by decision, for
+chasing abuse. The gateway's access lines start with the client address too.
+The services' own JSON log lines carry no IP.
+
+**Things that look wrong and are not:**
+
+- `release.sh` sets each service's `TRACING_ENDPOINT` to the local Alloy,
+  `http://alloy:4318/v1/traces`. It must be the full path, ending in
+  `/v1/traces`. A wrong one breaks nothing else: the service's log just shows
+  OpenTelemetry warnings that it is dropping spans.
+- Background work makes small traces with no request behind them: the close
+  sweep, every 10 s on each server, and the leaderboard refresh, every 60 s
+  on the first server. In Tempo, `{ kind = server }` shows requests only.
+- A websocket's span is named `HTTP`. Find one with
+  `{ .http.target = "/ws/prices" }`.
+- The *Book-lock wait* panel covers every caller of `lock_book`, not just
+  trades: limit orders, cancels, settlements and voids wait on the same
+  lock.
+
+**The series budget.** The free tier allows 10,000 active series. About 45
+method-route pairs × 12 histogram series ≈ 540, plus about 135
+request-counter series, about 200 process/Python series, and about 40
+business series. That is ≈ 950 per server, ≈ 1,900 for two, well under 10k.
+Re-measure it on the *Usage* page a week after the first release, and update
+this paragraph.
+
+**Post-release checklist.** Run it once, after the first deploy from `main`
+that carries this work. That deploy comes only after the showcase.
+
+1. Every panel on *CS464 / Overview* has data. Make a trade first, or the
+   trading panels have nothing to show.
+2. Tempo shows a trade as one trace across ledger, market and auth, and its
+   spans carry no query string, cookie or Authorization header (the client
+   address and user agent are kept, by decision).
+3. Trigger `cs464-service-down` once. **Ask Ernest before you SSH.** On one
+   server, in `/opt/cs464/current`, run
+   `docker compose --env-file ../../app.env --env-file release.env stop audit`.
+   Wait 4 minutes, check that the email arrives, then run the same command
+   with `start audit` and check that the alert clears.
+
 ## Scaling
 
 - **More app servers:** raise `app_server_count` in
@@ -357,9 +441,13 @@ today's.
 | Load balancer | 1 node | 12 |
 | Postgres | `db-s-1vcpu-2gb`, chosen for its connection limit | 30 |
 | Valkey | `db-s-1vcpu-1gb` | 15 |
+| Grafana Cloud | free tier | 0 |
 | **Total** | | **about 81**, plus the domain |
 
-Images on GHCR are free for a public repository. To stop paying, run
+Grafana Cloud's free tier allows 10,000 active series, 50 GB of logs and
+50 GB of traces, kept for 14 days, and 3 users. We expect about 1,900 series
+(the series budget above). Alloy itself costs only a little memory on each
+server. Images on GHCR are free for a public repository. To stop paying, run
 `infra/tf destroy`. That deletes the database too, so take a backup first if
 anything in it matters.
 
@@ -386,7 +474,11 @@ certificate, and TLS to the managed databases.
   `infra/terraform` would run it as a second workspace. It is not built.
   It needs a registrable domain of its own, not `staging.<domain>`: the
   login cookie reaches every subdomain of the production domain (ADR 0026).
-- **Monitoring and alerts:** #599 builds them. Until it lands, DigitalOcean's server and
-  database graphs are the only view.
+- **Monitoring's first real check.** The dashboard and the five alerts are
+  built, but have not yet seen production data. The post-release checklist
+  above runs after the first deploy from `main` that carries them.
+- **Re-measuring the series budget.** A week after that release, read the
+  real series count off Grafana Cloud's *Usage* page and update the estimate
+  above and the README.
 - **Login rate limiting:** #600.
 - **Load test numbers:** #20, against this deployment.
