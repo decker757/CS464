@@ -61,7 +61,7 @@ groups:
           severity: page
         isPaused: false
         notification_settings:
-          receiver: grafana-default-email
+          receiver: cs464-email
 
       - uid: cs464-p95-latency
         title: A service's p95 latency is over 1 second
@@ -107,7 +107,7 @@ groups:
           severity: page
         isPaused: false
         notification_settings:
-          receiver: grafana-default-email
+          receiver: cs464-email
 
       # The newest sweep across servers, and lag only from live sweepers: a
       # replica with CLOSE_SWEEP_ENABLED=false reports a lag of 0 and never
@@ -156,7 +156,7 @@ groups:
           severity: page
         isPaused: false
         notification_settings:
-          receiver: grafana-default-email
+          receiver: cs464-email
 
       # 1 for each service on each server that Alloy cannot scrape (up is 0)
       # or that has a dependency not ready, 0 otherwise. Written with `1 -`
@@ -209,7 +209,7 @@ groups:
           severity: page
         isPaused: false
         notification_settings:
-          receiver: grafana-default-email
+          receiver: cs464-email
 
       - uid: cs464-login-limiter-off
         title: The login limiter is off
@@ -252,4 +252,4 @@ groups:
           severity: page
         isPaused: false
         notification_settings:
-          receiver: grafana-default-email
+          receiver: cs464-email

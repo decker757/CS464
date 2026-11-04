@@ -350,7 +350,9 @@ README's "Monitoring" section says what they show and when each alert fires.
 
 **The alerts.** `deploy/grafana/alerts.yaml` is in Grafana's alert-rule
 provisioning format. It puts the rules in a `CS464` folder and sends each to
-the stack's default email contact point, `grafana-default-email`. Its queries
+an email contact point named `cs464-email`. A new Grafana Cloud stack has no
+email contact point at all, so make that one first: *Alerting*, *Contact
+points*, *Add*, type *Email*, with the addresses to page. Its queries
 name the datasource `grafanacloud-prom`, a Grafana Cloud stack's own
 Prometheus. Check yours under *Connections*, *Data sources*: the UID is the
 last part of the Prometheus one's URL.
@@ -360,24 +362,32 @@ metrics: one seen in the last hour and silent now. If that server stays
 silent, the alert clears by itself about an hour after it went quiet.
 Removing a server on purpose, by lowering `app_server_count`, pages once.
 
-How to import the alerts is still to be confirmed on our stack, and this
-paragraph will say which way works. The file is YAML for file provisioning,
-so the API cannot take it as it is. The options:
+**How they were imported (2026-11-04).** Through the API, with a
+service-account token that had the Admin role and expired after a day. The
+account was deleted afterwards. The file is YAML for file provisioning, so it
+went in as JSON: the group's rules, each given `folderUID: cs464`,
+`ruleGroup: cs464` and `orgID: 1`, wrapped as
+`{"title": "cs464", "folderUid": "cs464", "interval": 60, "rules": [...]}`,
+sent with `PUT /api/v1/provisioning/folder/cs464/rule-groups/cs464`. The
+request carried the header `X-Disable-Provenance: true`, so the rules can
+still be edited in the UI. The contact point went in the same way. Grafana's
+export of the group matched this file, apart from defaults it fills in
+itself, so the file in the repo is the commented original.
 
-- the UI's import of a provisioning file, under *Alerting*, *Alert rules*,
-  if the stack offers one;
-- the API, with a short-lived service-account token
-  (`Authorization: Bearer <token>`): the whole group as JSON to
-  `PUT /api/v1/provisioning/folder/<folder uid>/rule-groups/cs464`, or one
-  rule at a time as JSON to `POST /api/v1/provisioning/alert-rules`. Delete
-  the token afterwards.
+**`cs464-service-down` is paused until the first release.** Until a server
+sends metrics, it has no data, and no data counts as down, so it would email
+every few minutes. Unpausing it is the first step of the post-release
+checklist below.
 
-**Linking a log line to its trace.** *Connections*, *Data sources*, the Loki
-one, *Derived fields*, *Add*. Name it `trace_id`, with the regex
-`"trace_id": "(\w+)"`, the query `${__value.raw}`, and *Internal link* on,
-pointing at the Tempo datasource. Save. A log line's details then show a
-button that opens its trace. The regex matches the services' JSON lines
-exactly: `json.dumps` writes a space after the colon.
+**Linking a log line to its trace.** Grafana Cloud's own Loki datasource is
+read-only, so it cannot take a derived field. A *correlation* does the same
+job: *Administration*, *Plugins and data*, *Correlations*. Ours is named
+*Open trace*. It goes from the Loki datasource to the Tempo one, and is of
+type *Query*, on the field `Line`. It has a regex transformation,
+`"trace_id": "(\w+)"`, into the variable `trace_id`, and the target query is
+`${trace_id}`. A log line's details then show a button that opens its trace.
+The regex matches the services' JSON lines exactly: `json.dumps` writes a
+space after the colon.
 
 **Following one request.** Copy the `X-Request-ID` header from a response
 (the browser's developer tools, *Network*). Paste it into the dashboard's
@@ -420,12 +430,15 @@ this paragraph.
 **Post-release checklist.** Run it once, after the first deploy from `main`
 that carries this work. That deploy comes only after the showcase.
 
-1. Every panel on *CS464 / Overview* has data. Make a trade first, or the
+1. Unpause `cs464-service-down`: *Alerting*, *Alert rules*, *CS464*, the
+   rule, *Resume evaluation*. Do it once every server has been sending for
+   a few minutes, or it pages at once.
+2. Every panel on *CS464 / Overview* has data. Make a trade first, or the
    trading panels have nothing to show.
-2. Tempo shows a trade as one trace across ledger, market and auth, and its
+3. Tempo shows a trade as one trace across ledger, market and auth, and its
    spans carry no query string, cookie or Authorization header (the client
    address and user agent are kept, by decision).
-3. Trigger `cs464-service-down` once. **Ask Ernest before you SSH.** On one
+4. Trigger `cs464-service-down` once. **Ask Ernest before you SSH.** On one
    server, in `/opt/cs464/current`, run
    `docker compose --env-file ../../app.env --env-file release.env stop audit`.
    Wait 6 minutes, and check that the email arrives. It can take a minute
