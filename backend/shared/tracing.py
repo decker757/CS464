@@ -15,7 +15,9 @@ No span carries a query string. The instrumentations record the full URL by
 default, and a query string can hold anything a caller typed, so the URL
 attributes are cut back to the path as each span starts. Request and response
 headers, cookies and Authorization included, are not captured in 0.66b2 unless
-asked for, and nothing here asks.
+asked for, and nothing here asks. The query-string hook is the only attribute
+rewrite: a server span keeps the client address and user agent on purpose, a
+decision for chasing abuse. Logs still carry no IP.
 
 Only the API, the SDK and the FastAPI instrumentation are imported at the top,
 because all five services install them. The exporter and the httpx, SQLAlchemy
