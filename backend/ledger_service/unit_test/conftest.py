@@ -61,6 +61,11 @@ from decimal import Decimal  # noqa: E402
 import httpx  # noqa: E402
 import jwt  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
+from opentelemetry.sdk.trace import ReadableSpan  # noqa: E402
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult  # noqa: E402
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: E402
+    InMemorySpanExporter,
+)
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from core.config import get_settings  # noqa: E402
@@ -141,6 +146,25 @@ def active_auth_transport() -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
+class ArmedSpanExporter(InMemorySpanExporter):
+    """Keeps a finished span only while a test has it armed. #599
+
+    The processor it sits behind is added once and sees every span the process
+    finishes; unarmed, those are dropped rather than kept for the whole run.
+    Its twins: auth_service/unit_test/conftest.py and realtime_service's
+    unit_test/controller/test_observability.py.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.armed = False
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        if not self.armed:
+            return SpanExportResult.SUCCESS
+        return super().export(spans)
+
+
 class ManualClock:
     """A monotonic clock a test moves by hand."""
 
@@ -199,31 +223,28 @@ async def clean_database():
 
 @pytest.fixture(scope="session")
 def _span_recorder():
-    """Every span this process finishes, in memory. #599
+    """The spans this process finishes while a test is watching, in memory. #599
 
     On `observability.tracer_provider()` itself, because that one provider is
     what the app, the engine, the clients and Redis were instrumented with, and
     the instrumentors are process-wide: a provider of the test's own would see
-    nothing. Session-scoped so the processor is added once; `span_exporter`
-    empties it per test.
+    nothing. Session-scoped so the processor is added once; it records only
+    while `span_exporter` has it armed.
     """
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: PLC0415
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: PLC0415
-        InMemorySpanExporter,
-    )
-
     from core import observability  # noqa: PLC0415
 
-    exporter = InMemorySpanExporter()
+    exporter = ArmedSpanExporter()
     observability.tracer_provider().add_span_processor(SimpleSpanProcessor(exporter))
     return exporter
 
 
 @pytest.fixture
 def span_exporter(_span_recorder):
-    """The spans finished during this test, and none from before it."""
+    """The spans finished during this test, and none from before or after it."""
     _span_recorder.clear()
+    _span_recorder.armed = True
     yield _span_recorder
+    _span_recorder.armed = False
     _span_recorder.clear()
 
 

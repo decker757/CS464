@@ -3,7 +3,10 @@
 Top level, like `test_migrations.py`, because it needs the database. The
 spec's rule is that no span carries a parameter value: a bound parameter can
 hold an idempotency key or an amount, and a trace backend is not where either
-belongs. Only the statement text is recorded, with its placeholders.
+belongs. This checks the attributes of a successful statement's span: only
+the statement text is recorded, with its placeholders. A failed statement's
+error message is kept free of values by the engine's `hide_parameters`, which
+this test does not reach.
 """
 
 from __future__ import annotations
