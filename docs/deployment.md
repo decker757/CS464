@@ -413,7 +413,7 @@ The services' own JSON log lines carry no IP, except realtime's websocket
 handshake lines, which uvicorn writes as
 `<client ip>:<port> - "WebSocket <path>" [accepted]` (or `403`), with the path
 as requested, query string included. The socket never takes a token in its
-query string, by design (ADR 0002), so nothing secret is in that line.
+query string, by design (docs/api/realtime-service.md), so nothing secret is in that line.
 
 **Things that look wrong and are not:**
 

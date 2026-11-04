@@ -249,7 +249,7 @@ gateway's access log starts with the client's address. The services' own log
 lines carry no IP, with one exception: realtime logs each websocket handshake
 as `<client ip>:<port> - "WebSocket <path>" [accepted]` (or `403`), with the
 path as requested, query string included. The socket never takes a token in
-its query string, by design (ADR 0002), so nothing secret is in that line. No
+its query string, by design (docs/api/realtime-service.md), so nothing secret is in that line. No
 trace carries a query string, cookie or Authorization header.
 
 Five alerts, each emailed to the `cs464-email` contact point:

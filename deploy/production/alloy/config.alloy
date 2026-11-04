@@ -95,7 +95,7 @@ loki.write "grafana" {
 // client address: both on purpose (a decision, 2026-11-04). The services'
 // own JSON log lines carry no IP, except realtime's websocket handshakes:
 // uvicorn logs each as `<client ip>:<port> - "WebSocket <path>" [accepted]`
-// (or 403), query string included. The socket takes no token there (ADR 0002).
+// (or 403), query string included. The socket takes no token there (docs/api/realtime-service.md).
 otelcol.receiver.otlp "services" {
   http {
     endpoint = "0.0.0.0:4318"
