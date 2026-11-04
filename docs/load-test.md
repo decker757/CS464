@@ -61,6 +61,8 @@ any other `MARKET_ID`, setup refuses and nothing is traded.
 1. **Make a throwaway market** as an administrator, with two outcomes and a
    closing time after the run. Name it so nobody trades it by mistake
    ("Load test: ignore"). Publish it, and copy its id from the address bar.
+   Make it as the admin who will run the test: setup reads the market's
+   question, and the market service shows it only to its creator.
    The test never touches any other market's prices.
 2. **Put your admin password in a file,** without typing it on a command
    line: copy it, then run
@@ -71,8 +73,10 @@ any other `MARKET_ID`, setup refuses and nothing is traded.
 
 **The first run** registers the 50 accounts. One address may register only 20
 an hour, so on a site with the limits on, register them over three hours:
-`USERS=20 DURATION=10s`, then `USERS=40` an hour later, then `USERS=50`. A
-register refused with 429 stops setup and says so.
+`USERS=20 DURATION=10s`, then `USERS=40 DURATION=10s` a little over an hour
+later, then `USERS=50 DURATION=10s` after another. Every registration attempt
+counts towards the 20, refused ones too. A register refused with 429 stops
+setup and says so.
 
 **The run:**
 
@@ -96,12 +100,14 @@ root README says ("Creating a market needs an administrator"), adding
 The summary is printed and saved in `loadtest/results/`, which git ignores.
 Copy the numbers into the table below.
 
-**If you stop it with Ctrl-C once,** k6 stops the traders and still suspends
-the accounts. If setup fails partway, it suspends every account it had
-unsuspended before it stops. **Twice skips all of that,** and the accounts
-stay unsuspended, so on the leaderboard. Suspend them again with a one-second
-run (`USERS=50 DURATION=1s`), or by hand from Admin → Users: search
-`loadtest_`.
+**If you stop it with Ctrl-C once while it trades,** k6 stops the traders and
+still suspends the accounts. If setup fails partway, it suspends every
+account it had unsuspended before it stops. **A Ctrl-C during setup, the
+first two minutes, or a second Ctrl-C, skips all of that,** and the accounts
+it had reached stay unsuspended, so on the leaderboard. `run.sh` says so when
+k6 stops early. Suspend them again with a one-second run
+(`USERS=50 DURATION=1s loadtest/run.sh`), or by hand from Admin → Users:
+search `loadtest_`.
 
 **After it:** close the throwaway market early, then void it from its admin
 page (ADR 0025). Voiding refunds, at cost, the shares still held when the run
