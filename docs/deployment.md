@@ -198,8 +198,14 @@ package's settings on GitHub; the repository already is), or log in first:
 remove a setting's name there, only add: the release before still reads the
 old name, and going back to it would start it without one.
 
+**Running compose on a server by hand:** every command below names the shared
+`app.env` by its absolute path, because `current` is a symlink and
+`../../app.env` from inside it is `/opt/app.env`. Each also sets `DRAIN_DIR`,
+which `roll.sh` sets for itself: compose reads the whole file for any command,
+and refuses to run without it.
+
 **Logs:** `ssh deploy@<server>`, `cd /opt/cs464/current`, then
-`docker compose --env-file /opt/cs464/app.env --env-file release.env logs -f ledger`.
+`DRAIN_DIR=/opt/cs464/drain docker compose --env-file /opt/cs464/app.env --env-file release.env logs -f ledger`.
 The logs rotate at 50 MB per container. The services log JSON, one object per
 line. To follow one request, grep or filter by `request_id`: a response's
 `X-Request-ID` header is the value to search for, in the service logs and in
@@ -223,7 +229,7 @@ public address you know (`curl -s https://ifconfig.me`), send one identifiable
 request: `curl -s -H 'X-Request-ID: probe-600' https://auth.<domain>/health`.
 Then, on an app server in `/opt/cs464/current`, find that request's line by
 its ID (the gateway logs the path, never the query string):
-`docker compose --env-file /opt/cs464/app.env --env-file release.env logs --tail 200 gateway | grep 'rid=probe-600'`.
+`DRAIN_DIR=/opt/cs464/drain docker compose --env-file /opt/cs464/app.env --env-file release.env logs --tail 200 gateway | grep 'rid=probe-600'`.
 Its first field, the client address, must be exactly your public address. Ignore
 the `/lb-health` lines: the load balancer sends those itself every few
 seconds, so they are expected to show an address inside `10.64.0.0/20`. If
@@ -253,7 +259,7 @@ reasoning.
 The gateway returns 404 for `/ready` on every service's subdomain. It names
 the failing dependency, and only the monitoring on the private network needs
 it. To look yourself:
-`docker compose --env-file /opt/cs464/app.env --env-file release.env exec gateway wget -qO- http://ledger:8000/ready`.
+`DRAIN_DIR=/opt/cs464/drain docker compose --env-file /opt/cs464/app.env --env-file release.env exec gateway wget -qO- http://ledger:8000/ready`.
 Ready prints `{"status":"ready",...}`. Not ready prints no body: busybox
 `wget` shows only `wget: server returned error: HTTP/1.1 503 ...`, and that
 line is the answer.
@@ -328,7 +334,7 @@ same alert fires. After an hour that alert clears by itself, even if the
 server is still silent, so a "resolved" email is not proof that data is back:
 check the dashboard. Alloy's log on a server says why: in
 `/opt/cs464/current`, run
-`docker compose --profile observability --env-file /opt/cs464/app.env --env-file release.env logs --tail 100 alloy`.
+`DRAIN_DIR=/opt/cs464/drain docker compose --profile observability --env-file /opt/cs464/app.env --env-file release.env logs --tail 100 alloy`.
 
 **To switch Alloy off,** delete the token and deploy:
 
@@ -462,7 +468,7 @@ that carries this work. That deploy comes only after the showcase.
    address and user agent are kept, by decision).
 6. Trigger `cs464-service-down` once. **Ask Ernest before you SSH.** On one
    server, in `/opt/cs464/current`, run
-   `docker compose --env-file /opt/cs464/app.env --env-file release.env stop audit`.
+   `DRAIN_DIR=/opt/cs464/drain docker compose --env-file /opt/cs464/app.env --env-file release.env stop audit`.
    Wait 6 minutes, and check that the email arrives. It can take a minute
    more. Then run the same command with `start audit` and check that the
    alert clears.
