@@ -4,7 +4,7 @@
 #
 #   DOMAIN=<domain> MARKET_ID=<id> ADMIN_IDENTIFIER=<admin username> loadtest/run.sh
 #
-# Or AUTH_URL and LEDGER_URL instead of DOMAIN, for a local stack. USERS,
+# Or AUTH_URL, MARKET_URL and LEDGER_URL instead of DOMAIN, for a local stack. USERS,
 # DURATION and LOGIN_SPACING_SECONDS are optional (trade.js has the defaults).
 #
 # Reads two password files, which never become arguments:
@@ -29,13 +29,14 @@ fi
 
 mkdir -p "$here/results"
 result="$here/results/$(date -u +%Y%m%dT%H%M%SZ).txt"
-# `-e NAME` with no value passes the variable through if it is set.
+# `-e NAME` with no value passes the variable through if it is set. tee -i
+# ignores Ctrl-C, so k6's summary and teardown still reach the terminal.
 docker run --rm -i \
-  -e DOMAIN -e AUTH_URL -e LEDGER_URL -e MARKET_ID -e ADMIN_IDENTIFIER \
+  -e DOMAIN -e AUTH_URL -e MARKET_URL -e LEDGER_URL -e MARKET_ID -e ADMIN_IDENTIFIER \
   -e USERS -e DURATION -e LOGIN_SPACING_SECONDS \
   -v "$here/trade.js:/scripts/trade.js:ro" \
   -v "$admin_password_file:/secrets/admin-password:ro" \
   -v "$trader_password_file:/secrets/trader-password:ro" \
   --add-host host.docker.internal:host-gateway \
-  grafana/k6:2.3.0 run /scripts/trade.js 2>&1 | tee "$result"
+  grafana/k6:2.3.0 run /scripts/trade.js 2>&1 | tee -i "$result"
 echo "run.sh: saved to $result"

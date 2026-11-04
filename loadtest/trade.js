@@ -1,14 +1,13 @@
 // [5.4] #20. Load test of the trade endpoint: USERS traders (50 by default)
 // each buy one share of an outcome and sell it back, once a second, on one
-// market, for DURATION. Five stale quotes in a row and it gives up on that trade. Run it with loadtest/run.sh, which docs/load-test.md
-// explains. The numbers that matter are http_req_duration{name:trade}'s p95,
-// trade_errors and quote_stale_retries.
+// market, for DURATION. A trade given five stale quotes in a row is given up.
+// Run it with loadtest/run.sh; docs/load-test.md explains it.
 //
 // The traders are the same accounts every run, loadtest_01 to loadtest_50:
-// from one address the auth service registers 20 accounts an hour (ADR 0027),
-// so a run cannot make 50 fresh ones. setup() registers any that do not exist,
-// lifts the suspension the last run left, and logs each in. teardown()
-// suspends them all again, which keeps them off the leaderboard between runs.
+// one address may register only 20 accounts an hour (ADR 0027), so a run
+// cannot make 50 fresh ones. setup() registers any that do not exist, lifts
+// the suspension the last run left, and logs each in. teardown() suspends
+// them again, which keeps them off the leaderboard between runs.
 import http from 'k6/http'
 import { check, fail, sleep } from 'k6'
 import exec from 'k6/execution'
@@ -16,18 +15,23 @@ import { Counter, Rate } from 'k6/metrics'
 
 const DOMAIN = __ENV.DOMAIN
 const AUTH_URL = __ENV.AUTH_URL || `https://auth.${DOMAIN}`
+const MARKET_URL = __ENV.MARKET_URL || `https://market.${DOMAIN}`
 const LEDGER_URL = __ENV.LEDGER_URL || `https://ledger.${DOMAIN}`
 const MARKET_ID = __ENV.MARKET_ID
 const USERS = Number(__ENV.USERS || 50)
 // At most about 12 minutes: the traders' access tokens, minted in setup, last
 // 15 (auth's access_token_ttl_seconds), and nothing here refreshes them.
 const DURATION = __ENV.DURATION || '5m'
-// Logins from one address are limited to 30 a minute (ADR 0027).
-const LOGIN_SPACING_SECONDS = Number(__ENV.LOGIN_SPACING_SECONDS || 2.1)
+// Logins from one address are limited to 30 a minute (ADR 0027). 2.5 s apart
+// is 24 a minute, which leaves room for the admin's and anyone else's.
+const LOGIN_SPACING_SECONDS = Number(__ENV.LOGIN_SPACING_SECONDS || 2.5)
 // A trade quoted against a book another trader has just moved is refused
 // 409 quote_stale with the current state_version, as a browser's would be.
 // The trader retries at that version, like a person pressing Buy again.
 const MAX_QUOTE_RETRIES = 5
+// The test trades only a market whose question starts with this, so a wrong
+// MARKET_ID cannot move a real market's price.
+const THROWAWAY_MARKET_PREFIX = 'Load test'
 const USERNAME_PREFIX = 'loadtest_'
 const SUSPENSION_REASON = 'Load test account (#20), suspended between runs to keep it off the leaderboard.'
 const UNSUSPENSION_REASON = 'Load test account (#20), unsuspended for a load test run.'
@@ -38,10 +42,11 @@ const ADMIN_IDENTIFIER = __ENV.ADMIN_IDENTIFIER
 const ADMIN_PASSWORD = open('/secrets/admin-password').trim()
 const TRADER_PASSWORD = open('/secrets/trader-password').trim()
 
+// Anything but a commit or a stale quote: the server's fault, or ours.
 const tradeErrors = new Rate('trade_errors')
 const quoteStaleRetries = new Counter('quote_stale_retries')
 const tradesCommitted = new Counter('trades_committed')
-// Five stale quotes in a row: contention on one book, not a server error.
+// Five stale quotes in a row: contention on one book, not an error.
 const tradesGivenUp = new Counter('trades_given_up')
 
 export const options = {
@@ -72,6 +77,15 @@ function jsonHeaders(token) {
   return { headers }
 }
 
+/** The error code of a refusal. Never the whole body: a 422 echoes what was sent. */
+function errorCodeOf(response) {
+  try {
+    return response.json('error.code') || 'no error code'
+  } catch {
+    return 'no JSON body'
+  }
+}
+
 function login(identifier, password) {
   return http.post(`${AUTH_URL}/auth/login`, JSON.stringify({ identifier, password }),
     { ...jsonHeaders(), tags: { name: 'login' } })
@@ -83,22 +97,48 @@ function register(username) {
     { ...jsonHeaders(), tags: { name: 'register' } })
 }
 
+/** True if the account now has the suspension asked for. Logs a refusal and carries on. */
 function setSuspension(adminToken, userId, suspended) {
   const reason = suspended ? SUSPENSION_REASON : UNSUSPENSION_REASON
   const response = http.patch(`${AUTH_URL}/admin/users/${userId}/suspension`,
     JSON.stringify({ suspended, reason }), { ...jsonHeaders(adminToken), tags: { name: 'suspension' } })
   if (response.status !== 200) {
-    fail(`suspension of ${userId} answered ${response.status}: ${response.body}`)
+    console.error(`setting suspended=${suspended} on ${userId} answered ${response.status} ${errorCodeOf(response)}`)
+    return false
+  }
+  return true
+}
+
+function suspendAll(adminToken, userIds) {
+  for (const userId of userIds) {
+    setSuspension(adminToken, userId, true)
   }
 }
 
-function listLoadTestUsers(adminToken) {
+/** The load test's own accounts that exist already, by username. */
+function existingAccountsOf(adminToken) {
   const response = http.get(`${AUTH_URL}/admin/users?q=${USERNAME_PREFIX}&limit=200`,
     { ...jsonHeaders(adminToken), tags: { name: 'admin_users' } })
   if (response.status !== 200) {
-    fail(`GET /admin/users answered ${response.status}: ${response.body}`)
+    fail(`GET /admin/users answered ${response.status} ${errorCodeOf(response)}`)
   }
-  return response.json('users').filter((user) => user.username.startsWith(USERNAME_PREFIX))
+  const accounts = new Map()
+  for (const user of response.json('users')) {
+    accounts.set(user.username, user)
+  }
+  return accounts
+}
+
+function refuseUnlessThrowawayMarket(adminToken) {
+  const response = http.get(`${MARKET_URL}/markets/${MARKET_ID}`,
+    { ...jsonHeaders(adminToken), tags: { name: 'market' } })
+  if (response.status !== 200) {
+    fail(`GET /markets/${MARKET_ID} answered ${response.status} ${errorCodeOf(response)}`)
+  }
+  const question = response.json('question')
+  if (!question.startsWith(THROWAWAY_MARKET_PREFIX)) {
+    fail(`market ${MARKET_ID} is "${question}"; the test trades only a market whose question starts "${THROWAWAY_MARKET_PREFIX}"`)
+  }
 }
 
 function snapshotOf(token) {
@@ -111,8 +151,11 @@ function loginTrader(username) {
   if (response.status === 401) {
     response = register(username)
   }
+  if (response.status === 429) {
+    fail(`${username}: 429 too_many_attempts. Registering 50 accounts from one address takes three hours: docs/load-test.md, "The first run"`)
+  }
   if (response.status !== 200 && response.status !== 201) {
-    fail(`${username} could not log in or register: ${response.status} ${response.body}`)
+    fail(`${username} could not log in or register: ${response.status} ${errorCodeOf(response)}`)
   }
   return { username, token: response.json('tokens.access_token'), id: response.json('user.id') }
 }
@@ -141,13 +184,13 @@ function trade({ token, runId, outcomeId, side, stateVersion }) {
       tradesCommitted.add(1)
       return response.json('state_version')
     }
-    if (response.status === 409 && response.json('error.code') === 'quote_stale') {
+    if (response.status === 409 && errorCodeOf(response) === 'quote_stale') {
       quoteStaleRetries.add(1)
       version = response.json('error.details.current')
       continue
     }
     tradeErrors.add(true)
-    console.warn(`${side} answered ${response.status}: ${response.body}`)
+    console.warn(`${side} answered ${response.status} ${errorCodeOf(response)}`)
     return null
   }
   tradesGivenUp.add(1)
@@ -162,32 +205,56 @@ function loginAdmin() {
   return response.json('tokens.access_token')
 }
 
+/**
+ * Logs in the USERS traders, registering or unsuspending each as needed.
+ * k6 skips teardown when setup fails, so a failure here suspends every
+ * account this run made or unsuspended before it stops the run.
+ */
+function prepareTraders(adminToken) {
+  const accounts = existingAccountsOf(adminToken)
+  const traders = []
+  const unsuspended = []
+  try {
+    for (let index = 0; index < USERS; index++) {
+      const username = usernameOf(index)
+      const account = accounts.get(username)
+      if (account && account.is_suspended) {
+        if (!setSuspension(adminToken, account.id, false)) {
+          fail(`${username} could not be unsuspended`)
+        }
+        unsuspended.push(account.id)
+      }
+      const trader = loginTrader(username)
+      if (!account) {
+        unsuspended.push(trader.id)
+      }
+      traders.push(trader)
+      sleep(LOGIN_SPACING_SECONDS)
+    }
+  } catch (error) {
+    suspendAll(adminToken, unsuspended)
+    throw error
+  }
+  return traders
+}
+
 export function setup() {
-  if (!DOMAIN && !(__ENV.AUTH_URL && __ENV.LEDGER_URL)) {
-    fail('DOMAIN is required, or both AUTH_URL and LEDGER_URL')
+  if (!DOMAIN && !(__ENV.AUTH_URL && __ENV.MARKET_URL && __ENV.LEDGER_URL)) {
+    fail('DOMAIN is required, or all of AUTH_URL, MARKET_URL and LEDGER_URL')
   }
   if (!MARKET_ID || !ADMIN_IDENTIFIER) {
     fail('MARKET_ID and ADMIN_IDENTIFIER are required')
   }
   const adminToken = loginAdmin()
+  refuseUnlessThrowawayMarket(adminToken)
 
   const snapshot = snapshotOf(adminToken)
   if (snapshot.status !== 200) {
-    fail(`the market's snapshot answered ${snapshot.status}: ${snapshot.body}`)
+    fail(`the market's snapshot answered ${snapshot.status} ${errorCodeOf(snapshot)}`)
   }
   const outcomeIds = snapshot.json('prices').map((price) => price.outcome_id)
 
-  for (const user of listLoadTestUsers(adminToken)) {
-    if (user.is_suspended) {
-      setSuspension(adminToken, user.id, false)
-    }
-  }
-  const traders = []
-  for (let index = 0; index < USERS; index++) {
-    traders.push(loginTrader(usernameOf(index)))
-    sleep(LOGIN_SPACING_SECONDS)
-  }
-  return { runId: Date.now(), outcomeIds, traders }
+  return { runId: Date.now(), outcomeIds, traders: prepareTraders(adminToken) }
 }
 
 export default function (data) {
@@ -207,8 +274,5 @@ export default function (data) {
 
 // Logs the admin in again: setup's token may have expired (15 minutes) by now.
 export function teardown(data) {
-  const adminToken = loginAdmin()
-  for (const trader of data.traders) {
-    setSuspension(adminToken, trader.id, true)
-  }
+  suspendAll(loginAdmin(), data.traders.map((trader) => trader.id))
 }
