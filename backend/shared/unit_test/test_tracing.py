@@ -3,14 +3,16 @@
 Five services build their tracer provider and instrument their app, clients
 and engine through `shared/tracing.py`, so its promises are asserted here: a
 call out joins the trace of the request that made it, the server span carries
-the request ID, probes make no spans, a readiness check makes none either,
-sampling follows the setting, and no span carries a query string, a cookie or
-a token. Each test records into its own provider; no global one is set.
+the request ID, an inbound `traceparent` is joined, probes make no spans, a
+readiness check makes none either, sampling follows the setting, no endpoint
+builds no exporter, and no span carries a query string, a cookie or a token.
+Each test records into its own provider; no global one is set.
 """
 
 import httpx
 import pytest
 from fastapi import FastAPI
+from opentelemetry.exporter.otlp.proto.http import trace_exporter
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -122,6 +124,39 @@ async def test_a_call_out_span_carries_no_query_string_cookie_or_token(provider,
         await client.get(f"http://up/x?q={SECRET}", headers=SECRET_HEADERS)
     values = _attribute_values(exporter)
     assert values and not any(SECRET in value for value in values)
+
+
+async def test_an_inbound_traceparent_is_joined(provider, exporter):
+    trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+    parent_id = "00f067aa0ba902b7"
+    traceparent = f"00-{trace_id}-{parent_id}-01"
+
+    await _get(_build_app(provider, {}), "/items/1", {"traceparent": traceparent})
+
+    server = _server_span(exporter)
+    assert format(server.context.trace_id, "032x") == trace_id
+    assert format(server.parent.span_id, "016x") == parent_id
+
+
+class _ExporterBuilt(Exception):
+    pass
+
+
+class _RefusingExporter:
+    def __init__(self, **kwargs):
+        raise _ExporterBuilt
+
+
+def test_no_endpoint_builds_no_exporter(monkeypatch):
+    # Grafana Cloud stays optional: with no endpoint nothing retries or logs.
+    monkeypatch.setattr(trace_exporter, "OTLPSpanExporter", _RefusingExporter)
+
+    build_tracer_provider(service="test", endpoint="", sample_ratio=1.0)
+
+    with pytest.raises(_ExporterBuilt):
+        build_tracer_provider(
+            service="test", endpoint="http://127.0.0.1:1/v1/traces", sample_ratio=1.0
+        )
 
 
 @pytest.mark.parametrize(("ratio", "sampled"), [(0.0, False), (1.0, True)])
