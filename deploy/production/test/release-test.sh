@@ -9,8 +9,9 @@
 #   - every server gets the release's files in the release's own directory,
 #     its own app.env shared by every release, and a registry login
 #   - only the first server rebuilds the leaderboard
-#   - every server is labelled for the dashboard, and Alloy is switched on
-#     only when Grafana Cloud is configured, whole or not at all
+#   - every server is sent Alloy's config, is labelled for the dashboard, and
+#     has Alloy switched on only when Grafana Cloud is configured, whole and
+#     with https addresses, or not at all
 #   - the database is migrated once, from the first server, before any roll
 #   - a failed migration rolls no server
 #   - a server that fails to roll sends every server rolled before it back,
@@ -43,8 +44,9 @@ expect() {
 mkdir -p "$root/bin" "$root/stubs"
 
 # ssh: skip the options, take the host from deploy@<host>, and run the
-# command in that host's directory. A release upload puts the stubs below
-# where the release's real scripts would be, instead of unpacking them.
+# command in that host's directory. A release upload is kept as bundle.tgz,
+# and the stubs go where the release's real scripts would be, instead of
+# unpacking it.
 cat > "$root/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 while [ $# -gt 0 ] && [[ $1 != deploy@* ]]; do shift; done
@@ -52,7 +54,7 @@ host=${1#deploy@}
 shift
 cd "$FAKE_ROOT/$host"
 if [[ $* == *"tar -xzf -"* ]]; then
-  cat > /dev/null
+  cat > bundle.tgz
   directory=${*##*-C }
   mkdir -p "$directory"
   cp "$FAKE_ROOT/stubs/"* "$directory/"
@@ -141,6 +143,13 @@ mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 app_env_of() { echo "$root/$1/app.env"; }
 log_says() { grep -q "$1" "$root/deploy.log"; }
 
+bundle_has() {
+  # bundle_has <server> <path>: the release that server was sent holds it.
+  local listing
+  listing=$(tar -tzf "$root/$1/bundle.tgz") || return 1
+  grep -qxE "(\./)?$2" <<< "$listing"
+}
+
 app_env_lacks() { ! grep -q "$1" "$(app_env_of "$2")"; }
 
 admin_url_in_no_app_env() {
@@ -155,6 +164,7 @@ expect "the deploy succeeds" deploy new
 for server in "${servers[@]}"; do
   expect "$server is on new" test "$(release_of "$server")" = new
   expect "$server has new's files in new's own directory" test -x "$root/$server/releases/new/roll.sh"
+  expect "$server was sent Alloy's config" bundle_has "$server" alloy/config.alloy
   expect "$server logged in to the registry and out again" test "$(calls "$server" docker-calls)" = "login logout"
   expect "$server's app.env is readable by its owner only" test "$(mode_of "$(app_env_of "$server")")" = 600
 done
@@ -176,16 +186,17 @@ expect "the first is app-1" grep -qx SERVER_LABEL=app-1 "$(app_env_of server-a)"
 
 echo "a deploy with every Grafana setting"
 reset_servers
-extra_env=(GRAFANA_CLOUD_TOKEN=token-placeholder GRAFANA_PROMETHEUS_URL=http://p.invalid
-  GRAFANA_PROMETHEUS_USER=1 GRAFANA_LOKI_URL=http://l.invalid GRAFANA_LOKI_USER=2
-  GRAFANA_OTLP_URL=http://o.invalid GRAFANA_OTLP_USER=3)
+grafana_env=(GRAFANA_CLOUD_TOKEN=token-placeholder GRAFANA_PROMETHEUS_URL=https://p.invalid
+  GRAFANA_PROMETHEUS_USER=1 GRAFANA_LOKI_URL=https://l.invalid GRAFANA_LOKI_USER=2
+  GRAFANA_OTLP_URL=https://o.invalid GRAFANA_OTLP_USER=3)
+extra_env=("${grafana_env[@]}")
 expect "the deploy succeeds" deploy grafana
 expect "Alloy is switched on" grep -qx COMPOSE_PROFILES=observability "$(app_env_of server-a)"
 expect "and on the second server too" grep -qx COMPOSE_PROFILES=observability "$(app_env_of server-b)"
 expect "services send their traces to Alloy" \
   grep -qx TRACING_ENDPOINT=http://alloy:4318/v1/traces "$(app_env_of server-a)"
 expect "Alloy gets the token" grep -qx GRAFANA_CLOUD_TOKEN=token-placeholder "$(app_env_of server-a)"
-expect "and the Loki address" grep -qx GRAFANA_LOKI_URL=http://l.invalid "$(app_env_of server-a)"
+expect "and the Loki address" grep -qx GRAFANA_LOKI_URL=https://l.invalid "$(app_env_of server-a)"
 
 echo "a deploy with the Grafana token and nothing else"
 reset_servers
@@ -194,6 +205,23 @@ expect "the deploy fails" deploy_fails halfset
 expect "before any server is touched" never_called server-a roll-calls
 expect "or migrated" never_called server-a migrate-calls
 expect "and says which setting is missing" log_says "GRAFANA_PROMETHEUS_URL"
+
+# Later settings win in `env`, so each of these replaces one good address.
+echo "a deploy with a Grafana address that is not https"
+reset_servers
+extra_env=("${grafana_env[@]}" GRAFANA_LOKI_URL=http://l.invalid)
+expect "the deploy fails" deploy_fails plainhttp
+expect "before any server is sent the release" never_called server-a releases/plainhttp
+expect "or rolled" never_called server-a roll-calls
+expect "or migrated" never_called server-a migrate-calls
+expect "and names the bad setting" log_says "GRAFANA_LOKI_URL must be https://"
+
+echo "a deploy with a space in a Grafana address"
+reset_servers
+extra_env=("${grafana_env[@]}" "GRAFANA_OTLP_URL=https://o.invalid /otlp")
+expect "the deploy fails" deploy_fails spaced
+expect "before any server is sent the release" never_called server-a releases/spaced
+expect "and names the bad setting" log_says "GRAFANA_OTLP_URL must be https://"
 extra_env=()
 
 # --- A migration that fails ---------------------------------------------------
