@@ -44,7 +44,10 @@ local.file_match "containers" {
 
 loki.source.file "containers" {
   targets    = local.file_match.containers.targets
-  forward_to = [loki.process.containers.receiver]
+  // A file Alloy has no saved position for is read from its end, so a first
+  // start ships new lines, not every log already on disk (50 MB a container).
+  tail_from_end = true
+  forward_to    = [loki.process.containers.receiver]
 }
 
 loki.process "containers" {
@@ -83,8 +86,10 @@ loki.write "grafana" {
   }
 }
 
-// Traces keep the client address and user agent on purpose (a decision,
-// 2026-11-04). Logs carry no IP; traces do.
+// Traces keep the client address and user agent, and the gateway's access
+// lines, which Alloy ships with every other container's, start with the
+// client address: both on purpose (a decision, 2026-11-04). The services'
+// own JSON log lines carry no IP.
 otelcol.receiver.otlp "services" {
   http {
     endpoint = "0.0.0.0:4318"
