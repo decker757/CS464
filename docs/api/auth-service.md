@@ -31,6 +31,8 @@ a balance field anywhere below.
 | PATCH | `/admin/users/{user_id}/role` | Move a user between `trader` and `admin` |
 | PATCH | `/admin/users/{user_id}/suspension` | Suspend or unsuspend an account, with a reason |
 | POST | `/internal/users/lookup` | Usernames and suspension, for the ledger only (service key) |
+| GET | `/health` | Liveness probe: the process is up |
+| GET | `/ready` | Readiness probe: the database answers. 503 names the one that does not. Not public: the production gateway returns 404 for it (ADR 0028) |
 
 ## Authentication
 

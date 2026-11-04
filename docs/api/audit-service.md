@@ -15,7 +15,8 @@ there is no write route at all:
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/audit/actions` | Read the admin action log |
-| GET | `/health` | Liveness and readiness probe |
+| GET | `/health` | Liveness probe: the process is up |
+| GET | `/ready` | Readiness probe: the database answers. 503 names the one that does not. Not public: the production gateway returns 404 for it (ADR 0028) |
 
 **There is no write endpoint, and there will not be one.** An entry is appended
 by the service performing the action, inside that action's own database

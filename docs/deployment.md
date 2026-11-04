@@ -222,6 +222,32 @@ your line shows anything else, a `10.64.x` address or a public address you do
 not recognise, stop: the per-IP limits must not ship until `set_real_ip_from`
 is fixed, or every visitor shares one rate-limit bucket.
 
+## Health and readiness
+
+Every service answers two paths. `/health` says the process is up, and checks
+nothing else. The load balancer (through the gateway's `/lb-health`, which
+asks the ledger), Docker, `roll.sh` and `release.sh` use it. `/ready` says the
+service can reach its database (realtime: Redis), and answers 503 naming the
+one that failed. The dashboard and the alerts use it.
+
+The load balancer does not use `/ready` on purpose. The database is one
+managed instance shared by every server, so taking a server out of rotation
+cannot fix it. It would only turn "trades fail with an error" into the load
+balancer's bare 503 for the whole site, homepage included, and make a deploy
+during a blip roll back. So a server whose auth or market service is broken
+keeps its traffic, and the alert on "a service is down or not ready, per
+service per server" is what tells you. That alert arrives with #599's
+dashboard PR; until then, nothing watches `/ready` and you have to look. ADR
+0028 has the reasoning.
+
+The gateway returns 404 for `/ready` on every service's subdomain. It names
+the failing dependency, and only the monitoring on the private network needs
+it. To look yourself:
+`docker compose --env-file ../../app.env --env-file release.env exec gateway wget -qO- http://ledger:8000/ready`.
+Ready prints `{"status":"ready",...}`. Not ready prints no body: busybox
+`wget` shows only `wget: server returned error: HTTP/1.1 503 ...`, and that
+line is the answer.
+
 ## Scaling
 
 - **More app servers:** raise `app_server_count` in
@@ -277,10 +303,7 @@ certificate, and TLS to the managed databases.
   `infra/terraform` would run it as a second workspace. It is not built.
   It needs a registrable domain of its own, not `staging.<domain>`: the
   login cookie reaches every subdomain of the production domain (ADR 0026).
-- **A health check of every service.** `/lb-health` asks the ledger only
-  (ADR 0026), so an unhealthy auth or market service on one server is not
-  taken out of the load balancer. #599.
-- **Monitoring and alerts:** #599. Until then, DigitalOcean's server and
+- **Monitoring and alerts:** #599 builds them. Until it lands, DigitalOcean's server and
   database graphs are the only view.
 - **Login rate limiting:** #600.
 - **Load test numbers:** #20, against this deployment.

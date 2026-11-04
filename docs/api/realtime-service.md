@@ -1,7 +1,7 @@
 # Realtime service API
 
 `ws://localhost:8004/ws/prices` in development. `http://localhost:8004/docs`
-describes `/health` and nothing else — OpenAPI has no vocabulary for a
+describes `/health` and `/ready` and nothing else — OpenAPI has no vocabulary for a
 WebSocket, so **this page is the contract for the socket** and there is no
 generated schema that will catch it drifting from the code. The shapes are
 pinned by `backend/realtime_service/model/schemas.py` and its tests; if the two
@@ -378,6 +378,11 @@ socket.
 probe would have the orchestrator restart the container and drop every socket it
 holds, which is the one response that reliably makes a Redis blip worse. The
 subscriber reconnects on its own with backoff.
+
+`GET /ready` is the readiness probe: it pings Redis, and answers 200 with
+`"status": "ready"`, or 503 with `"status": "not_ready"` and the dependency
+named. It is for dashboards and alerts, and is not public: the production
+gateway returns 404 for it (ADR 0028).
 
 | Variable | Required | Notes |
 | --- | --- | --- |

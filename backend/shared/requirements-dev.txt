@@ -13,3 +13,13 @@ pytest==9.1.1
 
 # [F-12] #342. The coverage figure CI reports, one number per side.
 pytest-cov==7.1.0
+
+# #599. shared/readiness.py: the /ready route is tested here against a
+# FastAPI app. The services' own pins.
+fastapi==0.141.1
+# ASGITransport, to call that app without a server.
+httpx==0.28.1
+# The driver for the unreachable-Postgres test.
+asyncpg==0.31.0
+# The readiness tests are async.
+pytest-asyncio==1.4.0
