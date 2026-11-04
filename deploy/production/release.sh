@@ -25,6 +25,11 @@
 #   DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DATABASE_ADMIN_URL REDIS_URL
 #   JWT_SECRET LEDGER_SERVICE_KEY, and for each of AUTH MARKET LEDGER AUDIT:
 #   <NAME>_DATABASE_URL and <NAME>_DB_PASSWORD
+# Optional: GRAFANA_CLOUD_TOKEN switches Alloy on, and with it set, these are
+# required as well, so half a group fails before any server is touched, and
+# so does a *_URL that is not https:// followed by no whitespace:
+#   GRAFANA_PROMETHEUS_URL GRAFANA_PROMETHEUS_USER GRAFANA_LOKI_URL
+#   GRAFANA_LOKI_USER GRAFANA_OTLP_URL GRAFANA_OTLP_USER
 # test/release-test.sh also sets DEPLOY_SSH, APP_DIR and SKIP_PUBLIC_CHECK.
 set -euo pipefail
 
@@ -40,6 +45,24 @@ for name in IMAGE_REGISTRY REGISTRY_USER REGISTRY_TOKEN DEPLOY_SSH_KEY DEPLOY_KN
   LEDGER_DATABASE_URL AUDIT_DATABASE_URL "${migrate_secrets[@]}"; do
   : "${!name:?$name is required}"
 done
+
+# Grafana Cloud is on if and only if the token is set. Alloy is the one part
+# of the release that may be absent, so nothing else reads these.
+grafana_names=(GRAFANA_PROMETHEUS_URL GRAFANA_PROMETHEUS_USER GRAFANA_LOKI_URL
+  GRAFANA_LOKI_USER GRAFANA_OTLP_URL GRAFANA_OTLP_USER)
+grafana_on=false
+if [ -n "${GRAFANA_CLOUD_TOKEN:-}" ]; then
+  grafana_on=true
+  for name in "${grafana_names[@]}"; do
+    : "${!name:?$name is required when GRAFANA_CLOUD_TOKEN is set}"
+    # Alloy cannot load a config with an address it cannot parse, and would
+    # crash on every server. Caught here, nothing has been touched.
+    if [[ $name == *_URL && ! ${!name} =~ ^https://[^[:space:]]+$ ]]; then
+      echo "deploy: $name must be https:// followed by an address with no spaces" >&2
+      exit 1
+    fi
+  done
+fi
 
 work=$(mktemp -d)
 release_dir=$app_dir/releases/$tag
@@ -77,6 +100,7 @@ trap cleanup EXIT
 make_bundle() {
   mkdir -p "$work/bundle/sql"
   cp "$repo"/deploy/production/{compose.yml,roll.sh,migrate.sh,ensure-database.sh} "$work/bundle/"
+  cp -r "$repo/deploy/production/alloy" "$work/bundle/"
   cp "$repo/deploy/production/sql/ensure-roles.sql" "$repo/sql/02-schemas.sql" "$work/bundle/sql/"
   echo "IMAGE_TAG=$tag" > "$work/bundle/release.env"
   tar -czf "$work/bundle.tgz" -C "$work/bundle" .
@@ -90,6 +114,7 @@ app_env_for() {
     leaderboard=true
   fi
   cat <<EOF
+SERVER_LABEL=app-$(($1 + 1))
 IMAGE_REGISTRY=$IMAGE_REGISTRY
 DOMAIN=$domain
 JWT_SECRET=$JWT_SECRET
@@ -101,6 +126,15 @@ AUDIT_DATABASE_URL=$AUDIT_DATABASE_URL
 REDIS_URL=$REDIS_URL
 LEADERBOARD_REFRESH_ENABLED=$leaderboard
 EOF
+  if [ "$grafana_on" = true ]; then
+    # COMPOSE_PROFILES is what starts Alloy; the services send it their
+    # traces. Without these lines Alloy is never started.
+    echo "COMPOSE_PROFILES=observability"
+    echo "TRACING_ENDPOINT=http://alloy:4318/v1/traces"
+    for name in "${grafana_names[@]}" GRAFANA_CLOUD_TOKEN; do
+      echo "$name=${!name}"
+    done
+  fi
 }
 
 migrate_script() {

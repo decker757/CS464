@@ -19,6 +19,9 @@
 #   - a release that cannot be pulled leaves the server untouched
 #   - a release that starts unhealthy is rolled back to the one before
 #   - a good release replaces the one before, which is kept, and nothing older
+#   - with Grafana configured but unreachable, Alloy runs steadily beside it,
+#     and Alloy failing outright still lets a roll succeed
+#   - switching Grafana off removes Alloy
 #   - going back from a release that added a service runs the old release
 #     from its own files, without that service, and with today's secrets: a
 #     database password changed since the old release was deployed
@@ -83,6 +86,7 @@ install_release() {
   cp "${2:-$repo/deploy/production/compose.yml}" "$directory/compose.yml"
   cp "$repo/deploy/production/sql/ensure-roles.sql" "$repo/sql/02-schemas.sql" "$directory/sql/"
   cp "$repo/deploy/production/test/backing.yml" "$directory/"
+  cp -r "$repo/deploy/production/alloy" "$directory/"
   echo "IMAGE_TAG=$1" > "$directory/release.env"
 }
 
@@ -124,9 +128,39 @@ every_image_is_at() {
   test "$others" = 0
 }
 
-no_container_runs_for() {
-  test -z "$(docker ps -q --filter "label=com.docker.compose.project=$project" \
+no_container_for() {
+  # Running or not: a crash-looping container is briefly in neither list.
+  test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$project" \
     --filter "label=com.docker.compose.service=$1")"
+}
+
+alloy_is_steady() {
+  # Running, and never restarted. The state alone passes a crash loop, which
+  # reads "running" between restarts.
+  local container state
+  container=$(compose ps -aq alloy) || return 1
+  test -n "$container" || return 1
+  state=$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$container") || return 1
+  test "$state" = "true 0"
+}
+
+roll_log=""
+roll_records() {
+  # roll_records <tag>: roll that release, keeping what roll.sh printed.
+  local status=0
+  roll_log=$("$work/releases/$1/roll.sh" 2>&1) || status=$?
+  printf '%s\n' "$roll_log" | sed 's/^/        /'
+  return "$status"
+}
+roll_said() { grep -q "$1" <<< "$roll_log"; }
+
+without_lines() {
+  # without_lines <pattern...>: drop those lines from app.env, as a deploy
+  # that no longer sets them would.
+  local pattern arguments=()
+  for pattern in "$@"; do arguments+=(-e "$pattern"); done
+  grep -v "${arguments[@]}" "$work/app.env" > "$work/app.env.next"
+  mv "$work/app.env.next" "$work/app.env"
 }
 
 releases_kept_are() {
@@ -387,19 +421,46 @@ expect "and auth runs release one's image" \
   test "$(compose ps --format '{{.Image}}' auth)" = "$registry/cs464-auth:one"
 expect "and it is undrained and serving" status_becomes 127.0.0.1 /lb-health 200
 
+echo "Grafana Cloud is configured, and unreachable"
+# Phase two: Alloy on, pointed at an address nothing answers. A deploy that a
+# Grafana outage could fail would be an outage of its own.
+cat >> "$work/app.env" <<EOF
+COMPOSE_PROFILES=observability
+TRACING_ENDPOINT=http://alloy:4318/v1/traces
+SERVER_LABEL=app-1
+GRAFANA_PROMETHEUS_URL=http://grafana.invalid/api/prom/push
+GRAFANA_PROMETHEUS_USER=1
+GRAFANA_LOKI_URL=http://grafana.invalid/loki/api/v1/push
+GRAFANA_LOKI_USER=2
+GRAFANA_OTLP_URL=http://grafana.invalid/otlp
+GRAFANA_OTLP_USER=3
+GRAFANA_CLOUD_TOKEN=not-a-real-token
+EOF
+
 echo "roll.sh, release two"
 install_release two
 expect "roll.sh moves to a good release" "$work/releases/two/roll.sh"
+expect "Alloy runs beside the release, steadily, and a Grafana it cannot reach does not fail the roll" \
+  alloy_is_steady
 expect "and the server is on two" test "$(current_release)" = two
 expect "and every service runs release two" every_image_is_at two
 expect "and only two and the release before it are kept" releases_kept_are "one two"
 expect "and release one's images are kept, for going back" image_is_here "$registry/cs464-auth:one"
 
-echo "the ledger's database password changes, as a deploy would change it"
+echo "roll.sh, release two again, with a Grafana address Alloy cannot parse"
+# release.sh refuses an address like this one, and this one it would accept;
+# it stands for Alloy failing in any way at all. Alloy exits as it starts.
+without_lines '^GRAFANA_PROMETHEUS_URL='
+echo 'GRAFANA_PROMETHEUS_URL=https://[bad' >> "$work/app.env"
+expect "roll.sh still succeeds" roll_records two
+expect "and warns that Alloy is not staying up" roll_said "WARNING: Alloy is not staying up"
+expect "and the server is on two" test "$(current_release)" = two
+expect "and serving" status_becomes 127.0.0.1 /lb-health 200
+
+echo "the ledger's database password changes, and Grafana is switched off, as a deploy would"
 LEDGER_DB_PASSWORD=$(random_secret)
-grep -v '^LEDGER_DATABASE_URL=' "$work/app.env" > "$work/app.env.next"
-echo "LEDGER_DATABASE_URL=postgresql+asyncpg://ledger_svc:$LEDGER_DB_PASSWORD@postgres:5432/cs464" >> "$work/app.env.next"
-mv "$work/app.env.next" "$work/app.env"
+without_lines '^LEDGER_DATABASE_URL=' '^COMPOSE_PROFILES=' '^TRACING_ENDPOINT=' '^GRAFANA_'
+echo "LEDGER_DATABASE_URL=postgresql+asyncpg://ledger_svc:$LEDGER_DB_PASSWORD@postgres:5432/cs464" >> "$work/app.env"
 "$work/releases/two/migrate.sh"
 
 echo "roll.sh, a release that adds a service and never becomes healthy"
@@ -407,7 +468,8 @@ install_release three "$work/compose-three.yml"
 expect "roll.sh refuses it" roll_is_refused three
 expect "and the server is back on two" test "$(current_release)" = two
 expect "and every service runs release two" every_image_is_at two
-expect "and the service only three has is not running" no_container_runs_for extra
+expect "and the service only three has is not running" no_container_for extra
+expect "and Alloy, with Grafana now off, is removed" no_container_for alloy
 expect "and it is serving" status_becomes 127.0.0.1 /lb-health 200
 expect "and its ledger reaches the database with today's password" has_starting_grant
 
