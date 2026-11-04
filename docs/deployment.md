@@ -116,7 +116,8 @@ admin of this repository.
    Seeded the day before, everything else is there and those two are not.
 
    The seed registers eleven accounts from one address in a few seconds.
-   Login rate limiting (#600) must allow that, or the seed runs before it.
+   That fits inside #600's limits, 20 registrations an hour and 30 logins a
+   minute from one address (ADR 0027).
 9. **Your own administrator account.** Register on the site.
    - If you seeded, log in as `admin_rachel` and promote yourself from Admin →
      Users. That is how every administrator after the first is made, and the
@@ -198,8 +199,8 @@ package's settings on GitHub; the repository already is), or log in first:
 remove a setting's name there, only add: the release before still reads the
 old name, and going back to it would start it without one.
 
-**Running compose on a server by hand:** every command below names the shared
-`app.env` by its absolute path, because `current` is a symlink and
+**Running compose on a server by hand:** every command on this page names
+the shared `app.env` by its absolute path, because `current` is a symlink and
 `../../app.env` from inside it is `/opt/app.env`. Each also sets `DRAIN_DIR`,
 which `roll.sh` sets for itself: compose reads the whole file for any command,
 and refuses to run without it.
@@ -445,15 +446,15 @@ query string, by design (docs/api/realtime-service.md), so nothing secret is in 
 method-route pairs × 12 histogram series ≈ 540, plus about 135
 request-counter series, about 200 process/Python series, and about 40
 business series. That is ≈ 950 per server, ≈ 1,900 for two, well under 10k.
-Re-measure it on the *Usage* page a week after the first release, and update
-this paragraph.
+Re-measure it on the *Usage* page around 2026-11-11, a week after monitoring
+went live, and update this paragraph.
 
 **Post-release checklist.** Run it once, after the first deploy from `main`
 that carries this work. It was run after #632, on 2026-11-04. What it found
 is under the list.
 
-1. Unpause `cs464-service-down`: *Alerting*, *Alert rules*, *CS464*, the
-   rule, *Resume evaluation*. Do it once every server has been sending for
+1. Unpause `cs464-service-down`, which a new stack imports paused:
+   *Alerting*, *Alert rules*, *CS464*, the rule, *Resume evaluation*. Do it once every server has been sending for
    a few minutes, or it pages at once.
 2. Every panel on *CS464 / Overview* has data. Make a trade first, or the
    trading panels have nothing to show.
@@ -517,9 +518,9 @@ today's.
 
 Grafana Cloud's free tier allows 10,000 active series, 50 GB of logs and
 50 GB of traces, kept for 14 days, and 3 users. We expect about 1,900 series
-(the series budget above). Alloy itself used 51–169 MB of memory per server
-in its first hour. Images on GHCR are free for a public repository. To stop paying, run
-`infra/tf destroy`. That deletes the database too, so take a backup first if
+(the series budget above). Alloy itself used 51–169 MB of memory per server,
+minutes after its first deploy. Images on GHCR are free for a public
+repository. To stop paying, run `infra/tf destroy`. That deletes the database too, so take a backup first if
 anything in it matters.
 
 ## Tests
