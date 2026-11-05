@@ -39,6 +39,8 @@ docs/architecture.md    three mermaid diagrams — the services and their
 DECISIONS.md            the layer under the ADRs: smaller decisions, in order,
                         cited from code comments by number (D-001 to D-052)
                         or, after those, by title (D-NEW "<title>")
+loadtest/               k6 load test of the trade endpoint [5.4] #20;
+                        docs/load-test.md runs it and keeps the results
 scripts/                sprint digest to Telegram
 .github/workflows/      path-filtered CI, one workflow per area
 .claude/skills/         shared Claude skills; /pr-review lives here
