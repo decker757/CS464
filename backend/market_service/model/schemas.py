@@ -715,3 +715,20 @@ class MarketOverviewResponse(BaseModel):
     markets: list[MarketOverviewRowOut]
     counts: dict[MarketStatus, int]
     next_cursor: str | None
+
+
+# --- the ledger's copy of each market's trading terms. #640 -----------------
+# Stored values, not derived ones: the ledger derives from them. ADR 0030.
+
+
+class PublishedMarketTermsOut(_UtcTimestamps):
+    id: uuid.UUID
+    status: MarketStatus
+    close_time: datetime | None
+
+
+class PublishedMarketsOut(BaseModel):
+    """Every published market's terms, ordered by `id`, and when it was read. #640"""
+
+    as_of: datetime
+    markets: list[PublishedMarketTermsOut]
