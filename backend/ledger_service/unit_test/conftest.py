@@ -59,7 +59,7 @@ os.environ.setdefault("LEDGER_SERVICE_KEY", secrets.token_urlsafe(48))
 # on itself.
 os.environ["LEADERBOARD_REFRESH_ENABLED"] = "false"
 
-from collections.abc import Sequence  # noqa: E402
+from collections.abc import Iterable, Iterator, Mapping, Sequence  # noqa: E402
 from datetime import UTC, datetime, timedelta  # noqa: E402
 from decimal import Decimal  # noqa: E402
 
@@ -133,19 +133,6 @@ def auth_client_over(transport: httpx.AsyncBaseTransport) -> httpx.AsyncClient:
     return account_status.open_client(transport=transport)
 
 
-def active_auth_transport() -> httpx.MockTransport:
-    """auth's answer for an account in good standing: `200` on `/auth/me`.
-
-    Every trade asks it since ADR 0022, so every test that trades without
-    being about suspension gets this one. The body is not read.
-    """
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={})
-
-    return httpx.MockTransport(handler)
-
-
 class ManualClock:
     """A monotonic clock a test moves by hand."""
 
@@ -154,6 +141,64 @@ class ManualClock:
 
     def __call__(self) -> float:
         return self.now
+
+
+# How old a copy built here may grow before it refuses, on its own clock,
+# which no test moves unless it is about the age.
+COPY_MAX_AGE_SECONDS = 5.0
+
+# The close time every market a copy built here holds open, unless a test
+# says otherwise: `trade_fixtures.FUTURE`, as a datetime.
+COPY_CLOSE_TIME = datetime(2027, 1, 5, 12, 0, tzinfo=UTC)
+
+
+class EveryMarketOpen(Mapping):
+    """Every market id, published open with `COPY_CLOSE_TIME`: the route
+    tests' copy, so a route test trades on any market it warmed without
+    naming it to the copy first. A test about the gate replaces it with
+    `publish_markets`."""
+
+    def __getitem__(self, market_id: uuid.UUID):
+        from service.local_copy import MarketTradingTerms  # noqa: PLC0415
+
+        return MarketTradingTerms(status="open", close_time=COPY_CLOSE_TIME)
+
+    def __iter__(self) -> Iterator[uuid.UUID]:
+        return iter(())
+
+    def __len__(self) -> int:
+        return 0
+
+
+def publish_markets(copy, terms: Mapping) -> None:
+    """Replace the copy's published markets with `terms`, loaded at its
+    clock's now, as a refresh would."""
+    from service.local_copy import PublishedMarkets  # noqa: PLC0415
+
+    copy.markets = PublishedMarkets(
+        terms=terms, loaded_at=copy.clock(), as_of=datetime.now(UTC)
+    )
+
+
+def suspend_users(copy, user_ids: Iterable[uuid.UUID]) -> None:
+    """Replace the copy's suspended ids with `user_ids`, loaded at its
+    clock's now, as a refresh would."""
+    from service.local_copy import SuspendedUsers  # noqa: PLC0415
+
+    copy.suspended = SuspendedUsers(
+        user_ids=frozenset(user_ids), loaded_at=copy.clock(), as_of=datetime.now(UTC)
+    )
+
+
+def loaded_copy(markets: Mapping, *, suspended: Iterable[uuid.UUID] = ()):
+    """A copy loaded now on a `ManualClock`, holding `markets` and
+    `suspended`. It never goes stale until the test moves `copy.clock.now`."""
+    from service.local_copy import LocalCopy  # noqa: PLC0415
+
+    copy = LocalCopy(max_age_seconds=COPY_MAX_AGE_SECONDS, clock=ManualClock())
+    publish_markets(copy, markets)
+    suspend_users(copy, suspended)
+    return copy
 
 
 @pytest.fixture(autouse=True)
@@ -239,34 +284,37 @@ async def session(clean_database):
 
 
 @pytest.fixture
-async def app_under_test(clean_database):
-    """The app, with the market_service and auth clients its lifespan would
-    open.
+def local_copy():
+    """The copy `app_under_test` hands the trade routes: loaded now, nobody
+    suspended, every market open (`EveryMarketOpen`). A route test about the
+    copy changes it through `publish_markets`, `suspend_users` or by setting
+    a half to `None`."""
+    return loaded_copy(EveryMarketOpen())
+
+
+@pytest.fixture
+async def app_under_test(clean_database, local_copy):
+    """The app, with the market_service client and the local copy its
+    lifespan would build.
 
     `ASGITransport` runs no lifespan, so `app.state.terms_client` does not
     exist under test. The dependency is overridden rather than the attribute
     set, because the override is the seam the routes read through. The terms
     client is the production one, so a route test that does not stub
     `market_terms.fetch` makes a real connection attempt, never a silent
-    success. The auth client answers every trade's account check with `200`
-    (ADR 0022); the refusals are tested in `test_account_status.py`.
+    success. The copy is set on `app.state`, where `get_local_copy` reads
+    it, so the dependency itself runs.
 
     `create_app` is imported here so the pure layers never construct the app.
     """
-    from controller.dependencies import (  # noqa: PLC0415
-        get_auth_client,
-        get_terms_client,
-    )
+    from controller.dependencies import get_terms_client  # noqa: PLC0415
     from main import create_app  # noqa: PLC0415
     from service import market_terms  # noqa: PLC0415
 
     app = create_app()
-    async with (
-        market_terms.open_client() as terms_client,
-        auth_client_over(active_auth_transport()) as auth_client,
-    ):
+    app.state.local_copy = local_copy
+    async with market_terms.open_client() as terms_client:
         app.dependency_overrides[get_terms_client] = lambda: terms_client
-        app.dependency_overrides[get_auth_client] = lambda: auth_client
         yield app
 
 

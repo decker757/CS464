@@ -30,10 +30,11 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
+from datetime import datetime
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import httpx
 import pytest
@@ -42,12 +43,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql.elements import TextClause
 
 from unit_test.conftest import (
-    active_auth_transport,
-    auth_client_over,
+    COPY_CLOSE_TIME,
+    loaded_copy,
     mint_token,
+    publish_markets,
     set_q,
     terms_client_over,
 )
+
+if TYPE_CHECKING:
+    from service.local_copy import LocalCopy
 
 ZERO = Decimal(0)
 QUANTUM = Decimal("0.0001")
@@ -272,6 +277,57 @@ def token() -> str:
     return mint_token(uuid.uuid4())
 
 
+# --- the local copy -------------------------------------------------------
+def terms_of(upstream: Upstream):
+    """The upstream's market as the copy holds it: the stored status and
+    close time its body says now, which is open at `FUTURE` until a test
+    closes it."""
+    from service.local_copy import MarketTradingTerms  # noqa: PLC0415
+
+    close_time = upstream.body["close_time"]
+    return MarketTradingTerms(
+        status=str(upstream.body["status"]),
+        close_time=None if close_time is None else datetime.fromisoformat(str(close_time)),
+    )
+
+
+def fresh_copy(upstream: Upstream, *, suspended: Iterable[uuid.UUID] = ()):
+    """A copy loaded now, on a clock the test moves, holding the upstream's
+    market as `terms_of` reads it and `suspended`'s ids. What `buy` trades
+    against unless it is handed another."""
+    return loaded_copy({upstream.market_id: terms_of(upstream)}, suspended=suspended)
+
+
+def open_copy(upstream: Upstream):
+    """A copy holding the upstream's market open, whatever its body says: the
+    trade's gate stubbed open, so only the latch and the book lock can refuse
+    a trade on a market settlement or void reads as approved or closed."""
+    from service.local_copy import MarketTradingTerms  # noqa: PLC0415
+
+    return loaded_copy(
+        {upstream.market_id: MarketTradingTerms(status="open", close_time=COPY_CLOSE_TIME)}
+    )
+
+
+def late_copy(upstream: Upstream, *, before_publishing: Callable[[], Awaitable[None]]):
+    """A copy that does not hold the upstream's market until its one refresh,
+    which awaits `before_publishing` first: the window between the replay
+    lookup and the book lock that a market-service call used to open.
+
+    Loaded a second before its clock's now, so a miss is past the refresh
+    floor.
+    """
+    copy = loaded_copy({})
+    copy.clock.now += 1.0
+
+    async def refresh() -> None:
+        await before_publishing()
+        publish_markets(copy, {upstream.market_id: terms_of(upstream)})
+
+    copy.refresh_markets = refresh
+    return copy
+
+
 # --- driving the thing under test ----------------------------------------
 async def buy(
     session: AsyncSession,
@@ -287,7 +343,7 @@ async def buy(
     access_token: str | None = None,
     redis_client: Recorder | None = None,
     transport: httpx.MockTransport | None = None,
-    auth_transport: httpx.MockTransport | None = None,
+    local_copy: LocalCopy | None = None,
 ):
     """One trade, with the interface these tests assume.
 
@@ -299,8 +355,10 @@ async def buy(
     and market id positionally, everything else keyword-only, `access_token`
     forwarded rather than minted, `transport` and `redis_client` the two
     injectable seams. If the implementation lands on other names, this helper
-    is the one place to change. `auth_transport` answers the account check
-    (ADR 0022), active unless a test says otherwise. `limit` is the trade's
+    is the one place to change. `local_copy` answers the account check and
+    the gate (ADR 0030): `fresh_copy(upstream)`, built at the call, unless a
+    test hands its own. `transport` answers a cold market's first touch,
+    and nothing else. `limit` is the trade's
     own price limit (#640): `None`, the default, keeps the strict
     `state_version` rule every test before it was written against.
 
@@ -322,9 +380,7 @@ async def buy(
         terms_client=terms_client_over(
             upstream.transport if transport is None else transport
         ),
-        auth_client=auth_client_over(
-            active_auth_transport() if auth_transport is None else auth_transport
-        ),
+        local_copy=local_copy if local_copy is not None else fresh_copy(upstream),
     )
 
 
@@ -915,6 +971,74 @@ async def race_on_one_key(
     if isinstance(won, BaseException):
         raise won
     return won, lost
+
+
+_BOOK_LOCK_WAITERS = text(
+    "SELECT count(*) FROM pg_stat_activity "
+    "WHERE datname = current_database() "
+    "AND usename = current_user "
+    "AND wait_event_type = 'Lock' "
+    "AND query ILIKE '%market_books%FOR UPDATE%' "
+    "AND pid <> pg_backend_pid()"
+)
+
+
+async def _until_one_waits_on_the_book(tasks: Sequence[asyncio.Task]) -> None:
+    """Wait until `pg_stat_activity` shows one backend queued on a book row."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PROBE_TIMEOUT
+    while await lock_waiters(_BOOK_LOCK_WAITERS) != 1:
+        _raise_if_failed(tasks)
+        if loop.time() > deadline:
+            pytest.fail("timed out: nothing ever queued on the held book row")
+        await asyncio.sleep(0.01)
+
+
+async def queued_past_close(
+    market_id: uuid.UUID,
+    close_time: datetime,
+    attempt: Callable[[AsyncSession], Awaitable[object]],
+) -> object:
+    """Run `attempt` on a session of its own, queued on the market's book row,
+    which another session holds until Postgres's clock is past `close_time`.
+    Returns what `attempt` returned or raised.
+
+    Both connect and meet at a barrier (ADR 0015). The holder locks the row
+    before the attempt starts, so the attempt passes every check before the
+    lock with `close_time` still ahead, and lets go only once
+    `pg_stat_activity` shows the attempt waiting and the clock has passed.
+    """
+    start = asyncio.Barrier(2)
+    locked = asyncio.Event()
+    factory = session_factory()
+    book = entities().MarketBook
+
+    async def hold_past_close() -> None:
+        async with factory() as holder:
+            await holder.connection()
+            await start.wait()
+            await holder.execute(
+                select(book.market_id).where(book.market_id == market_id).with_for_update()
+            )
+            locked.set()
+            await _until_one_waits_on_the_book([queued])
+            while (await holder.execute(select(func.clock_timestamp()))).scalar_one() <= close_time:
+                await asyncio.sleep(0.02)
+            await holder.rollback()
+
+    async def queue_on_the_book() -> object:
+        async with factory() as own:
+            await own.connection()
+            await start.wait()
+            await locked.wait()
+            return await attempt(own)
+
+    queued = asyncio.create_task(queue_on_the_book())
+    holder = asyncio.create_task(hold_past_close())
+    held, outcome = await finish([holder, queued])
+    if isinstance(held, BaseException):
+        raise held
+    return outcome
 
 
 def hide_the_first_lookup(monkeypatch: pytest.MonkeyPatch) -> list[int]:

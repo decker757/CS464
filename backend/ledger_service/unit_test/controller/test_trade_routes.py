@@ -20,6 +20,8 @@ quantity at five decimal places or an unknown field all answer
 `invalid_request` in the envelope, and `test_validation_envelope.py` owns that
 shape for every route at once.
 
+**The copy is `conftest.py`'s `local_copy`**, which holds every market open
+and nobody suspended; a test about the account check or the gate changes it.
 **The cold path is stubbed at `market_terms.fetch` rather than at a
 transport**, the same way `test_snapshot_routes.py` and
 `test_preview_routes.py` do it: a route cannot be handed an
@@ -42,9 +44,11 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.conftest import (
-    auth_client_over,
+    COPY_CLOSE_TIME,
     bearer,
     mint_token,
+    publish_markets,
+    suspend_users,
     terms_client_over,
 )
 from unit_test.trade_fixtures import (
@@ -161,10 +165,10 @@ async def _warm(
 class _Terms:
     """A stub for `market_terms.fetch`, patched onto the module.
 
-    Patched there rather than onto `books` or `market_status`, because both
-    hold the module and resolve `fetch` at call time — so this is the same
-    function the real path calls, reached the same way.
-    `test_snapshot_routes.py` uses the identical shape.
+    Patched there rather than onto `books`, because it holds the module and
+    resolves `fetch` at call time — so this is the same function the real
+    path calls, reached the same way. `test_snapshot_routes.py` uses the
+    identical shape.
     """
 
     def __init__(self, *, raises: Exception | None = None, status: str = "open") -> None:
@@ -526,14 +530,20 @@ async def test_a_quantity_with_five_decimal_places_is_refused(
 # The refusals that carry a code
 # =========================================================================
 async def test_a_closed_market_is_409_market_closed(
-    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch, local_copy
 ) -> None:
     """Spelled the same way market_service spells its own version of the same
     refusal, so a frontend error handler built for one serves both."""
+    from service.local_copy import MarketTradingTerms  # noqa: PLC0415
+
     client, recorder = trade_client
     market = _Market()
     await _warm(session, market)
-    _Terms(status="closed").install(monkeypatch, market)
+    _Terms().install(monkeypatch, market)
+    publish_markets(
+        local_copy,
+        {market.market_id: MarketTradingTerms(status="closed", close_time=COPY_CLOSE_TIME)},
+    )
 
     response = await client.post(
         _path(market.market_id), json=_body(market), headers=bearer(uuid.uuid4())
@@ -731,15 +741,16 @@ async def test_an_outcome_from_another_market_is_422_unknown_outcome(
 
 
 async def test_an_unreachable_market_service_is_503(
-    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch, local_copy
 ) -> None:
-    """The gate fails closed. A sick dependency is never read as an open
-    market, and 503 says there is no usable answer rather than inventing
-    one."""
+    """The gate fails closed. A copy that never loaded the published markets
+    is never read as an open market, and 503 says there is no usable answer
+    rather than inventing one (ADR 0030)."""
     client, _ = trade_client
     market = _Market()
     await _warm(session, market)
-    _Terms(raises=_errors().MarketTermsUnavailable()).install(monkeypatch, market)
+    _Terms().install(monkeypatch, market)
+    local_copy.markets = None
 
     response = await client.post(
         _path(market.market_id), json=_body(market), headers=bearer(uuid.uuid4())
@@ -750,47 +761,35 @@ async def test_an_unreachable_market_service_is_503(
 
 
 @pytest.mark.parametrize(
-    ("auth_status", "auth_body", "status", "code"),
-    [
-        (
-            403,
-            {"error": {"code": "account_suspended", "message": "Suspended."}},
-            403,
-            "account_suspended",
-        ),
-        (500, {}, 503, "auth_unavailable"),
-    ],
-    ids=["suspended", "auth-down"],
+    ("copy_says", "status", "code"),
+    [("suspended", 403, "account_suspended"), ("never-loaded", 503, "auth_unavailable")],
+    ids=["suspended", "auth-copy-never-loaded"],
 )
 async def test_auth_s_refusal_reaches_the_trader_in_the_envelope(
     trade_client,
-    app_under_test,
+    local_copy,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
-    auth_status: int,
-    auth_body: dict,
+    copy_says: str,
     status: int,
     code: str,
 ) -> None:
-    """ADR 0022's two new answers on this route, in the error envelope the
-    frontend parses. Nothing is published for a refused trade."""
-    import httpx  # noqa: PLC0415
-
-    from controller.dependencies import get_auth_client  # noqa: PLC0415
-
+    """ADR 0022's two answers on this route, from the copy of auth's
+    suspended ids (ADR 0030), in the error envelope the frontend parses.
+    Nothing is published for a refused trade."""
     client, recorder = trade_client
     market = _Market()
     await _warm(session, market)
     _Terms().install(monkeypatch, market)
+    user_id = uuid.uuid4()
+    if copy_says == "suspended":
+        suspend_users(local_copy, {user_id})
+    else:
+        local_copy.suspended = None
 
-    def auth_answers(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(auth_status, json=auth_body)
-
-    async with auth_client_over(httpx.MockTransport(auth_answers)) as auth_client:
-        app_under_test.dependency_overrides[get_auth_client] = lambda: auth_client
-        response = await client.post(
-            _path(market.market_id), json=_body(market), headers=bearer(uuid.uuid4())
-        )
+    response = await client.post(
+        _path(market.market_id), json=_body(market), headers=bearer(user_id)
+    )
 
     assert response.status_code == status
     assert response.json()["error"]["code"] == code
@@ -799,19 +798,22 @@ async def test_auth_s_refusal_reaches_the_trader_in_the_envelope(
 
 async def test_market_terms_unavailable_is_logged_at_warning_not_error(
     trade_client,
+    local_copy,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """DECISIONS.md: `settlement_unconfirmed` and `void_unconfirmed` are the
-    only 503s logged above WARNING. A market_service restart answers every
-    trade with this one, and at ERROR it would bury the 5xx that mean our own
-    data is wrong.
+    only 503s logged above WARNING. A market_service outage ages the copy past
+    its max age and answers every trade with this one, and at ERROR it would
+    bury the 5xx that mean our own data is wrong.
     """
     client, _ = trade_client
     market = _Market()
     await _warm(session, market)
-    _Terms(raises=_errors().MarketTermsUnavailable()).install(monkeypatch, market)
+    _Terms().install(monkeypatch, market)
+    local_copy.clock.now += local_copy.max_age_seconds + 1
+    suspend_users(local_copy, ())
 
     with caplog.at_level(logging.DEBUG):
         response = await client.post(
@@ -828,14 +830,15 @@ async def test_market_terms_unavailable_is_logged_at_warning_not_error(
 
 
 async def test_a_market_that_does_not_exist_is_404(
-    trade_client, monkeypatch: pytest.MonkeyPatch
+    trade_client, local_copy, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A cold market the upstream does not know. Not distinguished from a
-    draft or a submitted one, because `get_published` on the other side makes
-    those three indistinguishable on purpose."""
+    """A market the copy does not hold and the ledger has no book for. Not
+    distinguished from a draft or a submitted one, because the published
+    list on the other side leaves all three out on purpose."""
     client, _ = trade_client
     market = _Market()
     _Terms(raises=_errors().MarketNotFound()).install(monkeypatch, market)
+    publish_markets(local_copy, {})
 
     response = await client.post(
         _path(market.market_id), json=_body(market), headers=bearer(uuid.uuid4())

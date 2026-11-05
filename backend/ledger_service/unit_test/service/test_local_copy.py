@@ -119,16 +119,13 @@ async def _ensure(
     copy,
     market_id: uuid.UUID,
     session: AsyncSession = _NO_DATABASE,
-    *,
-    monotonic_now: float = _MONOTONIC_NOW,
 ):
-    return await _local_copy().ensure_trading(
-        session, copy, market_id, now=_NOW, monotonic_now=monotonic_now
-    )
+    """`ensure_trading` at `_NOW`, every age read from the copy's own clock."""
+    return await _local_copy().ensure_trading(session, copy, market_id, now=_NOW)
 
 
 def _refuse(copy, user_id: uuid.UUID) -> None:
-    _local_copy().refuse_if_suspended(copy, user_id, now=_MONOTONIC_NOW)
+    _local_copy().refuse_if_suspended(copy, user_id)
 
 
 # =========================================================================
@@ -362,7 +359,7 @@ async def test_misses_within_the_floor_share_one_refresh_and_a_later_one_refresh
     for seconds_later, fetches in [(0.0, 1), (floor / 2, 1), (floor + 0.05, 2)]:
         clock.now = _MONOTONIC_NOW + seconds_later
         with pytest.raises(_errors().MarketNotFound):
-            await _ensure(copy, uuid.uuid4(), session, monotonic_now=clock.now)
+            await _ensure(copy, uuid.uuid4(), session)
         assert stub.calls == fetches, f"{seconds_later}s after the first miss"
 
 

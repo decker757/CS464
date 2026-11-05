@@ -49,6 +49,7 @@ from unit_test.trade_fixtures import (
     entities,
     fund,
     lock_waiters,
+    open_copy,
     session_factory,
 )
 
@@ -236,7 +237,7 @@ async def settled_by_trading(
             quantity=quantity,
             state_version=await version_of(session, upstream.market_id),
             client_key=f"before-settlement-{uuid.uuid4()}",
-            transport=upstream.gate_open,
+            local_copy=open_copy(upstream),
         )
     await settle(session, upstream)
     return upstream
