@@ -8634,6 +8634,24 @@ use. So a point and a frame for the same `state_version` give the same strings.
 backfilled by this replay function, which is pure and in `core/` (the replay
 PR) so the backfill can call it unchanged.
 
+*Amended 2026-11-05 by #643: the history still replays; the batch snapshot's
+seven-day baseline reads.* Every trade and fill now stores `after_q` in its
+`context`: the `q` that one movement left, in position order, as decimal
+strings, written by `trading.trade_movement_of` in the trade's own
+transaction under the book lock. `GET .../price-history` does not read it and
+still replays every trade, as above. The batch snapshot's `prices_7d_ago`
+does: "The prices a week ago are replayed from each pool's trades up to the
+window's start, in one statement for every market", amended. Nothing is
+backfilled, so a trade from before #643 has no `after_q`, and a market whose
+newest trade before the cutoff is one of those is replayed as before. Two
+records of one `q` can now disagree, so a guard test holds them together:
+`test_market_price_history.py::test_every_trade_and_fill_stores_the_q_the_replay_reaches_at_its_version`
+asserts each stored `after_q` is the `q` this replay reaches at that
+`state_version`. The Notes' caution grows by one: a `q` repaired by hand now
+needs the newest trade's `after_q` repaired too, or the card's baseline and
+this route disagree. `_fingerprint` covers kind and legs only, so the key
+cannot break a replay of the trade itself.
+
 ---
 
 ### D-NEW — Settlement adds no point to the price history; the series ends at the last trade
@@ -11028,6 +11046,24 @@ markets. Price history measured the replay at about 0.12 s for 10,000 trades.
 
 **Reversal trigger.** A batch read measured as slow. Then the trade records the
 `q` it leaves, and the baseline becomes one `DISTINCT ON` per pool.
+
+*Amended 2026-11-05 by #643: the reversal trigger fired.* Each trade's
+`context` now stores the `q` it left as `after_q` ("Price history is replayed
+from the trades on the pool's feed, and nothing stores it", amended).
+`list_prices_at` reads each market's newest trade at or before the cutoff in
+one statement, `DISTINCT ON (market_id)` over the same join, ordered
+`market_id, created_at DESC, id DESC`, and prices its `after_q` through
+`lmsr.prices` and `book_prices.priced`, so the strings match the snapshot's.
+Only a market whose newest such trade has no `after_q` is replayed as above,
+every such market in one more statement, each logged at INFO so the fallback
+can be seen to die out. The 1, 2, 3, ... check therefore runs only on that
+replay: a stored `after_q` is the ledger's own record, written under the book
+lock in the trade's transaction, and is priced as it stands. An `after_q`
+whose length does not match the book's outcome rows costs that card its
+baseline and a warning, as a replay that cannot run does. Postgres still
+walks each pool's trades up to the cutoff to find the newest, through
+`ix_ledger_entries_account_feed`, but returns one row per market and the
+service replays nothing.
 
 ---
 
