@@ -271,6 +271,12 @@ subdomain, and only Alloy, on the private network, reads it. To look
 yourself, use the `exec gateway wget` command above with `/metrics` in place
 of `/ready`.
 
+Every path under `/internal/` is private too: the gateway returns 404 for it
+on every subdomain, with `LEDGER_SERVICE_KEY` or without it. Those are the
+routes the ledger reads from auth and market over the private network (ADR
+0021, ADR 0030). All three hidden paths are listed in
+`deploy/production/gateway/private-paths.inc`; add a path there to hide it.
+
 ## Monitoring: first-time setup
 
 Each server runs Grafana Alloy, which sends metrics, logs and traces to

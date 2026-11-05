@@ -12,6 +12,7 @@
 #
 #   - the frontend is served on the domain, and was built for it
 #   - each service answers on its own subdomain
+#   - /ready, /metrics and /internal/ answer only on the private network
 #   - ensure-database.sh puts the database admin's password on no command
 #     line, docker's or psql's
 #   - a trader can register and log in, and the login cookie names the domain
@@ -55,8 +56,9 @@ expect() {
 }
 
 status_of() {
-  # The HTTP status of a GET to the gateway, addressed to one host name.
-  curl -s -o /dev/null -w '%{http_code}' -H "Host: $1" "$gateway$2"
+  # status_of <host> <path> [curl arguments...]: the HTTP status of a GET to
+  # the gateway, addressed to one host name.
+  curl -s -o /dev/null -w '%{http_code}' -H "Host: $1" "${@:3}" "$gateway$2"
 }
 
 status_becomes() {
@@ -120,6 +122,16 @@ metric_inside() {
   local body
   body=$(compose exec -T gateway wget -qO- "http://$1:8000/metrics") || return 1
   grep -q "^$2" <<<"$body"
+}
+
+internal_answers_inside() {
+  # internal_answers_inside <service> <path>: the route answers the service
+  # key. Asked from the gateway container, on the private network, where
+  # /internal/ is not hidden. Fetched first, for metric_inside's reason.
+  local body
+  body=$(compose exec -T gateway wget -qO- --header "X-Service-Key: $ledger_service_key" \
+    "http://$1:8000$2") || return 1
+  grep -q '"as_of"' <<<"$body"
 }
 
 every_image_is_at() {
@@ -242,6 +254,7 @@ AUTH_DB_PASSWORD=$(random_secret)
 MARKET_DB_PASSWORD=$(random_secret)
 LEDGER_DB_PASSWORD=$(random_secret)
 AUDIT_DB_PASSWORD=$(random_secret)
+ledger_service_key=$(random_secret)
 
 cat > "$work/app.env" <<EOF
 COMPOSE_PROJECT_NAME=$project
@@ -249,7 +262,7 @@ COMPOSE_FILE=compose.yml:backing.yml
 IMAGE_REGISTRY=$registry
 DOMAIN=$domain
 JWT_SECRET=$(random_secret)
-LEDGER_SERVICE_KEY=$(random_secret)
+LEDGER_SERVICE_KEY=$ledger_service_key
 AUTH_DATABASE_URL=postgresql+asyncpg://auth_svc:$AUTH_DB_PASSWORD@postgres:5432/cs464
 MARKET_DATABASE_URL=postgresql+asyncpg://market_svc:$MARKET_DB_PASSWORD@postgres:5432/cs464
 LEDGER_DATABASE_URL=postgresql+asyncpg://ledger_svc:$LEDGER_DB_PASSWORD@postgres:5432/cs464
@@ -352,6 +365,20 @@ for service in auth market ledger audit realtime; do
   expect "$service is ready on the private network" is_ready_inside "$service"
 done
 expect "an unknown host name gets 404" test "$(status_of nobody.test /health)" = 404
+
+# #640, ADR 0030. The routes the ledger's local copies refresh from are for
+# the private network. From the internet the gateway answers 404, even to a
+# request that carries the key. Auth's lookup (ADR 0021) is hidden the same way.
+for pair in auth:/internal/users/suspended market:/internal/markets/published; do
+  service=${pair%%:*}
+  path=${pair#*:}
+  expect "$service's $path is not public, even with the key" \
+    test "$(status_of "$service.$domain" "$path" -H "X-Service-Key: $ledger_service_key")" = 404
+  expect "$service's $path answers the key on the private network" \
+    internal_answers_inside "$service" "$path"
+done
+expect "auth's /internal/users/lookup is not public" \
+  test "$(status_of "auth.$domain" /internal/users/lookup)" = 404
 
 username="stack$(date +%s)"
 password=$(random_secret)
