@@ -22,6 +22,7 @@ import logging
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -30,7 +31,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.book_fixtures import Upstream, warm
-from unit_test.conftest import auth_client_over, terms_client_over
+from unit_test.conftest import ManualClock, auth_client_over, terms_client_over
 from unit_test.source_pins import BACKEND, enum_member_of
 from unit_test.trade_fixtures import reached
 
@@ -50,8 +51,18 @@ def _errors():
     return errors
 
 
+def _entities():
+    """`model/entities.py`, reached lazily like `_local_copy`."""
+    from model import entities  # noqa: PLC0415
+
+    return entities
+
+
 _MAX_AGE = 5.0
 _MONOTONIC_NOW = 1_000.0
+# A second before `_MONOTONIC_NOW`: fresh, and past the miss-refresh floor, so
+# a miss refreshes unless a test says otherwise.
+_LOADED_AT = _MONOTONIC_NOW - 1.0
 _NOW = datetime(2026, 11, 5, 9, 30, tzinfo=UTC)
 _FUTURE = _NOW + timedelta(days=30)
 _SERVICE_KEY = "local-copy-test-key-0123456789abcdef"
@@ -69,16 +80,25 @@ class _Untouchable:
 _NO_DATABASE = cast(AsyncSession, _Untouchable())
 
 
+def _clock_at(now: float = _MONOTONIC_NOW) -> ManualClock:
+    clock = ManualClock()
+    clock.now = now
+    return clock
+
+
 def _copy(
     *,
     suspended: frozenset[uuid.UUID] | None = frozenset(),
     markets: Mapping[uuid.UUID, object] | None = None,
-    loaded_at: float = _MONOTONIC_NOW,
+    loaded_at: float = _LOADED_AT,
+    clock: ManualClock | None = None,
 ):
-    """A hand-built copy, loaded at `loaded_at`. `None` leaves that half
-    never loaded."""
+    """A hand-built copy, loaded at `loaded_at`, on `clock` (`_MONOTONIC_NOW`
+    unless given). `None` leaves that half never loaded."""
     module = _local_copy()
-    copy = module.LocalCopy(max_age_seconds=_MAX_AGE)
+    copy = module.LocalCopy(
+        max_age_seconds=_MAX_AGE, clock=clock if clock is not None else _clock_at()
+    )
     as_of = datetime(2026, 11, 5, tzinfo=UTC)
     if suspended is not None:
         copy.suspended = module.SuspendedUsers(
@@ -95,9 +115,15 @@ def _terms(status: str = "open", close_time: datetime | None = _FUTURE):
     return _local_copy().MarketTradingTerms(status=status, close_time=close_time)
 
 
-async def _ensure(copy, market_id: uuid.UUID, session: AsyncSession = _NO_DATABASE):
+async def _ensure(
+    copy,
+    market_id: uuid.UUID,
+    session: AsyncSession = _NO_DATABASE,
+    *,
+    monotonic_now: float = _MONOTONIC_NOW,
+):
     return await _local_copy().ensure_trading(
-        session, copy, market_id, now=_NOW, monotonic_now=_MONOTONIC_NOW
+        session, copy, market_id, now=_NOW, monotonic_now=monotonic_now
     )
 
 
@@ -180,19 +206,38 @@ async def test_a_market_absent_from_the_copy_but_holding_a_book_is_unavailable(
 
 class _RefreshStub:
     """`refresh_markets` as the lifespan installs it, counting its awaits.
-    `adds` is put into the copy's markets, as a refresh that found it would."""
+    `adds` is put into the copy's markets, as a refresh that found it would.
 
-    def __init__(self, copy, adds: Mapping[uuid.UUID, object]) -> None:
+    Stamped as a fetch stamps it, at `clock`'s time before the request; the
+    request then takes `takes` seconds of that clock. `session`, if given,
+    is asked whether it is in a transaction while the refresh runs."""
+
+    def __init__(
+        self,
+        copy,
+        adds: Mapping[uuid.UUID, object],
+        *,
+        clock: ManualClock,
+        takes: float = 0.0,
+        session: AsyncSession | None = None,
+    ) -> None:
         self.copy = copy
         self.adds = adds
+        self.clock = clock
+        self.takes = takes
+        self.session = session
         self.calls = 0
+        self.in_transaction: list[bool] = []
 
     async def __call__(self) -> None:
         self.calls += 1
-        module = _local_copy()
-        self.copy.markets = module.PublishedMarkets(
+        if self.session is not None:
+            self.in_transaction.append(self.session.in_transaction())
+        loaded_at = self.clock.now
+        self.clock.now += self.takes
+        self.copy.markets = _local_copy().PublishedMarkets(
             terms={**self.copy.markets.terms, **self.adds},
-            loaded_at=_MONOTONIC_NOW,
+            loaded_at=loaded_at,
             as_of=datetime(2026, 11, 5, tzinfo=UTC),
         )
 
@@ -206,8 +251,11 @@ async def test_a_market_missing_from_the_copy_triggers_one_refresh_before_it_is_
     exactly one refresh, not a loop of them. Catches: no refresh on a miss
     (the found case is 404); the re-read skipped; a retry loop."""
     market_id = uuid.uuid4()
-    copy = _copy(markets={})
-    stub = _RefreshStub(copy, {market_id: _terms()} if published_since else {})
+    clock = _clock_at()
+    copy = _copy(markets={}, clock=clock)
+    stub = _RefreshStub(
+        copy, {market_id: _terms()} if published_since else {}, clock=clock
+    )
     copy.refresh_markets = stub
 
     if published_since:
@@ -219,7 +267,9 @@ async def test_a_market_missing_from_the_copy_triggers_one_refresh_before_it_is_
     assert stub.calls == 1
 
 
-async def test_a_refresh_that_fails_on_a_miss_is_unavailable_not_not_found() -> None:
+async def test_a_refresh_that_fails_on_a_miss_is_unavailable_not_not_found(
+    session: AsyncSession,
+) -> None:
     """A miss whose refresh could not reach market_service knows nothing new
     about the market, so the answer names the dependency. Catches: the
     refresh's error escaping as a 500, or swallowed into a 404."""
@@ -231,7 +281,89 @@ async def test_a_refresh_that_fails_on_a_miss_is_unavailable_not_not_found() -> 
     copy.refresh_markets = unreachable
 
     with pytest.raises(_errors().MarketTermsUnavailable):
-        await _ensure(copy, uuid.uuid4())
+        await _ensure(copy, uuid.uuid4(), session)
+
+
+async def test_a_refresh_that_lands_older_than_the_max_age_refuses_the_trade(
+    session: AsyncSession,
+) -> None:
+    """The age is checked again after the refresh, on the copy's clock. A
+    fetch may answer more than the max age after it was stamped (each phase
+    has its own five-second timeout), and a queued caller may be answered by
+    a run that started long before its miss; either way the terms are too old
+    to trade on. Catches: freshness checked only on entry."""
+    market_id = uuid.uuid4()
+    clock = _clock_at()
+    copy = _copy(markets={}, clock=clock)
+    copy.refresh_markets = _RefreshStub(
+        copy, {market_id: _terms()}, clock=clock, takes=_MAX_AGE + 0.001
+    )
+
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _ensure(copy, market_id, session)
+
+
+async def test_a_miss_holds_no_transaction_while_it_refreshes(
+    session: AsyncSession,
+) -> None:
+    """The trade path reads before the gate, so the session arrives in a
+    transaction. Held across the refresh, it is a pooled connection idle in
+    transaction for up to the fetch's timeout, per miss. D-043. Catches: no
+    release before the refresh."""
+    await session.get(_entities().Account, uuid.uuid4())
+    assert session.in_transaction()
+    clock = _clock_at()
+    copy = _copy(markets={}, clock=clock)
+    stub = _RefreshStub(copy, {}, clock=clock, session=session)
+    copy.refresh_markets = stub
+
+    with pytest.raises(_errors().MarketNotFound):
+        await _ensure(copy, uuid.uuid4(), session)
+
+    assert stub.in_transaction == [False]
+
+
+async def test_a_miss_refuses_to_refresh_over_a_pending_write(
+    session: AsyncSession,
+) -> None:
+    """The release is a rollback, which would discard the write silently, so
+    the precondition is enforced rather than documented, as `books.ensure_open`'s
+    is. Nothing is fetched."""
+    pending = _entities().Account(
+        kind=_entities().AccountKind.USER, owner_id=uuid.uuid4()
+    )
+    session.add(pending)
+    clock = _clock_at()
+    copy = _copy(markets={}, clock=clock)
+    stub = _RefreshStub(copy, {}, clock=clock)
+    copy.refresh_markets = stub
+
+    with pytest.raises(AssertionError, match="nothing pending"):
+        await _ensure(copy, uuid.uuid4(), session)
+
+    assert pending in session.new, "the pending write was discarded"
+    assert stub.calls == 0
+
+
+async def test_misses_within_the_floor_share_one_refresh_and_a_later_one_refreshes(
+    session: AsyncSession,
+) -> None:
+    """A stream of trades on ids that do not exist costs market_service at
+    most one full-list fetch per floor, per replica. A miss inside the floor
+    goes straight to the absent-market answer. Catches: no floor (two
+    fetches by the second miss); a floor that never lifts (one fetch by the
+    third)."""
+    clock = _clock_at()
+    copy = _copy(markets={}, clock=clock)
+    stub = _RefreshStub(copy, {}, clock=clock)
+    copy.refresh_markets = stub
+    floor = _local_copy()._MISS_REFRESH_FLOOR_SECONDS
+
+    for seconds_later, fetches in [(0.0, 1), (floor / 2, 1), (floor + 0.05, 2)]:
+        clock.now = _MONOTONIC_NOW + seconds_later
+        with pytest.raises(_errors().MarketNotFound):
+            await _ensure(copy, uuid.uuid4(), session, monotonic_now=clock.now)
+        assert stub.calls == fetches, f"{seconds_later}s after the first miss"
 
 
 # =========================================================================
@@ -337,7 +469,9 @@ async def test_fetch_suspended_sends_the_key_and_parses_the_body() -> None:
 async def test_fetch_published_markets_sends_the_key_and_parses_statuses_and_close_times() -> None:
     """`GET /internal/markets/published` with `X-Service-Key`, each market's
     stored status and close time kept as sent. A close time with no offset is
-    read as UTC, as market_service's predicate reads one."""
+    read as UTC, as market_service's predicate reads one. `loaded_at` as the
+    suspended fetch's. Catches: `time.time()` for `time.monotonic()`, which
+    would leave a copy that never goes stale."""
     open_id, settled_id, no_offset_id, unclosed_id = (uuid.uuid4() for _ in range(4))
     rows = [
         (open_id, "open", "2026-11-30T16:00:00Z"),
@@ -354,6 +488,7 @@ async def test_fetch_published_markets_sends_the_key_and_parses_statuses_and_clo
             ],
         }
     )
+    before = time.monotonic()
 
     async with terms_client_over(upstream.transport) as client:
         markets = await _local_copy().fetch_published_markets(
@@ -370,6 +505,7 @@ async def test_fetch_published_markets_sends_the_key_and_parses_statuses_and_clo
         unclosed_id: _terms("open", None),
     }
     assert markets.as_of == datetime(2026, 11, 5, 9, 30, tzinfo=UTC)
+    assert before <= markets.loaded_at <= upstream.requested_at[0]
 
 
 def _refresh_suspended(copy, transport: httpx.MockTransport):
@@ -486,14 +622,58 @@ async def test_a_malformed_body_leaves_the_old_copy_in_place(
 
 async def test_a_well_formed_refresh_replaces_the_copy_whole() -> None:
     """The success side of the two above: a fresh snapshot is installed, not
-    merged into the old one, so an id unsuspended since leaves the copy."""
+    merged into the old one, so an id unsuspended since leaves the copy, and
+    so does a market no longer listed. Loaded a second before the refresh so
+    the fetched snapshot is the newer. Catches: `{**old, **new}` on either
+    half."""
     unsuspended, still_suspended = uuid.uuid4(), uuid.uuid4()
-    copy = _copy(suspended=frozenset({unsuspended, still_suspended}))
-    upstream = _Recording(json={"as_of": _AS_OF, "user_ids": [str(still_suspended)]})
+    gone, still_listed = uuid.uuid4(), uuid.uuid4()
+    copy = _copy(
+        suspended=frozenset({unsuspended, still_suspended}),
+        markets={gone: _terms(), still_listed: _terms()},
+        loaded_at=time.monotonic() - 1.0,
+    )
+    suspended_upstream = _Recording(
+        json={"as_of": _AS_OF, "user_ids": [str(still_suspended)]}
+    )
+    markets_upstream = _markets_body(
+        {"id": str(still_listed), "status": "open", "close_time": "2026-11-30T16:00:00Z"}
+    )
 
-    await _refresh_suspended(copy, upstream.transport)()
+    await _refresh_suspended(copy, suspended_upstream.transport)()
+    await _refresh_markets(copy, markets_upstream.transport)()
 
     assert copy.suspended.user_ids == frozenset({still_suspended})
+    assert set(copy.markets.terms) == {still_listed}
+
+
+_EMPTY_BODIES = {
+    "suspended": {"as_of": _AS_OF, "user_ids": []},
+    "markets": {"as_of": _AS_OF, "markets": []},
+}
+
+
+@pytest.mark.parametrize("which", list(_REFRESHES))
+async def test_an_older_snapshot_arriving_after_a_newer_one_is_dropped(
+    which: str,
+) -> None:
+    """Two refreshes may overlap: the lifespan's loop and a miss's. If the
+    one stamped first answers last, installing it would put the copy back in
+    time, and back past the max age sooner than it should. Here a newer
+    snapshot is installed while this fetch is in flight. Catches: installing
+    whatever arrives."""
+    copy = _copy(markets={}, loaded_at=time.monotonic() - 1.0)
+    installed_meanwhile = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        newer = replace(getattr(copy, which), loaded_at=time.monotonic())
+        setattr(copy, which, newer)
+        installed_meanwhile.append(newer)
+        return httpx.Response(200, json=_EMPTY_BODIES[which])
+
+    await _REFRESHES[which](copy, httpx.MockTransport(handler))()
+
+    assert getattr(copy, which) is installed_meanwhile[0]
 
 
 # =========================================================================
@@ -519,7 +699,9 @@ async def test_concurrent_refreshes_share_one_fetch_and_a_later_one_fetches_agai
     first = asyncio.create_task(shared())
     await reached(started, "the first refresh never started", [first])
     second = asyncio.create_task(shared())
-    await asyncio.sleep(0)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not second.done(), "the second caller did not wait for the shared run"
     release.set()
     await asyncio.gather(first, second)
 
@@ -528,6 +710,35 @@ async def test_concurrent_refreshes_share_one_fetch_and_a_later_one_fetches_agai
     await shared()
 
     assert fetches == 2
+
+
+async def test_callers_queued_behind_a_failed_refresh_share_its_error() -> None:
+    """Single flight on failure too: during an outage a queued caller gets
+    the shared run's error at once, rather than each retrying in turn, so the
+    k-th waits one timeout, not k, and market_service sees one attempt, not
+    one per caller. Catches: a failed run counted as nothing shared."""
+    fetches = 0
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def fetch() -> None:
+        nonlocal fetches
+        fetches += 1
+        started.set()
+        await release.wait()
+        raise httpx.ConnectError("market service is down")
+
+    shared = _local_copy().coalesced(fetch)
+    first = asyncio.create_task(shared())
+    await reached(started, "the first refresh never started", [first])
+    second = asyncio.create_task(shared())
+    for _ in range(3):
+        await asyncio.sleep(0)
+    release.set()
+    outcomes = await asyncio.gather(first, second, return_exceptions=True)
+
+    assert [type(outcome) for outcome in outcomes] == [httpx.ConnectError] * 2
+    assert fetches == 1
 
 
 class _FailsThenWaits:
