@@ -1,4 +1,4 @@
-"""HTTP wiring for the service-to-service lookup: the key, and the shape. [L-1] #38, #306
+"""HTTP wiring for the service-to-service lookup and suspended list: the key, and the shape. [L-1] #38, #306, #640
 
 ADR 0021. The rules about which ids are answered are in
 `unit_test/service/test_user_directory.py`.
@@ -162,15 +162,6 @@ async def test_any_other_field_in_the_body_is_refused(
 async def test_the_suspended_list_body_is_as_of_and_ids(
     client: AsyncClient, session: AsyncSession, registered_id: str
 ) -> None:
-    await client.post(
-        "/auth/register",
-        json={
-            "username": "still_active",
-            "email": "active@example.com",
-            "password": VALID_PASSWORD,
-        },
-    )
-    client.cookies.clear()
     await session.execute(
         text("UPDATE auth.users SET is_suspended = true WHERE id = :id"),
         {"id": registered_id},
