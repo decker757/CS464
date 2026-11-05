@@ -92,6 +92,22 @@ export function compareCredits(left: string, right: string): number {
 }
 
 /**
+ * A whole number of `places`-decimal units as a decimal string: 40n at four
+ * places is "0.0040". Exact, with no float, for a figure this file or a
+ * caller has just worked out on the digits.
+ */
+export function creditsFromUnits(units: bigint, places: number): string {
+  const sign = units < 0n ? '-' : ''
+  const digits = (units < 0n ? -units : units).toString()
+  if (places === 0) return sign + digits
+
+  // One digit more than the fraction needs, so a value below 1 keeps its
+  // leading zero: 4 units at 4 decimal places is "0.0004", not ".0004".
+  const padded = digits.padStart(places + 1, '0')
+  return `${sign}${padded.slice(0, -places)}.${padded.slice(-places)}`
+}
+
+/**
  * `left` minus `right`, as a decimal string — the only arithmetic in this
  * file, and exact.
  *
@@ -109,16 +125,7 @@ export function subtractCredits(left: string, right: string): string | null {
   const scaled = toSameScale(left, right)
   if (!scaled) return null
 
-  const difference = scaled.leftUnits - scaled.rightUnits
-  const sign = difference < 0n ? '-' : ''
-  const digits = (difference < 0n ? -difference : difference).toString()
-  if (scaled.fractionDigits === 0) return sign + digits
-
-  // One digit more than the fraction needs, so a value below 1 keeps its
-  // leading zero: 4 units at 4 decimal places is "0.0004", not ".0004".
-  const padded = digits.padStart(scaled.fractionDigits + 1, '0')
-  const whole = padded.slice(0, padded.length - scaled.fractionDigits)
-  return `${sign}${whole}.${padded.slice(padded.length - scaled.fractionDigits)}`
+  return creditsFromUnits(scaled.leftUnits - scaled.rightUnits, scaled.fractionDigits)
 }
 
 // A fresh position's unrealized P&L is zero, not a gain — ADR 0018/[T-4] #24
