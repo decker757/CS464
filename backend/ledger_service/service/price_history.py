@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Row, Select
+from sqlalchemy import Row, Select, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import PriceHistoryInconsistent
@@ -84,22 +84,16 @@ async def _replayed_trades_of(
     return [_replayed_trade_of(row, position_of) for row in rows]
 
 
-def _pool_trades_up_to(market_ids: Sequence[uuid.UUID], at: datetime) -> Select:
+def _trades_up_to_query(market_ids: Sequence[uuid.UUID], at: datetime) -> Select:
     """Every trade at or before `at` on these markets' pools, each row also
-    carrying its `market_id` and the book's `opened_at`, unordered.
-    `ix_ledger_entries_account_feed` serves each pool."""
+    carrying its `market_id` and the book's `opened_at`, ordered by market and
+    then like the feed. `ix_ledger_entries_account_feed` serves each pool."""
     return (
         ledger_service.trade_entries_query()
         .add_columns(MarketBook.market_id, MarketBook.opened_at)
         .join(MarketBook, MarketBook.pool_account_id == Entry.account_id)
         .where(MarketBook.market_id.in_(market_ids), Entry.created_at <= at)
-    )
-
-
-def _trades_up_to_query(market_ids: Sequence[uuid.UUID], at: datetime) -> Select:
-    """`_pool_trades_up_to`, ordered by market and then like the feed."""
-    return _pool_trades_up_to(market_ids, at).order_by(
-        MarketBook.market_id, Entry.created_at, Entry.id
+        .order_by(MarketBook.market_id, Entry.created_at, Entry.id)
     )
 
 
@@ -107,11 +101,30 @@ def _newest_trade_at_or_before_query(
     market_ids: Sequence[uuid.UUID], at: datetime
 ) -> Select:
     """Each market's newest trade at or before `at`, one row per market with a
-    trade by then, in one statement for any number of markets."""
+    trade by then, in one statement for any number of markets.
+
+    A `LATERAL ... LIMIT 1` per book, so each pool costs one probe of
+    `ix_ledger_entries_account_feed` however many trades it holds. Do not
+    turn it into a `DISTINCT ON`, which reads and sorts every trade up to
+    `at`. DECISIONS.md, "The prices a week ago are replayed from each pool's
+    trades up to the window's start, in one statement for every market",
+    amended.
+    """
+    newest = (
+        ledger_service.trade_entries_query()
+        .where(
+            Entry.account_id == MarketBook.pool_account_id,
+            Entry.created_at <= at,
+        )
+        .order_by(Entry.created_at.desc(), Entry.id.desc())
+        .limit(1)
+        .lateral("newest")
+    )
     return (
-        _pool_trades_up_to(market_ids, at)
-        .distinct(MarketBook.market_id)
-        .order_by(MarketBook.market_id, Entry.created_at.desc(), Entry.id.desc())
+        select(MarketBook.market_id, newest.c.context)
+        .select_from(MarketBook)
+        .join(newest, true())
+        .where(MarketBook.market_id.in_(market_ids))
     )
 
 

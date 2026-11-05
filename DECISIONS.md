@@ -11041,8 +11041,11 @@ null, and a warning in the log.
   trade's context beside `trade_fields_of`, which price history and the trade
   feed share so that a trade means the same thing on every route.
 
-**Notes.** The rows read are every trade older than a week on the requested
-markets. Price history measured the replay at about 0.12 s for 10,000 trades.
+**Notes.** The rows read are one entry of `ix_ledger_entries_account_feed`
+per requested market, its newest trade at or before the cutoff, and every
+trade older than a week only for a market whose newest trade predates
+`after_q` (the amendment below). Price history measured the replay at about
+0.12 s for 10,000 trades.
 
 **Reversal trigger.** A batch read measured as slow. Then the trade records the
 `q` it leaves, and the baseline becomes one `DISTINCT ON` per pool.
@@ -11051,19 +11054,24 @@ markets. Price history measured the replay at about 0.12 s for 10,000 trades.
 `context` now stores the `q` it left as `after_q` ("Price history is replayed
 from the trades on the pool's feed, and nothing stores it", amended).
 `list_prices_at` reads each market's newest trade at or before the cutoff in
-one statement, `DISTINCT ON (market_id)` over the same join, ordered
-`market_id, created_at DESC, id DESC`, and prices its `after_q` through
-`lmsr.prices` and `book_prices.priced`, so the strings match the snapshot's.
+one statement: `market_books` for the requested ids, joined to a `LATERAL`
+subquery over `trade_entries_query()` on that book's pool, `created_at <=
+cutoff`, ordered `created_at DESC, id DESC`, `LIMIT 1`. It prices that
+trade's `after_q` through `lmsr.prices` and `book_prices.priced`, so the
+strings match the snapshot's.
 Only a market whose newest such trade has no `after_q` is replayed as above,
 every such market in one more statement, each logged at INFO so the fallback
 can be seen to die out. The 1, 2, 3, ... check therefore runs only on that
 replay: a stored `after_q` is the ledger's own record, written under the book
 lock in the trade's transaction, and is priced as it stands. An `after_q`
 whose length does not match the book's outcome rows costs that card its
-baseline and a warning, as a replay that cannot run does. Postgres still
-walks each pool's trades up to the cutoff to find the newest, through
-`ix_ledger_entries_account_feed`, but returns one row per market and the
-service replays nothing.
+baseline and a warning, as a replay that cannot run does. Each pool costs one
+probe of `ix_ledger_entries_account_feed`, newest first, however many trades
+it holds. Rejected: `DISTINCT ON (market_id)` over the replay's join, which
+is one statement too but reads and sorts every trade up to the cutoff before
+keeping one per market. Measured on 20 books of 500 trades each: Unique over
+a Sort of 10,000 rows, 524 buffers, 14.4 ms, against 20 index probes of one
+row, 141 buffers, 0.16 ms for the `LATERAL` read.
 
 ---
 
