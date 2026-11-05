@@ -664,10 +664,18 @@ _TRADE_DESCRIPTION = (
     "`trade:<user_id>:<market_id>:<idempotency_key>` — the client's string "
     "is never stored as sent, so it only has to be unique to the caller "
     "who sent it.\n\n"
-    "**`state_version` is required and compared under the book's own lock, "
-    "for strict equality.** Either direction — older or newer than the "
-    "book — is `409 quote_stale`, with `quoted` and `current` in "
-    "`error.details`.\n\n"
+    "**A body with a price limit is decided by the limit**: `max_cost` on "
+    "a buy, `min_proceeds` on a sell. The trade is priced under the book's "
+    "own lock and executes at the current price when that is within the "
+    "limit. A price exactly at the limit executes. A price beyond it is "
+    "`409 price_beyond_limit`, with `limit`, `current_total` and the book's "
+    "`state_version` in `error.details`. Re-preview, and retry with a new "
+    "limit.\n\n"
+    "**A body with no limit is still decided by `state_version`, for now.** "
+    "It must equal the book's, under the same lock. Older or newer is "
+    "`409 quote_stale`, with `quoted` and `current` in `error.details`. "
+    "Once every client sends a limit, a body with no limit will be "
+    "refused.\n\n"
     "**A sell is checked against the caller's own position**, under the "
     "same lock, and refused `409 insufficient_shares_held` if it is larger. "
     "`total` is negative on a buy and positive on a sell.\n\n"
@@ -698,7 +706,11 @@ _TRADE_DESCRIPTION = (
         409: {
             "description": (
                 "`market_closed`: the market is not open for trading. "
-                "`quote_stale`: the quoted `state_version` is stale. "
+                "`quote_stale`: a body with no limit quoted a "
+                "`state_version` that is not the book's. "
+                "`price_beyond_limit`: the current price is beyond the "
+                "body's `max_cost` or `min_proceeds`. Re-preview, and retry "
+                "with a new limit. "
                 "`insufficient_funds`: a buy this account's available "
                 "credits, its balance less what its buy orders reserve, "
                 "cannot cover. "
@@ -756,6 +768,7 @@ async def execute_trade(
         side=body.side,
         quantity=body.quantity,
         state_version=body.state_version,
+        limit=body.limit,
         idempotency_key=body.idempotency_key,
         access_token=access_token,
         terms_client=terms_client,

@@ -562,6 +562,36 @@ class QuoteStale(LedgerError):
         super().__init__(self.message)
 
 
+class PriceBeyondLimit(LedgerError):
+    """The price at execution is beyond the trade's own limit. #640.
+
+    A buy names the most it will pay and a sell the least it will accept;
+    only a price past that is refused, and a price exactly at it executes.
+    409 for `InsufficientFunds`'s reason. Carries `limit`, `current_total`
+    (the unsigned magnitude the trade would move) and the `state_version` it
+    was priced at, so a client can re-preview and retry.
+    """
+
+    status_code = 409
+    code = "price_beyond_limit"
+
+    def __init__(
+        self, *, limit: Decimal, current_total: Decimal, state_version: int
+    ) -> None:
+        self.limit = limit
+        self.current_total = current_total
+        self.state_version = state_version
+        # Raised only beyond the limit, so the direction says which side it is.
+        if current_total > limit:
+            breach = f"would cost {current_total}, beyond"
+        else:
+            breach = f"would pay {current_total}, below"
+        self.message = (
+            f"This trade {breach} the limit of {limit}. Re-preview and retry."
+        )
+        super().__init__(self.message)
+
+
 class OrderCrossesBook(LedgerError):
     """A new limit order would fire, or be fired by, an open one. [T-6] #26.
 

@@ -712,6 +712,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0026** production on DigitalOcean, two or more app servers behind a load balancer, deployed from main
 - **0027** login and registration limits in Redis, per username or email and address, failing open
 - **0028** /health is liveness for the balancer, /ready is readiness for dashboards and alerts
+- **0029** price limits replace exact quotes on the trade route, shipped expand then contract
 
 Four known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

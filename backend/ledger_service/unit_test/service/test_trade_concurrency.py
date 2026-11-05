@@ -516,6 +516,51 @@ async def test_concurrent_traders_that_requote_each_fill_and_are_priced_in_turn(
     await assert_ledger_balances(session)
 
 
+async def test_two_trades_within_their_limits_both_execute_in_order(
+    session: AsyncSession,
+) -> None:
+    """Two buys quoting version 0, each with a limit nothing can breach: both
+    fill, one after the other, where the strict rule would refuse one as
+    `quote_stale` (#640).
+
+    Remove `.with_for_update()` from `books.lock_book`'s `market_books` read
+    and this fails: both read version 0 and `q` at `Q`, both are charged the
+    first cost, and both write `state_version = 1`.
+    """
+    upstream = Upstream()
+    users = [uuid.uuid4() for _ in range(2)]
+    await warm(session, upstream)
+    for user_id in users:
+        await fund(session, user_id)
+
+    start = asyncio.Barrier(len(users))
+    factory = session_factory()
+
+    async def attempt(user_id: uuid.UUID):
+        async with factory() as own:
+            await own.connection()
+            await start.wait()
+            return await buy(
+                own,
+                upstream,
+                user_id=user_id,
+                state_version=0,
+                limit=Decimal("1e6"),
+                client_key=f"key-{user_id}",
+            )
+
+    async with asyncio.timeout(TIMEOUT):
+        results = await asyncio.gather(*(attempt(u) for u in users))
+
+    assert sorted(r.state_version for r in results) == [1, 2]
+    assert sorted(r.total for r in results) == sorted(_sequential_totals(2)), (
+        "the two fills were not priced one after another"
+    )
+    assert await q_of(session, upstream.market_id) == [Q[0] + QUANTITY * 2, Q[1]]
+    assert (await book_row(session, upstream.market_id)).state_version == 2
+    await assert_ledger_balances(session)
+
+
 # =========================================================================
 # Ordering: what the lock is not held across
 # =========================================================================

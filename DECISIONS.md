@@ -2306,7 +2306,7 @@ which is a weaker and more honest requirement than global uniqueness.
 
 ### D-NEW — The trade's staleness check is strict `state_version` equality, and the field is required
 
-**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
+**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** superseded by "A trade names a price limit, and `quote_stale` is on its way out"
 
 **Decision.** The trade body carries the `state_version` the preview returned.
 Under the book lock the trade re-reads it and refuses `409 quote_stale` unless
@@ -2342,6 +2342,11 @@ This rule covers trades, not limit-order placements. A placement takes no
 would refuse an order because the price moved, which is what a limit order
 exists to tolerate. The trade route keeps the rule unchanged. See "A
 placement takes no `state_version`" in ADR 0024.
+
+*Superseded 2026-11-05 by ADR 0029 and "A trade names a price limit, and
+`quote_stale` is on its way out", the reversal this entry's trigger planned
+for. Until #640's contract step ships, a trade body that names no limit is
+still decided by this rule.*
 
 ---
 
@@ -11260,3 +11265,65 @@ repository's password to production, and the guard's whole point is that a
 seed cannot be undone. *Copying a seeded local database into production*: it
 would carry over test trades, needs care with sequences and the audit log,
 and still leaves the passwords to reset by hand.
+
+---
+
+### D-NEW — A trade names a price limit, and `quote_stale` is on its way out
+
+**Date:** 2026-11-05 · **Ticket:** #640 · **Status:** active
+
+**Decision.** A trade names a price limit: `max_cost` on a buy, the most it
+will pay, and `min_proceeds` on a sell, the least it will accept. Under the
+book lock the ledger prices the trade at the current `q`, and a price beyond
+the limit is `409 price_beyond_limit`, with `limit`, `current_total` and the
+book's current `state_version` in `error.details`. A price at the limit, or
+better for the trader by any amount, executes at the current price.
+`state_version` becomes optional and decides nothing. ADR 0029 records the
+decision; this entry records the error, the details and the rollout.
+
+It ships in two steps. The expand step (#640's PR 2) accepts a limit and does
+not require one: a body with a limit is decided by it, and a body with none
+by "The trade's staleness check is strict `state_version` equality, and the
+field is required", unchanged, `quote_stale` included. The contract step (PR
+2b, after #644 is released) requires the limit for its side and removes
+`quote_stale` from the route and from `core/errors.py`.
+
+**Why.** The superseded entry named this successor itself: "the successor is
+**not** a widened comparison but a `max_cost` bound on a buy and a
+`min_proceeds` bound on a sell, checked under the same lock". #20's
+production run on one market, 2026-11-04 (`docs/load-test.md`), is the
+measurement it waited for: 126 trades committed and 4,427 stale quotes
+retried, about 35 refusals per trade, with both app servers at 100% CPU.
+
+A new code rather than `quote_stale` reused, because the meaning changed.
+`quote_stale` said the book moved; `price_beyond_limit` says the price got
+worse than the trader allowed. The details changed with it.
+
+- `limit` is echoed exactly as the client sent it (`str(exc.limit)`), so a
+  client can match it against its own request.
+- `current_total` is the unsigned cost or proceeds at the current price,
+  quantized to four places, as `total` is.
+- `state_version` is the book's, a JSON number: a count, not money. A
+  client re-previews, and retries once the book is at that version or
+  later.
+
+The limit is checked after `trade_cost_of`, not where the version check
+stood, because the cost is what it compares.
+
+**Rejected.**
+- *A tolerance in versions or ticks on the server.* Rejected by the
+  superseded entry, for ADR 0017's reason, and by ADR 0029: the number
+  belongs to the client.
+- *Removing `state_version` from the body.* The frontend and the k6 script
+  already send it, and removing it is a second contract change for no gain.
+- *A limit for the other side ignored rather than refused.* A client that
+  sent `max_cost` on a sell believes it is protected. It is `422
+  invalid_request`.
+
+**Notes.**
+- A replay ignores the limit. `_matches` compares `outcome_id`, `side` and
+  `quantity`, as before, so a retry with a fresh limit returns the stored
+  trade at what it cost.
+- Until the contract step, `TradeIn` refuses a body with neither a limit nor
+  a `state_version` (`422 invalid_request`), and `execute` raises
+  `ValueError` on one, so no caller can trade with no price protection.
