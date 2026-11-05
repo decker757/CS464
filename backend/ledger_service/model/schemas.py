@@ -273,6 +273,18 @@ class TradeFields:
     average_price: Decimal | None = None
 
 
+def _listed_context_of(context: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A stored `context` as a history row shows it: a copy without `after_q`.
+
+    `after_q` is the market's `q`, each outcome's shares outstanding, which
+    the exposure read refuses a trader. The batch snapshot reads it from the
+    table (#643); no history row carries it.
+    """
+    if context is None:
+        return None
+    return {key: value for key, value in context.items() if key != "after_q"}
+
+
 class LedgerEntryOut(BaseModel):
     """One side of one movement, as it was written.
 
@@ -401,7 +413,7 @@ class LedgerEntryOut(BaseModel):
             balance_after=balance_after,
             transaction_id=entry.transaction_id,
             kind=entry.transaction.kind,
-            context=entry.transaction.context,
+            context=_listed_context_of(entry.transaction.context),
             market_id=trade.market_id,
             outcome_id=trade.outcome_id,
             side=trade.side,

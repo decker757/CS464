@@ -48,6 +48,11 @@ def _scale_four(value: Decimal) -> str:
     return str(value.quantize(QUANTUM))
 
 
+def _without_after_q(context: dict) -> dict:
+    """A stored context as the history shows it (#643)."""
+    return {key: value for key, value in context.items() if key != "after_q"}
+
+
 async def _entry_id(
     session: AsyncSession, user_id: uuid.UUID, transaction_id: uuid.UUID
 ) -> uuid.UUID:
@@ -98,8 +103,8 @@ async def test_existing_fields_are_present_and_unchanged(
     client: AsyncClient, session: AsyncSession
 ) -> None:
     """Nothing [4.1] #13 returned is removed or renamed, `context` included,
-    and `context` is what the trade stored: the sell's still says `"10"`,
-    though its typed `quantity` says `"10.0000"`."""
+    and `context` is what the trade stored but `after_q`: the sell's still
+    says `"10"`, though its typed `quantity` says `"10.0000"`."""
     scenario = await traded(session)
 
     entries = await _my_entries(client, scenario.user_id)
@@ -115,9 +120,29 @@ async def test_existing_fields_are_present_and_unchanged(
         assert row["id"] == str(await _entry_id(session, scenario.user_id, transaction_id))
         assert row["transaction_id"] == str(transaction_id)
         assert row["kind"] == kind
-        assert row["context"] == await stored_context(session, transaction_id)
+        assert row["context"] == _without_after_q(
+            await stored_context(session, transaction_id)
+        )
         assert row["created_at"].endswith(("Z", "+00:00"))
     assert sell_row["context"]["quantity"] == "10"
+
+
+async def test_a_trade_row_s_context_leaves_out_the_market_s_shares_outstanding(
+    client: AsyncClient, session: AsyncSession, admin_headers: dict[str, str]
+) -> None:
+    """The issue's "the API contract stays unchanged" (#643): the trade's
+    stored `after_q` is each outcome's shares outstanding, which the exposure
+    read refuses a trader, so neither history route shows it. Every other
+    stored key is still there."""
+    scenario = await traded(session)
+    stored = await stored_context(session, scenario.buy.transaction_id)
+    assert "after_q" in stored
+
+    admin = await client.get(_admin_entries(scenario.user_id), headers=admin_headers)
+    assert admin.status_code == 200, admin.text
+    for entries in (await _my_entries(client, scenario.user_id), admin.json()["entries"]):
+        _, buy_row, _ = entries
+        assert set(buy_row["context"]) == set(stored) - {"after_q"}
 
 
 async def test_amounts_quantities_and_prices_are_scale_four_strings(
