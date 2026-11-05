@@ -68,3 +68,15 @@ async def test_rows_come_back_ordered_by_id(session: AsyncSession) -> None:
 
     assert [user.id for user in found] == sorted(user.id for user in users)
 
+
+
+async def test_only_suspended_users_are_listed_in_id_order(
+    session: AsyncSession,
+) -> None:
+    first = await _make(session, "bob_1", suspended=True)
+    await _make(session, "michelle_l")
+    second = await _make(session, "carol_2", suspended=True)
+
+    found = await user_directory.list_suspended_ids(session)
+
+    assert found == sorted([first.id, second.id])

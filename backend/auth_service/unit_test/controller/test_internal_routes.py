@@ -7,14 +7,18 @@ ADR 0021. The rules about which ids are answered are in
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
 from unit_test.conftest import VALID_PASSWORD
 
 LOOKUP = "/internal/users/lookup"
+SUSPENDED = "/internal/users/suspended"
 
 
 def _key() -> dict[str, str]:
@@ -152,3 +156,54 @@ async def test_any_other_field_in_the_body_is_refused(
     # FastAPI's own 422: auth has no `invalid_request` envelope (the ledger
     # does), and docs/api/auth-service.md lists this one as "a different shape".
     assert response.status_code == 422
+
+
+# --- the suspended list [#640] ----------------------------------------------
+async def test_the_suspended_list_body_is_as_of_and_ids(
+    client: AsyncClient, session: AsyncSession, registered_id: str
+) -> None:
+    await client.post(
+        "/auth/register",
+        json={
+            "username": "still_active",
+            "email": "active@example.com",
+            "password": VALID_PASSWORD,
+        },
+    )
+    client.cookies.clear()
+    await session.execute(
+        text("UPDATE auth.users SET is_suspended = true WHERE id = :id"),
+        {"id": registered_id},
+    )
+    await session.commit()
+
+    response = await client.get(SUSPENDED, headers=_key())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"as_of", "user_ids"}
+    assert body["user_ids"] == [registered_id]
+    as_of = datetime.fromisoformat(body["as_of"])
+    assert abs(datetime.now(UTC) - as_of) < timedelta(seconds=5)
+
+
+async def test_the_suspended_list_needs_the_service_key(client: AsyncClient) -> None:
+    response = await client.get(SUSPENDED)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_service_key"
+
+
+async def test_an_access_token_does_not_open_the_suspended_list(
+    admin_client: AsyncClient,
+) -> None:
+    token = admin_client.cookies.get("access_token")
+    assert token is not None
+    admin_client.cookies.clear()
+
+    response = await admin_client.get(
+        SUSPENDED, headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_service_key"
