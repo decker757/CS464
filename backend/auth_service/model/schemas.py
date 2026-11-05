@@ -257,6 +257,13 @@ class UserLookupOut(BaseModel):
     users: list[DirectoryUserOut]
 
 
+class SuspendedUsersOut(BaseModel):
+    """Every suspended account's id, ordered by `id`, and when it was read. #640"""
+
+    as_of: datetime
+    user_ids: list[uuid.UUID]
+
+
 # The administrator's twin of `UserLookupIn`.
 class AdminUserLookupIn(BaseModel):
     """Which accounts to name, for an administrator's trade table. [2.4] #273.
