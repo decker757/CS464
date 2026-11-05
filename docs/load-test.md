@@ -11,8 +11,11 @@
 installing.
 
 - **50 traders, for 5 minutes.** Each one, once a second, reads the market's
-  snapshot, buys one share of an outcome at that `state_version`, and sells it
-  back.
+  snapshot, buys one share of an outcome at that price, and sells it back.
+- **Each trade names a 5% price limit.** A buy's `max_cost` is the snapshot's
+  price plus 5%, rounded up to the tick, and a sell's `min_proceeds` the same
+  price less 5%, rounded down (ADR 0029). The bots accept 5% so that the test
+  measures the server, not the traders' patience.
 - **On one market, or spread across several.** `MARKET_IDS` takes one id or
   several separated by commas, and the traders are dealt across them in turn.
   One market is the hardest case for the ledger: every trade locks the same
@@ -20,22 +23,27 @@ installing.
   many servers there are. Spread across markets, they mostly do not wait for
   each other. Run both: the first finds one market's ceiling, the second what
   the servers carry.
-- **A refused quote is retried, as a person would.** When another trader has
-  just moved the price, the trade is refused `409 quote_stale` with the
-  current `state_version`. The trader retries at that version, up to five
-  times. That is the book working, so it is counted (`quote_stale_retries`)
-  and not as an error.
+- **A refused limit is retried, as a person would.** When other traders have
+  moved the price past the limit, the trade is refused
+  `409 price_beyond_limit` and nothing is written. The trader reads a fresh
+  snapshot and retries at that price, up to five times. That is the limit
+  working, so it is counted (`price_limit_refusals`) and not as an error.
 - **What it records:**
   - `http_req_duration{name:trade}`: every trade request's latency, the
     retries included. Its p95 is the number the ticket asks for.
-  - `trade_errors`: the share of trades refused for anything but a stale
-    quote. A 5xx, or a 4xx that is not `quote_stale`, is the server's fault
+  - `trade_errors`: the share of trades refused for anything but the price.
+    A 5xx, or a 4xx that is not `price_beyond_limit`, is the server's fault
     or the script's.
-  - `trades_committed`, `quote_stale_retries` and `trades_given_up`
-    (five stale quotes in a row): counts. A trade given up is contention on
-    the book, not an error, so it is not in `trade_errors`. Read the two
-    together.
-  - `http_req_duration{name:snapshot}`: the price read before each trade.
+  - `trades_committed`, `price_limit_refusals` and `trades_given_up`
+    (still refused at the limit after five retries): counts. A trade given up is contention on the book, not an error,
+    so it is not in `trade_errors`. Read the two together. A refusal means
+    the price moved about 5% between the snapshot and the trade.
+  - `quote_stale_retries`: should be 0. Only a trade that names no limit is
+    refused `quote_stale` now (`docs/api/ledger-service.md`, "Rolling out"),
+    and every trade here names one. A count above 0 is a bug in the script or
+    the server.
+  - `http_req_duration{name:snapshot}`: the price read before each trade,
+    and before each retry.
 - **Three thresholds,** so a run says pass or fail by itself:
   - a trade's p95 is under 1 s, the same line as the latency alert
     (`deploy/grafana/alerts.yaml`)

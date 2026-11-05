@@ -1,6 +1,7 @@
 // [5.4] #20. Load test of the trade endpoint: USERS traders (50 by default)
 // each buy one share of an outcome and sell it back, once a second, on one
-// market, for DURATION. A trade given five stale quotes in a row is given up.
+// market, for DURATION. A trade still refused at its price limit after five
+// retries is given up.
 // MARKET_IDS names one market, or several separated by commas: the traders
 // are dealt across them in turn, so 50 traders on 5 markets is 10 a market.
 // Run it with loadtest/run.sh; docs/load-test.md explains it.
@@ -27,10 +28,13 @@ const DURATION = __ENV.DURATION || '5m'
 // Logins from one address are limited to 30 a minute (ADR 0027). 2.5 s apart
 // is 24 a minute, which leaves room for the admin's and anyone else's.
 const LOGIN_SPACING_SECONDS = Number(__ENV.LOGIN_SPACING_SECONDS || 2.5)
-// A trade quoted against a book another trader has just moved is refused
-// 409 quote_stale with the current state_version, as a browser's would be.
-// The trader retries at that version, like a person pressing Buy again.
-const MAX_QUOTE_RETRIES = 5
+// A trade whose price another trader has moved past its limit is refused
+// 409 price_beyond_limit, as a browser's would be. The trader reads a fresh
+// snapshot and retries at that price, like a person pressing Buy again.
+const MAX_LIMIT_RETRIES = 5
+const QUANTITY = '1'
+const LIMIT_SLACK_PERCENT = 5
+const TICKS_PER_CREDIT = 10000
 // The test trades only a market whose question starts with this, so a wrong
 // market id cannot move a real market's price.
 const THROWAWAY_MARKET_PREFIX = 'Load test'
@@ -44,11 +48,14 @@ const ADMIN_IDENTIFIER = __ENV.ADMIN_IDENTIFIER
 const ADMIN_PASSWORD = open('/secrets/admin-password').trim()
 const TRADER_PASSWORD = open('/secrets/trader-password').trim()
 
-// Anything but a commit or a stale quote: the server's fault, or ours.
+// Anything but a commit or a refused price: the server's fault, or ours.
 const tradeErrors = new Rate('trade_errors')
+const priceLimitRefusals = new Counter('price_limit_refusals')
+// Every trade here names a limit, so only a body without one is answered
+// quote_stale (docs/api/ledger-service.md, "Rolling out"). Above 0 is a bug.
 const quoteStaleRetries = new Counter('quote_stale_retries')
 const tradesCommitted = new Counter('trades_committed')
-// Five stale quotes in a row: contention on one book, not an error.
+// Still refused after five retries: contention on one book, not an error.
 const tradesGivenUp = new Counter('trades_given_up')
 
 export const options = {
@@ -150,6 +157,27 @@ function snapshotOf(token, marketId) {
     { ...jsonHeaders(token), tags: { name: 'snapshot' } })
 }
 
+/** The outcome's price and the book's version, from a 200 snapshot. */
+function quoteOf(snapshot, outcomeId) {
+  const price = snapshot.json('prices').find((entry) => entry.outcome_id === outcomeId).price
+  return { price, stateVersion: snapshot.json('state_version') }
+}
+
+// The traders accept 5% off the snapshot's price, so the test measures the
+// server, not the traders' patience. The script's one float sum: the price is
+// read as whole ticks (0.0001), the limit rounded outward to a whole tick,
+// and sent at four places, as money on the wire always is.
+function limitFor(side, price) {
+  const priceTicks = Math.round(Number(price) * TICKS_PER_CREDIT) * Number(QUANTITY)
+  let limitTicks
+  if (side === 'buy') {
+    limitTicks = Math.ceil(priceTicks * (100 + LIMIT_SLACK_PERCENT) / 100)
+  } else {
+    limitTicks = Math.floor(priceTicks * (100 - LIMIT_SLACK_PERCENT) / 100)
+  }
+  return (limitTicks / TICKS_PER_CREDIT).toFixed(4)
+}
+
 function loginTrader(username) {
   let response = login(username, TRADER_PASSWORD)
   if (response.status === 429) {
@@ -167,15 +195,17 @@ function loginTrader(username) {
   return { username, token: response.json('tokens.access_token'), id: response.json('user.id') }
 }
 
-/** One trade, retried at the current state_version while it is quote_stale. */
-function trade({ token, runId, marketId, outcomeId, side, stateVersion }) {
-  let version = stateVersion
-  for (let attempt = 0; attempt <= MAX_QUOTE_RETRIES; attempt++) {
+/** One trade, retried at a fresh snapshot's price while its limit is refused. */
+function trade({ token, runId, marketId, outcomeId, side, quote }) {
+  const limitField = side === 'buy' ? 'max_cost' : 'min_proceeds'
+  let current = quote
+  for (let attempt = 0; attempt <= MAX_LIMIT_RETRIES; attempt++) {
     const body = {
       outcome_id: outcomeId,
       side,
-      quantity: '1',
-      state_version: version,
+      quantity: QUANTITY,
+      [limitField]: limitFor(side, current.price),
+      state_version: current.stateVersion,
       // Unique across runs too: a key reused with the same body would replay
       // the earlier run's trade instead of making a new one.
       idempotency_key: `${runId}-${exec.vu.idInTest}-${exec.vu.iterationInScenario}-${side}-${attempt}`,
@@ -192,13 +222,24 @@ function trade({ token, runId, marketId, outcomeId, side, stateVersion }) {
       // Of the response's two counters, book_state_version is the one after everything the trade did.
       return response.json('book_state_version')
     }
-    if (response.status === 409 && errorCodeOf(response) === 'quote_stale') {
-      quoteStaleRetries.add(1)
-      version = response.json('error.details.current')
+    const code = errorCodeOf(response)
+    if (response.status === 409 && (code === 'price_beyond_limit' || code === 'quote_stale')) {
+      if (code === 'price_beyond_limit') {
+        priceLimitRefusals.add(1)
+      } else {
+        quoteStaleRetries.add(1)
+      }
+      const snapshot = snapshotOf(token, marketId)
+      if (snapshot.status !== 200) {
+        tradeErrors.add(true)
+        console.warn(`the snapshot before a ${side} retry answered ${snapshot.status} ${errorCodeOf(snapshot)}`)
+        return null
+      }
+      current = quoteOf(snapshot, outcomeId)
       continue
     }
     tradeErrors.add(true)
-    console.warn(`${side} answered ${response.status} ${errorCodeOf(response)}`)
+    console.warn(`${side} answered ${response.status} ${code}`)
     return null
   }
   tradesGivenUp.add(1)
@@ -276,9 +317,12 @@ export default function (data) {
   check(snapshot, { 'snapshot is 200': (response) => response.status === 200 })
   if (snapshot.status === 200) {
     const order = { token: trader.token, runId: data.runId, marketId: market.marketId, outcomeId }
-    const afterBuy = trade({ ...order, side: 'buy', stateVersion: snapshot.json('state_version') })
+    const quote = quoteOf(snapshot, outcomeId)
+    const afterBuy = trade({ ...order, side: 'buy', quote })
     if (afterBuy !== null) {
-      trade({ ...order, side: 'sell', stateVersion: afterBuy })
+      // The buy has just raised this outcome's price, so the price it was
+      // quoted at is still a fair floor for selling the share back.
+      trade({ ...order, side: 'sell', quote: { price: quote.price, stateVersion: afterBuy } })
     }
   }
   sleep(1)
