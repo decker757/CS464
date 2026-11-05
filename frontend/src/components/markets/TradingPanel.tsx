@@ -147,6 +147,14 @@ function describeUnconfirmedTrade(trade: SentTrade): string {
   return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} could not be confirmed, and may have gone through. Check your portfolio before trading again, or send the same trade again from this page: it will not be made twice.`
 }
 
+/** What a trader is told about a trade refused because its price moved, when
+ *  the in-place "Prices moved" line is not on screen to say it: it was not
+ *  made, and which trade it was (#589). Nothing about what to do next — the
+ *  re-quote may have failed, and the preview's own error says why. */
+function describeRefusedTrade(trade: SentTrade): string {
+  return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} was not made: the price moved before it went through.`
+}
+
 /** A trade's key, kept until the ledger answers it definitely.
  *  `mayHaveCommitted` once an attempt under it got no answer or a 5xx. */
 interface KeyAwaitingAnswer {
@@ -241,9 +249,20 @@ export default function TradingPanel({
   // The trade that got no answer or a 5xx, said on screen whatever the panel
   // now shows, until the next trade is sent (#580).
   const [unconfirmedTrade, setUnconfirmedTrade] = useState<SentTrade | null>(null)
+  // The trade refused because its price moved, until the next trade is sent (#589).
+  const [refusedTrade, setRefusedTrade] = useState<SentTrade | null>(null)
   const quantityInputRef = useRef<HTMLInputElement>(null)
 
   const visibleSubmitError = submitErrorFor === inputKey ? submitError : ''
+  // A refused trade the market ticket still shows says so in place, under the
+  // button. Otherwise — the trader picked another outcome or side, or the
+  // Limit ticket, while it was in flight, or its re-quote failed — it says so
+  // above the tickets instead, naming it. inputKey leaves out the order type,
+  // so the ticket is checked here.
+  const isRefusalShownInPlace = orderType === 'market' && visibleSubmitError !== ''
+  let pastTradeAlert = ''
+  if (unconfirmedTrade) pastTradeAlert = describeUnconfirmedTrade(unconfirmedTrade)
+  else if (refusedTrade && !isRefusalShownInPlace) pastTradeAlert = describeRefusedTrade(refusedTrade)
   // Shown until the trader types the next quantity, and only that: tying it to
   // the outcome too hid a buy's confirmation from a trader who picked another
   // outcome while it was in flight (#566). It names its own outcome, so it
@@ -297,6 +316,7 @@ export default function TradingPanel({
     setSubmitErrorFor(inputKey)
     setSubmitError('')
     setUnconfirmedTrade(null)
+    setRefusedTrade(null)
     try {
       const result = await postTrade(marketId, {
         outcome_id: outcomeId,
@@ -327,7 +347,9 @@ export default function TradingPanel({
         // automatically. refetchNow is the same fetch the live preview
         // uses, so if it fails too, previewError already shows why — clear
         // submitError rather than leaving "Getting a fresh quote…" frozen
-        // on screen regardless of how the re-quote turns out.
+        // on screen regardless of how the re-quote turns out. The alert
+        // above the tickets then says the trade was not made (#589).
+        setRefusedTrade(trade)
         setSubmitError(describeTradeError(err))
         const freshQuote = await refetchNow()
         setSubmitError(freshQuote ? 'Prices moved. Check the new quote and confirm again.' : '')
@@ -405,10 +427,8 @@ export default function TradingPanel({
       </ToggleRow>
 
       {/* Above both tickets and the "holds none to sell" offer: it is about a
-          trade already sent, whatever the panel shows now (#580). */}
-      {unconfirmedTrade && (
-        <p role="alert" className="mb-3 text-xs text-danger">{describeUnconfirmedTrade(unconfirmedTrade)}</p>
-      )}
+          trade already sent, whatever the panel shows now (#580, #589). */}
+      {pastTradeAlert && <p role="alert" className="mb-3 text-xs text-danger">{pastTradeAlert}</p>}
 
       {orderType === 'limit' ? (
         <LimitOrderFields
