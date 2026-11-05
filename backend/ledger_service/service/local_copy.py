@@ -368,14 +368,13 @@ async def run_refresher(
         await asyncio.sleep(interval_seconds)
 
 
-def refuse_if_suspended(copy: LocalCopy, user_id: uuid.UUID, *, now: float) -> None:
-    """Raise unless the copy says this user may trade. `now` is
-    `time.monotonic()`.
+def refuse_if_suspended(copy: LocalCopy, user_id: uuid.UUID) -> None:
+    """Raise unless the copy says this user may trade, as of `copy.clock()`.
 
     Raises `AuthUnavailable` for a copy never loaded or past its max age, and
     `AccountSuspended` for a listed id. ADR 0022.
     """
-    if not copy.is_suspended_fresh(now=now):
+    if not copy.is_suspended_fresh(now=copy.clock()):
         raise AuthUnavailable
     if user_id in copy.suspended.user_ids:
         raise AccountSuspended
@@ -387,9 +386,9 @@ async def ensure_trading(
     market_id: uuid.UUID,
     *,
     now: datetime,
-    monotonic_now: float,
 ) -> MarketTradingTerms:
-    """This market's terms, if the copy says it may be traded at `now`.
+    """This market's terms, if the copy says it may be traded at `now`. Every
+    age is measured on `copy.clock()`, the clock the fetches stamp.
 
     Raises `MarketTermsUnavailable` for a copy never loaded or past its max
     age. A market absent from it gets one `copy.refresh_markets()`, unless
@@ -404,6 +403,7 @@ async def ensure_trading(
     refreshes rolls the session back first (D-043). The session is read only
     on a miss, unlocked. A market the copy holds is answered in memory.
     """
+    monotonic_now = copy.clock()
     if not copy.is_markets_fresh(now=monotonic_now):
         raise MarketTermsUnavailable
 

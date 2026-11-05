@@ -20,3 +20,12 @@ connection_count
 # imports them. [F-5] #75.
 upgrade
 downgrade
+
+
+# The local copy's refreshers (#640, ADR 0030), which `main.py`'s lifespan
+# starts once the copy's lifespan wiring lands in the same pull request.
+# Delete these four with that wiring.
+coalesced
+refresh_suspended
+refresh_published_markets
+run_refresher

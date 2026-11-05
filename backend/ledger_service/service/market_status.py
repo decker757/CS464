@@ -1,11 +1,9 @@
-"""The stopped-market gate: may this market still be traded? [F-8] #109, ADR 0017.
+"""A market's terms from market_service, for settlement and void. [F-8] #109, ADR 0017.
 
-The book holds no status or `close_time` and cannot, so this asks
-market_service, whose `status` already answers both the clock's close and an
-administrator's (ADR 0011). The replay-before-gate and gate-before-lock order
-belongs to the trade path. `ensure_trading` returns `None`, never `MarketTerms`:
-fresh terms there are one refactor from pricing off the wire instead of the
-book (ADR 0005).
+The book holds no status, so settlement and void ask market_service's public
+detail endpoint, holding no connection while it answers. The trade path no
+longer comes here: it reads the ledger's local copy (`service/local_copy.py`,
+ADR 0030).
 """
 
 from __future__ import annotations
@@ -16,14 +14,9 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import release_before_calling_out
-from core.errors import MarketClosed, MarketNotFound, MarketTermsUnavailable
+from core.errors import MarketNotFound, MarketTermsUnavailable
 from service import books, market_terms
 from service.market_terms import MarketTerms
-
-# The one status a trade may proceed against, restated rather than imported
-# (see `books.MIN_OUTCOMES`). A wrong value would refuse every trade silently,
-# so `test_market_status.py` pins it against market_service's source.
-_OPEN = "open"
 
 
 async def read_terms(
@@ -62,23 +55,3 @@ async def read_terms(
             raise MarketTermsUnavailable from not_found
         raise
 
-
-async def ensure_trading(
-    session: AsyncSession,
-    market_id: uuid.UUID,
-    *,
-    access_token: str,
-    terms_client: httpx.AsyncClient,
-) -> None:
-    """Raise if this market is not open for trading. Otherwise return `None`.
-
-    Raises `MarketClosed` for any status but "open", and whatever `read_terms`
-    raises. **Call this with nothing pending and no row lock held**: the gate
-    runs before the book lock, and `read_terms` rolls back before it calls out.
-    """
-    terms = await read_terms(
-        session, market_id, access_token=access_token, terms_client=terms_client
-    )
-
-    if terms.status != _OPEN:
-        raise MarketClosed

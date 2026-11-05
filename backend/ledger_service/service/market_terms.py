@@ -62,7 +62,8 @@ class MarketTerms:
     """A market's terms, read once and handed to `service/books.py` to copy.
 
     `status` is market_service's derived status (ADR 0011), carried and never
-    gated on: only `market_status.ensure_trading` refuses on it (ADR 0017).
+    gated on by a trade: the trade's gate reads the local copy (ADR 0030),
+    and only settlement and void read this one.
     The money fields are nullable because the wire contract is;
     `books.ensure_open` refuses a null one.
 
