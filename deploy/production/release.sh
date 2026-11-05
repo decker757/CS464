@@ -131,6 +131,7 @@ EOF
     # traces. Without these lines Alloy is never started.
     echo "COMPOSE_PROFILES=observability"
     echo "TRACING_ENDPOINT=http://alloy:4318/v1/traces"
+    echo "TRACING_SAMPLE_RATIO=0.1"
     for name in "${grafana_names[@]}" GRAFANA_CLOUD_TOKEN; do
       echo "$name=${!name}"
     done
