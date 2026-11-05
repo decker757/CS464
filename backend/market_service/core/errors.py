@@ -25,6 +25,19 @@ class NotAuthenticated(MarketError):
     message = "Not authenticated."
 
 
+# Twin: auth_service/core/errors.py::InvalidServiceKey; kept copied under ADR 0012's bar
+class InvalidServiceKey(MarketError):
+    """#640 - `/internal/markets/published` without the right `X-Service-Key`.
+
+    One error for a missing and a wrong key, so the refusal tells a caller
+    nothing about which. ADR 0021.
+    """
+
+    status_code = 401
+    code = "invalid_service_key"
+    message = "Missing or incorrect service key."
+
+
 class NotAnAdministrator(MarketError):
     """Authenticated, but not carrying the admin role.
 

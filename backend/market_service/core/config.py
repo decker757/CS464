@@ -30,6 +30,13 @@ class Settings(ServiceSettings):
     database_pool_size: int = Field(default=10, ge=1)
     database_max_overflow: int = Field(default=10, ge=0)
 
+    # --- The ledger's service key #640, ADR 0021 ---------------------------
+    # What the ledger presents as `X-Service-Key` to `/internal/markets/published`.
+    # Required, with no default, for `database_url`'s reason: a default key is a
+    # published key. ADR 0021 sets the 32-character floor.
+    # A SecretStr, as `jwt_secret` is (#307).
+    ledger_service_key: SecretStr = Field(min_length=32)
+
     # --- Market pricing ---------------------------------------------------
     # [1.2] #2. The `b` a market gets when the administrator gives none. It
     # has a default, unlike the URL, because it is not a credential: a wrong

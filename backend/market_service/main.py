@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from controller.errors import register_error_handlers
+from controller.internal_routes import router as internal_router
 from controller.public_routes import router as public_market_router
 from controller.routes import router as market_router
 from core import observability
@@ -87,6 +88,7 @@ def create_app() -> FastAPI:
     register_error_handlers(app)
     app.include_router(market_router)
     app.include_router(public_market_router)
+    app.include_router(internal_router)
 
     @app.get("/health", tags=["ops"], summary="Liveness: the process is up")
     async def health() -> dict[str, str]:

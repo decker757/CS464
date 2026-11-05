@@ -32,13 +32,13 @@ def _env(monkeypatch: pytest.MonkeyPatch, **extra: str) -> None:
         monkeypatch.setenv(key, value)
 
 
-@pytest.mark.parametrize("missing", ["DATABASE_URL", "JWT_SECRET"])
+@pytest.mark.parametrize("missing", ["DATABASE_URL", "JWT_SECRET", "LEDGER_SERVICE_KEY"])
 def test_the_required_settings_have_no_default(
     missing: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A default would be a credential, or a published signing key, in the repo.
 
-    The variable is deleted from the environment because conftest sets both.
+    The variable is deleted from the environment because conftest sets all three.
     """
     _env(monkeypatch)
     monkeypatch.delenv(missing, raising=False)
@@ -50,6 +50,12 @@ def test_the_required_settings_have_no_default(
 def test_a_short_signing_key_is_refused() -> None:
     with pytest.raises(ValidationError):
         _settings(jwt_secret="tooshort")
+
+
+def test_a_short_ledger_service_key_is_refused() -> None:
+    """#640, ADR 0021's 32-character floor: a short key is a guessable one."""
+    with pytest.raises(ValidationError):
+        _settings(ledger_service_key="x" * 31)
 
 
 def test_cors_origins_parse_from_the_environment(
@@ -205,19 +211,21 @@ def test_a_nonsensical_dispute_window_refuses_to_boot(
 # --- #307: a printed Settings carries no credential ---------------------------
 def test_no_secret_appears_when_the_settings_are_printed() -> None:
     """#307. pytest prints a Settings in a failure message, and so does any log
-    line or exception that formats one. The signing key and the database
-    password must appear in neither form, nor in a `model_dump()`, which
-    `Field(repr=False)` would have left in clear."""
+    line or exception that formats one. The signing key, the database password
+    and the ledger's key must appear in neither form, nor in a `model_dump()`,
+    which `Field(repr=False)` would have left in clear."""
     signing_key = "signing-key-307-must-not-print"
     database_password = "db-password-307-must-not-print"
+    ledger_key = "ledger-key-307-must-not-print-0123456789"
     settings = _settings(
         jwt_secret=signing_key,
         database_url=(
             f"postgresql+asyncpg://market_svc:{database_password}@localhost:5432/cs464"
         ),
+        ledger_service_key=ledger_key,
         _env_file=None,
     )
 
     for rendered in (repr(settings), str(settings), str(settings.model_dump())):
-        for secret in (signing_key, database_password):
+        for secret in (signing_key, database_password, ledger_key):
             assert secret not in rendered

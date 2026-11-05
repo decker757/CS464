@@ -7,7 +7,7 @@ from the code and authoritative if this page ever disagrees, at
 Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [2.3] #7, [3.1] #9, [3.2] #10,
 [3.3] #11 (send-back and `dispute_window_ends_at`),
 [3.4] #12 (the `settled` status, `settleable` and the ledger's settle step), [BE][X] #62 and the backend half of [FE][1.1] #45, [FE][2.3] #56 and
-[FE][3.1] #52.
+[FE][3.1] #52, and the published-markets list #640's ledger copy reads.
 [BE] #221's void (the `voided` status, `voidable` and the ledger's void step)
 is decided by ADR 0025.
 
@@ -56,6 +56,7 @@ has not traded it, and why the reason is kept on the market:
 | GET | `/markets` | List my own markets |
 | GET | `/markets/overview` | Every market I can see, a page at a time, by status or question, with counts |
 | GET | `/markets/{id}` | Read one of my own markets |
+| GET | `/internal/markets/published` | Every published market's trading terms, for the ledger only (service key). Not public: the production gateway returns 404 for it (ADR 0030) |
 | GET | `/health` | Liveness probe: the process is up |
 | GET | `/ready` | Readiness probe: the database answers. 503 names the one that does not. Not public: the production gateway returns 404 for it (ADR 0028) |
 
@@ -191,6 +192,9 @@ Identical to the auth service, because it is the same token.
   `credentials: 'include'` on every call, and make sure this origin is in
   `CORS_ORIGINS`.
 - **Service:** `Authorization: Bearer <jwt>`. The header wins over the cookie.
+- **Service key:** `X-Service-Key`, accepted by `/internal/markets/published`
+  and by nothing else. It belongs to the ledger, not to a person; see that
+  route below.
 
 This service never queries the auth database. It verifies the signature and
 reads the `role` claim, so:
@@ -1671,6 +1675,60 @@ approved. An administrator who needs the pending value reads `GET
 | 404 | `market_not_found` | no such market, or it is a draft or a submitted market |
 | 422 | — | FastAPI's own validation error: a malformed id, or an unrecognised `status` |
 
+## GET /internal/markets/published
+
+`200`. **Not for the frontend.** A service-to-service read with one caller:
+the ledger's local copy of each market's trading terms, which refreshes from
+here so that a trade asks that copy rather than calling this service (#640).
+A browser cannot use it, because it needs a key no browser holds. The key,
+and why it is a key rather than a token:
+[ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credential.md).
+Why the ledger keeps a copy: ADR 0030, the ledger's local copy.
+
+```
+GET /internal/markets/published
+X-Service-Key: <LEDGER_SERVICE_KEY>
+```
+
+```json
+{
+  "as_of": "2026-11-05T09:30:00.000000Z",
+  "markets": [
+    { "id": "1c2d...", "status": "open", "close_time": "2026-11-30T16:00:00Z" },
+    { "id": "7e8f...", "status": "settled", "close_time": "2026-10-31T16:00:00Z" }
+  ]
+}
+```
+
+**The request.** No body and no query parameters.
+
+**The answer.**
+- `markets` is every market ever published, ordered by `id`, whatever its
+  status is now. A draft or a submitted market is absent.
+- Exactly three fields per market: `id`, `status` and `close_time`, as
+  stored. Nothing is derived here. `status` is the column, not the derived
+  status `/public/markets` shows, so a market past its `close_time` may still
+  read `open` until the sweep writes it down. Whether a market still trades
+  is the ledger's to work out from `close_time` and `status`, the way
+  [F-4] #44 says above.
+- `as_of` is taken just before the read, so the list is at least as fresh as
+  it says.
+
+**The key, and only the key.**
+- `X-Service-Key` must equal `LEDGER_SERVICE_KEY`, compared in constant time.
+- A missing or wrong key is `401 invalid_service_key`, the same for both.
+- An access token, by cookie or bearer header, does not open this route, and
+  the key opens none outside `/internal`.
+- `LEDGER_SERVICE_KEY` is required, has no default, and must be at least 32
+  characters, or the service refuses to boot. It is the same value auth and
+  the ledger hold.
+
+**Not audited**: it is a read.
+
+**Not public.** The production gateway returns 404 for every path under
+`/internal/`, with the key or without it; the ledger reaches this route on
+the private network. ADR 0030.
+
 ## Errors
 
 The same envelope the auth service uses, so one parser covers both:
@@ -1698,6 +1756,7 @@ it still reads `code` and `message`:
 | Status | `code` | When |
 | --- | --- | --- |
 | 401 | `invalid_token` | no token, or it is expired, forged or malformed |
+| 401 | `invalid_service_key` | `/internal/markets/published` without the right `X-Service-Key` |
 | 400 | `malformed_cursor` | a browse or overview `cursor` was not one this service issued |
 | 403 | `not_an_administrator` | valid session, but a trader |
 | 403 | `second_administrator_required` | the proposer tried to approve or reject their own proposal |

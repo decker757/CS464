@@ -14,3 +14,11 @@ location = /metrics {
     access_log /var/log/nginx/access.log cs464;
     return 404;
 }
+# #640, ADR 0030. Every service-to-service route: auth's and market's lists
+# that the ledger's local copies refresh from, and auth's lookup (ADR 0021)
+# too. They need LEDGER_SERVICE_KEY, and the internet should not get to try
+# one. `^~`, so that a regex location added later cannot take the path first.
+location ^~ /internal/ {
+    access_log /var/log/nginx/access.log cs464;
+    return 404;
+}
