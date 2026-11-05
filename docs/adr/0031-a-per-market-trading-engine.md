@@ -8,7 +8,7 @@
   trade-path fixes, and write this step down rather than take it.
 - **Affects:** [5.4] #640, #641, #642, #643, #645, [5.4] #20, [T-2] #22,
   [T-6] #26, [T-8] #28, [3.4] #12, ADR 0005, ADR 0009, ADR 0010, ADR 0015,
-  ADR 0024, ADR 0026
+  ADR 0019, ADR 0024, ADR 0025, ADR 0026, ADR 0027
 - **Implemented in:** nothing. This record describes the step after #640,
   #641, #642 and #643, and the trigger that would make it worth taking.
 
@@ -17,8 +17,9 @@
 #20's production load test on 2026-11-04 measured a trade p95 of **5.45 s**
 with 50 traders on one market and **4.52 s** with the same 50 spread across
 five markets. Both 1-vCPU app servers sat at 100% CPU and the database at 45%.
-About 35 attempts were refused `quote_stale` for every trade that committed
-(`docs/load-test.md`, "Results").
+On the one-market run about 35 attempts were refused `quote_stale` for every
+trade that committed (4,427 against 126); on the five-market run, about 7
+(5,091 against 738). `docs/load-test.md`, "Results".
 
 #640 and the three tickets beside it remove the causes that measurement
 found. Price limits replace exact-version quotes, so a queued trade is no
@@ -32,16 +33,21 @@ parts:
 
 - **CPU per trade.** About 40 to 50 ms of pricing, pydantic, SQLAlchemy and
   asyncpg on one vCPU. #20's script has each of 50 traders buy and sell back
-  about once a second, which is about 75 trades a second. That is three to
-  four vCPU of ledger for the trades alone, and the 2026-11-05 analysis put it
-  at four to five with the reads around them. Each app server has one, shared
-  by five services and the gateway.
+  about once a second, which is about 75 trades a second. At 40 to 50 ms
+  that is 3 to 3.75 vCPU of ledger for the trades alone. The 2026-11-05
+  analysis's figure of 4 to 5 also counts the snapshot read the script makes
+  before each buy: about 38 a second at an estimated 15 ms each (not yet
+  measured on its own), about 0.6 vCPU, plus headroom so the ledger is not
+  run at 100%. Each app server has one vCPU, shared by five services and the
+  gateway.
 - **One row lock per market.** Every trade on a market takes that market's
   `ledger.market_books` row `FOR UPDATE` (ADR 0015) and holds it for 13 round
   trips to Postgres and the Python between them. One market's throughput is
-  one over that hold time, whatever the number of servers. On a laptop, two
-  of every service still committed only 16 to 19 trades a second on one
-  market.
+  one over that hold time, whatever the number of servers. On 2026-11-04,
+  before any of these fixes and under exact-version quotes, a laptop running
+  two of every service committed 16 to 19 trades a second on one market, and
+  with 50 traders more than half the attempts gave up as stale. No post-fix
+  figure exists yet.
 
 The first part is bought with vCPU or a leaner write path. The second is not
 bought at all while the lock is a database row lock taken once per trade.
@@ -67,15 +73,21 @@ it"):
     lease_epoch       bigint       not null default 0
     lease_expires_at  timestamptz  -- read against clock_timestamp()
 
-A process takes a lease on a market whose lease is free or expired, which
-bumps `lease_epoch`, and renews it on a timer well inside its expiry. Every
-time comparison uses the database's clock, never a container's.
+Nobody assigns markets. The replica that receives a trade for a market whose
+lease is free or expired takes the lease itself, which bumps `lease_epoch`,
+loads the book, and sequences the trade. It renews the lease on a timer well
+inside its expiry. Every time comparison uses the database's clock, never a
+container's.
 
 **Every batch commit carries `WHERE lease_epoch = mine`. That is the fence.**
-A lease alone does not stop a process that paused for longer than its
-expiry, through a long garbage collection or a network partition, from waking
-up and writing as if it still owned the book. The fence does: its commit
-updates no row, it knows it has lost the book, and it rolls back.
+The batch's first statement is the UPDATE of the book row, with the fence in
+its WHERE clause, and its row count is checked before `post_all` is called,
+in the same transaction. That order also keeps ADR 0015's lock order: the
+book row, then the accounts `post_all` locks. A lease alone does not stop a
+process that paused for longer than its expiry, through a long garbage
+collection or a network partition, from waking up and writing as if it still
+owned the book. The fence does: the UPDATE matches no row, the process knows
+it has lost the book, and it rolls back before `post_all` writes anything.
 
 **One asyncio actor per owned market sequences trades.** It takes each trade,
 buy, sell, order placement or cancel, in arrival order, runs the cascade
@@ -104,7 +116,8 @@ batch fails the fence, drops its memory, and reloads, and the reload reads the
 latch and refuses every later trade. That is eviction: nothing has to message
 the owner.
 
-**Recovery is a reload.** A process that takes a lease reads `q`, `b`,
+**Recovery is a reload.** The next replica to receive a trade for the market
+takes the expired or released lease, as above, and reads `q`, `b`,
 `state_version`, the positions and the open orders from Postgres, as it would
 after a restart. A crash loses nothing that committed. The trades in flight
 get 503, and their idempotency keys make the retry a replay of a trade that
@@ -133,9 +146,16 @@ refuses any that no longer fit, and commits again. Because no response left
 before the commit, nobody was told the first price.
 
 `post_all` commits a batch whole or not at all, and that is what the engine
-needs. The one change it needs is to say *which* movement it refused, so the
-actor knows what to drop. A reused key found under the lock is handled the
-same way as an overdraft.
+needs. An overdraft refusal already names its movement: `InsufficientFunds`
+carries `movement_key`, so the actor knows which trade to drop. A key found
+under the lock does not. When any key in the batch already exists, `post_all`
+goes to its replay path, which raises `IdempotencyKeyReused` naming no key,
+or `PendingWritesOnReplay` when the session holds pending writes, as it
+always will under the engine because the fenced UPDATE comes first. The one
+change the engine needs is for `post_all` to name the keys it found. The actor
+then answers a found key whose fingerprint matches as a replay, with the
+original result, refuses one whose fingerprint differs as reused, and
+re-sequences the rest.
 
 This and the fence are where a bug is a double spend. A batch that commits
 past a refused overdraft pays out credits that do not exist; an owner that
@@ -211,8 +231,9 @@ two thousand lines with the race tests. One migration, the lease columns.
 
 ## What it amends when accepted
 
-- **ADR 0005:** positions and `q` stay with the ledger, but the ledger is no
-  longer the stateless side of the seam: one process per market holds them in
+- **ADR 0005:** the fast side of the seam, "slow-changing definition against
+  fast-changing money", is still the ledger alone, but its processes are no
+  longer interchangeable: one per market holds `q` and the positions in
   memory.
 - **ADR 0009:** serialisation on the accounts is unchanged, and is taken once
   per batch over every account in it; one transaction carries many trades.
