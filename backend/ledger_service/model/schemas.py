@@ -34,7 +34,14 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_serializer
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    model_validator,
+)
 
 from core.clock import as_utc
 from core.pricing import Side
@@ -545,9 +552,15 @@ class TradeIn(BaseModel):
     `side` is `core.pricing.Side`: anything else is a 422 here rather than a
     refusal a layer down, and the route passes the enum straight through.
 
-    `state_version` is required, not optional with a default — an optional
-    staleness field would let a client silently opt out of the only
-    staleness protection a trade has.
+    A trade names a price limit for its side — `max_cost` on a buy,
+    `min_proceeds` on a sell — or the `state_version` it was quoted, and the
+    limit is what decides when both are sent. With no limit, `state_version`
+    is required, as it always was: an optional staleness field would let a
+    client silently opt out of the only price protection a trade has. That
+    is the expand release's rule (#640), so a body from today's frontend,
+    which names no limit, keeps working until it is changed. A limit for the
+    other side is refused rather than ignored, because a client that sent
+    one believes it is protected.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -567,12 +580,43 @@ class TradeIn(BaseModel):
             "wider than the column could never be written as a share count."
         ),
     )
-    state_version: int = Field(
+    max_cost: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=18,
+        decimal_places=4,
         description=(
-            "The `state_version` the preview quoted. Compared, under the "
-            "book's own lock, for strict equality against the market's "
-            "current one; a mismatch either direction is `409 quote_stale`."
-        )
+            "A buy only: the most this trade may cost, in credits. Priced "
+            "under the book's own lock; a cost above it refuses "
+            "the trade and one exactly at it executes. When present it "
+            "decides and `state_version` is advisory. Four decimal places "
+            "and 18 digits, as `quantity`. Sent on a sell, it is 422."
+        ),
+    )
+    min_proceeds: Decimal | None = Field(
+        default=None,
+        ge=0,
+        max_digits=18,
+        decimal_places=4,
+        description=(
+            "A sell only: the least this trade may pay, in credits. Priced "
+            "under the book's own lock; proceeds below it refuse the trade "
+            "and proceeds exactly at it execute. `0` is a limit too, one "
+            "that accepts any price. When present it decides and "
+            "`state_version` is advisory. Four decimal places and 18 digits, "
+            "as `quantity`. Sent on a buy, it is 422."
+        ),
+    )
+    state_version: int | None = Field(
+        default=None,
+        description=(
+            "The `state_version` the preview quoted. Required when the trade "
+            "names no limit, and then compared, under the book's own lock, "
+            "for strict equality against the market's current one; a "
+            "mismatch either direction is `409 quote_stale`. With a limit it "
+            "is advisory, and the limit decides. Requiring it without a "
+            "limit is the expand release's rule (#640)."
+        ),
     )
     idempotency_key: str = Field(
         min_length=1,
@@ -586,6 +630,30 @@ class TradeIn(BaseModel):
             "derivation prefix, 175 left for this value."
         ),
     )
+
+    @model_validator(mode="after")
+    def _a_limit_for_its_side_or_a_quote(self) -> TradeIn:
+        if self.side is Side.SELL and self.max_cost is not None:
+            raise ValueError(
+                "max_cost limits a buy; a sell names its limit as min_proceeds."
+            )
+        if self.side is Side.BUY and self.min_proceeds is not None:
+            raise ValueError(
+                "min_proceeds limits a sell; a buy names its limit as max_cost."
+            )
+        if self.limit is None and self.state_version is None:
+            raise ValueError(
+                "Send a price limit (max_cost on a buy, min_proceeds on a "
+                "sell) or the state_version the preview quoted."
+            )
+        return self
+
+    @property
+    def limit(self) -> Decimal | None:
+        """The limit for this trade's side, or None when it names none."""
+        if self.side is Side.BUY:
+            return self.max_cost
+        return self.min_proceeds
 
 
 class TradeOut(BaseModel):
