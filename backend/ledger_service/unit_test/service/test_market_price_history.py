@@ -8,19 +8,28 @@ and nothing stores it", "Settlement adds no point to the price history; the
 series ends at the last trade" and "The price-history replay refuses trades
 whose state versions do not run 1, 2, 3, … in order". The window's own rules
 are `core/test_price_history.py`'s; the wire shape and the guard are
-`controller/test_price_history_routes.py`'s.
+`controller/test_price_history_routes.py`'s. That every trade's stored
+`after_q` is the `q` this replay reaches is here too: the batch snapshot reads
+the one and this route replays the other (DECISIONS.md, "Price history is
+replayed from the trades on the pool's feed, and nothing stores it", amended).
 """
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import PriceHistoryInconsistent
+from core.lmsr import prices as lmsr_prices
+from model.entities import Transaction, TransactionKind
+from service import book_prices
 from service.price_history import price_history_of_market
+from unit_test.placement_fixtures import limit_upstream, open_at, place
 from unit_test.price_history_fixtures import (
     RAW_PRICES,
     WIRE_PRICES,
@@ -30,8 +39,9 @@ from unit_test.price_history_fixtures import (
     result_row_of,
     traded,
 )
+from unit_test.sell_fixtures import hold, sell
 from unit_test.trade_feed_fixtures import feed, settled_feed
-from unit_test.trade_fixtures import entities
+from unit_test.trade_fixtures import entities, fund, q_of
 
 _PLUS_EIGHT = timezone(timedelta(hours=8))
 _HALF_A_QUANTUM = Decimal("0.00005")
@@ -43,6 +53,22 @@ def _versions(history) -> list[int]:
 
 def _times(history) -> list[datetime]:
     return [point.occurred_at for point in history.points]
+
+
+async def _stored_after_q_by_version(
+    session: AsyncSession, market_id: uuid.UUID
+) -> dict[int, list[Decimal]]:
+    """Every trade and fill in the market, its `state_version` to the
+    `after_q` its context stores, as Decimals."""
+    session.expire_all()
+    stmt = select(Transaction.context).where(
+        Transaction.kind.in_((TransactionKind.TRADE_BUY, TransactionKind.TRADE_SELL)),
+        Transaction.context["market_id"].astext == str(market_id),
+    )
+    return {
+        context["state_version"]: [Decimal(value) for value in context["after_q"]]
+        for context in (await session.execute(stmt)).scalars()
+    }
 
 
 # =========================================================================
@@ -147,6 +173,55 @@ async def test_a_market_s_history_holds_only_its_own_trades(
     assert _times(m1)[1:] == [times[trade.transaction_id] for trade in m1_trades]
     assert _versions(m2) == [0, 1]
     assert _times(m2)[1:] == [times[scenario.m2_buy.transaction_id]]
+
+
+async def test_every_trade_and_fill_stores_the_q_the_replay_reaches_at_its_version(
+    session: AsyncSession,
+) -> None:
+    """The guard holding the batch snapshot's stored `after_q` to this route's
+    replay (#643). Four transactions at b = 100 from a flat book: A buys 50
+    of outcome 0 (version 1), which fills a resting buy of 10 outcome-1 shares
+    at 0.4500 (version 2: outcome 1 is at 0.3775, below its limit, and 10 is
+    short of the 29.9329 that would take it back there); A sells 20 of
+    outcome 0 (version 3); B buys 5 of outcome 1 (version 4). The `q`s are
+    worked by hand. Priced as the snapshot prices them, each stored `q` gives
+    the replay's point for its version, and the last one is the book's own.
+    Catches: the `q` before the trade stored, or a fill storing its trade's."""
+    upstream = limit_upstream()
+    await open_at(session, upstream, (Decimal("0.0000"), Decimal("0.0000")))
+    owner, trader_a, trader_b = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    await fund(session, owner)
+    await place(
+        session,
+        upstream,
+        user_id=owner,
+        outcome=1,
+        limit_price=Decimal("0.4500"),
+        quantity=Decimal("10.0000"),
+    )
+    await hold(session, upstream, user_id=trader_a, quantity=Decimal("50"), outcome=0)
+    await sell(session, upstream, user_id=trader_a, quantity=Decimal("20"), outcome=0)
+    await hold(session, upstream, user_id=trader_b, quantity=Decimal("5"), outcome=1)
+
+    stored = await _stored_after_q_by_version(session, upstream.market_id)
+
+    assert stored == {
+        1: [Decimal("50"), Decimal("0")],
+        2: [Decimal("50"), Decimal("10")],
+        3: [Decimal("30"), Decimal("10")],
+        4: [Decimal("30"), Decimal("15")],
+    }
+    assert stored[4] == await q_of(session, upstream.market_id)
+    history = await price_history_of_market(
+        session, upstream.market_id, start=None, end=None
+    )
+    outcomes = await book_prices.list_book_outcomes(session, upstream.market_id)
+    b = outcomes[0].liquidity_b
+    replayed = {point.state_version: point.prices for point in history.points}
+    for state_version, after_q in stored.items():
+        assert replayed[state_version] == book_prices.priced(
+            outcomes, lmsr_prices(after_q, b)
+        ), state_version
 
 
 # =========================================================================
