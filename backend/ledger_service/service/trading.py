@@ -602,10 +602,11 @@ def trade_movement_of(
     the book's counter after the bump.
 
     A trade passes `book_state_version`, the counter after its cascade, which
-    `context` stores as an eighth key so a replay answers it. An order's fill
-    passes its `order_id` instead, beside the seven keys (D-NEW "A fill's
-    `context` is a trade's, plus `order_id`"), and the drop it causes in the
-    owner's reservation (ADR 0024).
+    `context` stores so a replay answers it. An order's fill passes its
+    `order_id` instead (D-NEW "A fill's `context` is a trade's, plus
+    `order_id`"), and the drop it causes in the owner's reservation (ADR 0024).
+    Both store `after_q`, the `q` this one movement left, which the batch
+    snapshot's seven-day price reads instead of replaying (#643).
     """
     context: dict[str, object] = {
         "user_id": str(trade.user_id),
@@ -615,6 +616,7 @@ def trade_movement_of(
         "quantity": str(trade.quantity),
         "total": str(trade.cost.total),
         "state_version": state_version,
+        "after_q": [str(q) for q in trade.cost.after_q],
     }
     if book_state_version is not None:
         context["book_state_version"] = book_state_version
