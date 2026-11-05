@@ -6,6 +6,7 @@ import type { PublicOutcome } from '../../api/marketApi'
 import { useBalance } from '../../context/BalanceContext'
 import { useTradeQuote } from '../../hooks/useTradeQuote'
 import { compareCredits, formatCreditsPrecise, isZeroCredits, subtractCredits, unsignedCredits } from '../../utils/formatCredits'
+import { priceLimitFor } from '../../utils/priceLimit'
 import { describeSharesToSell } from '../../utils/orderInput'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
@@ -147,6 +148,13 @@ function describeUnconfirmedTrade(trade: SentTrade): string {
   return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} could not be confirmed, and may have gone through. Check your portfolio before trading again, or send the same trade again from this page: it will not be made twice.`
 }
 
+/** The request field a price limit goes in: `max_cost` on a buy and
+ *  `min_proceeds` on a sell (#644), or nothing when there is no limit. */
+function limitFields(side: TradeSide, priceLimit: string | null): { max_cost?: string; min_proceeds?: string } {
+  if (priceLimit === null) return {}
+  return side === 'buy' ? { max_cost: priceLimit } : { min_proceeds: priceLimit }
+}
+
 /** What a trader is told about a trade refused because its price moved, when
  *  the in-place "Prices moved" line is not on screen to say it: it was not
  *  made, and which trade it was (#589). Nothing about what to do next — the
@@ -272,6 +280,9 @@ export default function TradingPanel({
   const visibleLastTrade = quantity === '' ? lastTrade : null
 
   const selectedOutcome = outcomes.find(o => o.id === outcomeId)
+  // What the trade will accept if the price moves before the ledger prices it
+  // (#644): shown on the preview, and sent with the trade.
+  const priceLimit = preview ? priceLimitFor(side, preview.total) : null
   const heldQuantity = heldByOutcome === null ? null : (heldByOutcome[outcomeId] ?? '0')
   // Asked of the selected outcome and of a holding that has landed, so the
   // Sell toggle itself never changes: it stays pressable through a load and
@@ -326,6 +337,7 @@ export default function TradingPanel({
         quantity: trade.quantity,
         state_version: preview.state_version,
         idempotency_key: idempotencyKey,
+        ...limitFields(side, priceLimit),
       })
       forgetKey(idempotencyKey)
       setLastTrade({
@@ -343,7 +355,9 @@ export default function TradingPanel({
       onTraded()
     } catch (err) {
       const code = errorCode(err)
-      if (code === 'quote_stale') {
+      // A price that moved past the limit is the same "no" as a stale quote:
+      // nothing was made, and the trader confirms again at the new price (#644).
+      if (code === 'quote_stale' || code === 'price_beyond_limit') {
         // Same click, same key: get the new price and let the trader
         // confirm again rather than resubmitting the stale version
         // automatically. refetchNow is the same fetch the live preview
@@ -499,7 +513,7 @@ export default function TradingPanel({
           {!quantityInputError && previewError && <p role="alert" className="mb-3 text-xs text-danger">{previewError}</p>}
 
           {preview && !previewLoading && (
-            <TradePreviewSummary preview={preview} side={side} outcomeId={outcomeId} outcomeLabel={selectedOutcome?.label ?? ''} />
+            <TradePreviewSummary preview={preview} side={side} outcomeId={outcomeId} outcomeLabel={selectedOutcome?.label ?? ''} priceLimit={priceLimit} />
           )}
 
           {refusal && <p role="alert" className="mb-3 text-xs text-danger">{refusal}</p>}

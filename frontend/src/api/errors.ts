@@ -154,6 +154,7 @@ export function describeTradeError(err: unknown): string {
   if (!code) return GENERIC_ERROR
   const details = tradeErrorDetails(err)
   if (code === 'quote_stale') return 'Prices moved while you were looking. Getting a fresh quote…'
+  if (code === 'price_beyond_limit') return 'The price moved past your limit. Getting a fresh quote…'
   if (code === 'insufficient_funds') {
     const balance = tradeErrorFigure(details, 'balance')
     const required = tradeErrorFigure(details, 'required')

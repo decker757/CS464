@@ -7,6 +7,8 @@ interface TradePreviewSummaryProps {
   side: TradeSide
   outcomeId: string
   outcomeLabel: string
+  // The price limit the trade will send (#644), or null when it sends none.
+  priceLimit: string | null
 }
 
 // A share pays exactly 1 credit, so what a winning buy pays out is the
@@ -37,7 +39,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
  * nothing left to win on them, and a "pays if it wins" line beside the
  * proceeds would promise the trader both (#357).
  */
-export default function TradePreviewSummary({ preview, side, outcomeId, outcomeLabel }: TradePreviewSummaryProps) {
+export default function TradePreviewSummary({ preview, side, outcomeId, outcomeLabel, priceLimit }: TradePreviewSummaryProps) {
   const profit = profitIfItWins(preview)
   const priceNow = preview.prices.find(p => p.outcome_id === outcomeId)
   const priceAfter = preview.post_trade_prices.find(p => p.outcome_id === outcomeId)
@@ -47,6 +49,13 @@ export default function TradePreviewSummary({ preview, side, outcomeId, outcomeL
       <Row label={side === 'buy' ? 'Cost' : 'Proceeds'}>
         <strong className="text-smu-navy">{formatCreditsPrecise(unsignedCredits(preview.total))} credits</strong>
       </Row>
+      {/* At four places, like the figure above it: rounded to two, a sell's
+          minimum could read higher than the one the trade sends. */}
+      {priceLimit !== null && (
+        <Row label={side === 'buy' ? 'Pay at most' : 'Receive at least'}>
+          <span className="text-smu-navy">{formatCreditsPrecise(priceLimit)} credits</span>
+        </Row>
+      )}
       {side === 'buy' && (
         <>
           <Row label="Pays if it wins">
