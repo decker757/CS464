@@ -179,18 +179,23 @@ async def test_every_trade_and_fill_stores_the_q_the_replay_reaches_at_its_versi
     session: AsyncSession,
 ) -> None:
     """The guard holding the batch snapshot's stored `after_q` to this route's
-    replay (#643). Four transactions at b = 100 from a flat book: A buys 50
-    of outcome 0 (version 1), which fills a resting buy of 10 outcome-1 shares
-    at 0.4500 (version 2: outcome 1 is at 0.3775, below its limit, and 10 is
-    short of the 29.9329 that would take it back there); A sells 20 of
-    outcome 0 (version 3); B buys 5 of outcome 1 (version 4). The `q`s are
-    worked by hand. Priced as the snapshot prices them, each stored `q` gives
-    the replay's point for its version, and the last one is the book's own.
-    Catches: the `q` before the trade stored, or a fill storing its trade's."""
+    replay (#643), over every caller of `trade_movement_of`. Five
+    transactions at b = 100 from a flat book: A buys 50 of outcome 0
+    (version 1), which fills a resting buy of 10 outcome-1 shares at 0.4500
+    (version 2: outcome 1 is at 0.3775, below its limit, and 10 is short of
+    the 29.9329 that would take it back there); A sells 20 of outcome 0
+    (version 3); B buys 5 of outcome 1 (version 4); C places a buy of 5
+    outcome-0 shares at 0.6000, which fills on arrival (version 5: outcome 0
+    is at 0.5374, and 5 is short of the 25.5465 that reaches 0.6000). The
+    `q`s are worked by hand. Priced as the snapshot prices them, each stored
+    `q` gives the replay's point for its version, and the last one is the
+    book's own. Catches: the `q` before the trade stored, or a fill storing
+    its trade's."""
     upstream = limit_upstream()
     await open_at(session, upstream, (Decimal("0.0000"), Decimal("0.0000")))
-    owner, trader_a, trader_b = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    owner, trader_a, trader_b, placer = (uuid.uuid4() for _ in range(4))
     await fund(session, owner)
+    await fund(session, placer)
     await place(
         session,
         upstream,
@@ -202,6 +207,14 @@ async def test_every_trade_and_fill_stores_the_q_the_replay_reaches_at_its_versi
     await hold(session, upstream, user_id=trader_a, quantity=Decimal("50"), outcome=0)
     await sell(session, upstream, user_id=trader_a, quantity=Decimal("20"), outcome=0)
     await hold(session, upstream, user_id=trader_b, quantity=Decimal("5"), outcome=1)
+    await place(
+        session,
+        upstream,
+        user_id=placer,
+        outcome=0,
+        limit_price=Decimal("0.6000"),
+        quantity=Decimal("5.0000"),
+    )
 
     stored = await _stored_after_q_by_version(session, upstream.market_id)
 
@@ -210,8 +223,9 @@ async def test_every_trade_and_fill_stores_the_q_the_replay_reaches_at_its_versi
         2: [Decimal("50"), Decimal("10")],
         3: [Decimal("30"), Decimal("10")],
         4: [Decimal("30"), Decimal("15")],
+        5: [Decimal("35"), Decimal("15")],
     }
-    assert stored[4] == await q_of(session, upstream.market_id)
+    assert stored[5] == await q_of(session, upstream.market_id)
     history = await price_history_of_market(
         session, upstream.market_id, start=None, end=None
     )

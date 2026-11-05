@@ -189,7 +189,8 @@ async def test_a_feed_that_skips_a_state_version_has_no_baseline_and_keeps_its_p
     """DECISIONS.md, "The prices a week ago are replayed from each pool's
     trades up to the window's start, in one statement for every market": a
     feed the replay refuses costs that card its delta only, not the whole list
-    its prices."""
+    its prices. Only a feed from before `after_q` is replayed (see `gapped`),
+    so a gap there loses its baseline; a newer feed is priced as stored."""
     market = await gapped(session)
 
     [listed] = await _snapshot_service().list_snapshots(
@@ -251,10 +252,10 @@ async def test_the_seven_day_price_is_one_statement_when_every_market_s_newest_t
     session: AsyncSession,
 ) -> None:
     """AC: one statement for any number of markets when every newest trade
-    carries `after_q`, and it is the `DISTINCT ON` that reads one row per
-    market rather than every trade (#643). Three traded markets, each with
-    the price its third trade left. Catches: the replay of every trade kept
-    as the first read."""
+    carries `after_q`, and it is the `LATERAL` read that takes one index
+    entry per market rather than every trade (#643). Three traded markets,
+    each with the price its third trade left. Catches: the replay of every
+    trade kept as the first read, or a `DISTINCT ON` that sorts them all."""
     scenarios = [await traded(session) for _ in range(3)]
 
     with capture_sql() as statements:
@@ -266,7 +267,8 @@ async def test_the_seven_day_price_is_one_statement_when_every_market_s_newest_t
 
     entry_reads = mentioning(statements, "entries")
     assert len(entry_reads) == 1, f"expected one statement, sent:\n{statements}"
-    assert "DISTINCT ON" in entry_reads[0]
+    assert "LATERAL" in entry_reads[0]
+    assert "DISTINCT" not in entry_reads[0]
     assert [_priced(listed.prices_7d_ago) for listed in result] == [
         _wire(scenario.upstream.outcomes, 3) for scenario in scenarios
     ]
@@ -299,31 +301,35 @@ async def test_a_market_whose_newest_old_trade_lacks_after_q_falls_back_and_is_l
 async def test_the_fallback_is_per_market_not_per_batch(
     session: AsyncSession, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A market lacking `after_q` is replayed alone, in one more statement.
-    The other market's newest trade stores a `q` of [100, 0], which its own
+    """The markets lacking `after_q` are replayed alone, together, in one more
+    statement: two stripped markets cost two statements in all, not three.
+    The intact market's newest trade stores a `q` of [100, 0], which its own
     replay does not reach, so its price shows which read answered it: the
     stored one, 0.7311 (1 / (1 + e^-1)). Catches: one missing key replaying
-    the whole batch, or a statement per market."""
+    the whole batch, or a replay statement per market."""
     caplog.set_level(logging.INFO, logger="service.price_history")
-    stripped = await traded(session)
+    stripped = [await traded(session) for _ in range(2)]
     intact = await traded(session)
-    await _strip_after_q(session, stripped.a_sell.transaction_id)
+    for scenario in stripped:
+        await _strip_after_q(session, scenario.a_sell.transaction_id)
     await _store_after_q(session, intact.a_sell.transaction_id, ["100.0000", "0.0000"])
 
     with capture_sql() as statements:
         result = await _snapshot_service().list_snapshots(
             session,
-            [stripped.market_id, intact.market_id],
+            [*(scenario.market_id for scenario in stripped), intact.market_id],
             now=_a_day_past_the_window(),
         )
 
     assert len(mentioning(statements, "entries")) == 2, statements
     assert [_priced(listed.prices_7d_ago) for listed in result] == [
-        _wire(stripped.upstream.outcomes, 3),
+        *(_wire(scenario.upstream.outcomes, 3) for scenario in stripped),
         [
             (intact.upstream.outcomes[0], 0, Decimal("0.7311")),
             (intact.upstream.outcomes[1], 1, Decimal("0.2689")),
         ],
     ]
-    [line] = _replay_lines(caplog)
-    assert str(stripped.market_id) in line
+    lines = _replay_lines(caplog)
+    assert len(lines) == 2, lines
+    for scenario in stripped:
+        assert [line for line in lines if str(scenario.market_id) in line], lines
