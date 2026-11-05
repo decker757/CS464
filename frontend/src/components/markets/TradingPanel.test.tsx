@@ -238,6 +238,122 @@ describe('TradingPanel', () => {
     expect(typeof sentBody?.idempotency_key).toBe('string')
   })
 
+  describe('price limits (#644)', () => {
+    function acceptTrade(record: (body: Record<string, unknown>) => void, total = '-5.1250') {
+      server.use(
+        http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async ({ request }) => {
+          record(await request.json() as Record<string, unknown>)
+          return HttpResponse.json({
+            transaction_id: 'tx-1', user_id: 'u1', market_id: MARKET_ID,
+            outcome_id: 'o-yes', side: 'buy', quantity: '10.0000', total, state_version: 3,
+          }, { status: 201 })
+        }),
+      )
+    }
+
+    it('sends a buy with the most it will pay, 1% over the quoted cost, and no minimum', async () => {
+      mockPreview(previewResponse())
+      let sentBody: Record<string, unknown> | undefined
+      acceptTrade(body => { sentBody = body })
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderPanel()
+      await typeQuantity(actor, '10')
+      await screen.findByLabelText('trade preview')
+
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+      await screen.findByText(/bought/i)
+
+      expect(sentBody).toMatchObject({ max_cost: '5.1763', state_version: 1 })
+      expect(sentBody).not.toHaveProperty('min_proceeds')
+    })
+
+    it('sends a sell with the least it will accept, 1% under the quoted proceeds, and no maximum', async () => {
+      mockPreview(previewResponse({ side: 'sell', total: '4.9876' }))
+      let sentBody: Record<string, unknown> | undefined
+      acceptTrade(body => { sentBody = body }, '4.9876')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderPanel()
+      await actor.click(screen.getByRole('button', { name: 'Sell' }))
+      await typeQuantity(actor, '10')
+      await screen.findByLabelText('trade preview')
+
+      await actor.click(screen.getByRole('button', { name: /^sell yes$/i }))
+      await waitFor(() => expect(sentBody).toBeDefined())
+
+      expect(sentBody).toMatchObject({ min_proceeds: '4.9377' })
+      expect(sentBody).not.toHaveProperty('max_cost')
+    })
+
+    it('shows the limit before the click, on both sides', async () => {
+      mockPreview(previewResponse())
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderPanel()
+      await typeQuantity(actor, '10')
+      expect(await screen.findByLabelText('trade preview')).toHaveTextContent(/pay at most\s*5\.1763 credits/i)
+
+      mockPreview(previewResponse({ side: 'sell', total: '4.9876' }))
+      await actor.click(screen.getByRole('button', { name: 'Sell' }))
+      await act(() => vi.advanceTimersByTimeAsync(300))
+      expect(await screen.findByLabelText('trade preview')).toHaveTextContent(/receive at least\s*4\.9377 credits/i)
+    })
+
+    it('confirms what the trade actually cost when the price moved within the limit, not the quote', async () => {
+      mockPreview(previewResponse())
+      acceptTrade(() => {}, '-5.1500')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderPanel()
+      await typeQuantity(actor, '10')
+      await screen.findByLabelText('trade preview')
+
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+
+      expect(await screen.findByText(/bought 10\.0000 yes for 5\.1500 credits/i)).toBeInTheDocument()
+    })
+
+    it('re-quotes on price_beyond_limit, asks to confirm again, and sends the same key with the new limit', async () => {
+      let previewCalls = 0
+      server.use(
+        http.get(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/preview`, () => {
+          previewCalls += 1
+          return HttpResponse.json(previewCalls === 1
+            ? previewResponse({ state_version: 1 })
+            : previewResponse({ state_version: 2, total: '-5.3000' }))
+        }),
+      )
+      const sent: Record<string, unknown>[] = []
+      server.use(
+        http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async ({ request }) => {
+          sent.push(await request.json() as Record<string, unknown>)
+          if (sent.length === 1) {
+            return HttpResponse.json(
+              { error: { code: 'price_beyond_limit', message: 'Beyond.', details: { limit: '5.1763', current_total: '5.3000', state_version: 2 } } },
+              { status: 409 },
+            )
+          }
+          return HttpResponse.json({
+            transaction_id: 'tx-1', user_id: 'u1', market_id: MARKET_ID,
+            outcome_id: 'o-yes', side: 'buy', quantity: '10.0000', total: '-5.3000', state_version: 3,
+          }, { status: 201 })
+        }),
+      )
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderPanel()
+      await typeQuantity(actor, '10')
+      await screen.findByLabelText('trade preview')
+
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+      expect(await screen.findByText(/prices moved\. check the new quote and confirm again/i)).toBeInTheDocument()
+      expect(screen.getByLabelText('trade preview')).toHaveTextContent(/pay at most\s*5\.3530 credits/i)
+
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+      await screen.findByText(/bought/i)
+
+      expect(sent).toHaveLength(2)
+      expect(sent[1].idempotency_key).toBe(sent[0].idempotency_key)
+      expect(sent[1]).toMatchObject({ max_cost: '5.3530', state_version: 2 })
+    })
+  })
+
   it('clears the quantity field, refetches the balance and re-reads the holding after a successful trade', async () => {
     mockPreview(previewResponse())
     const refetch = vi.fn(async () => {})
