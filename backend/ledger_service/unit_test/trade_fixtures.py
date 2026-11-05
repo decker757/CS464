@@ -280,7 +280,8 @@ async def buy(
     user_id: uuid.UUID,
     outcome: int = 0,
     quantity: Decimal = QUANTITY,
-    state_version: int = 0,
+    state_version: int | None = 0,
+    limit: Decimal | None = None,
     client_key: str = "client-key-1",
     side: str = "buy",
     access_token: str | None = None,
@@ -299,7 +300,9 @@ async def buy(
     forwarded rather than minted, `transport` and `redis_client` the two
     injectable seams. If the implementation lands on other names, this helper
     is the one place to change. `auth_transport` answers the account check
-    (ADR 0022), active unless a test says otherwise.
+    (ADR 0022), active unless a test says otherwise. `limit` is the trade's
+    own price limit (#640): `None`, the default, keeps the strict
+    `state_version` rule every test before it was written against.
 
     `side` arrives as the wire string and is converted at the boundary,
     because that is what the route does: parsed once, passed down as the enum.
@@ -312,6 +315,7 @@ async def buy(
         side=pricing().Side(side),
         quantity=quantity,
         state_version=state_version,
+        limit=limit,
         idempotency_key=client_key,
         access_token=access_token if access_token is not None else token(),
         redis_client=redis_client if redis_client is not None else Recorder(),
