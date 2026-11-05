@@ -108,6 +108,7 @@ services:
       DATABASE_URL: ${MARKET_DATABASE_URL:?}
       DATABASE_POOL_SIZE: 3
       DATABASE_MAX_OVERFLOW: 2
+      LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
       # Runs on every server. Two sweeps racing is safe: ADR 0011, and
       # docs/horizontal-scaling.md ran it.
       CLOSE_SWEEP_ENABLED: "true"

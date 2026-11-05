@@ -77,9 +77,9 @@ services:
       # Required, same as POSTGRES_PASSWORD above. Copy .env.example to .env
       # and fill both in.
       JWT_SECRET: ${JWT_SECRET:?}
-      # [L-1] #38, ADR 0021. The key the ledger presents to
-      # `/internal/users/lookup`; auth compares it. Required on both sides, for
-      # JWT_SECRET's reason: a default would be a published credential.
+      # [L-1] #38, ADR 0021. The key the ledger presents to auth's `/internal`
+      # routes; auth compares it. Required on both sides, for JWT_SECRET's
+      # reason: a default would be a published credential.
       LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
@@ -134,8 +134,11 @@ services:
       # service could also mint tokens; ADR 0002 records why that is acceptable
       # today and what the upgrade is.
       JWT_SECRET: ${JWT_SECRET:?}
+      # #640, ADR 0030. The key the ledger's local copy presents to this
+      # service's `/internal/markets/published`; required, as auth's is above.
+      LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
-      # [1.2] #2. Optional, unlike the two above: a liquidity parameter is not
+      # [1.2] #2. Optional, unlike the keys above: a liquidity parameter is not
       # a credential, so a default here is a tuning choice rather than a
       # published secret. An admin overrides it per market.
       DEFAULT_LIQUIDITY_B: ${DEFAULT_LIQUIDITY_B:-100}
