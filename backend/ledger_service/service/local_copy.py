@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import observability
 from core.clock import as_utc
+from core.database import release_before_calling_out
 from core.errors import (
     AccountSuspended,
     AuthUnavailable,
@@ -45,6 +46,12 @@ logger = logging.getLogger(__name__)
 # (see `books.MIN_OUTCOMES`). A wrong value would refuse every trade silently,
 # so `test_local_copy.py` pins it against market_service's source.
 _OPEN = "open"
+
+# A miss refetches the published list only if the copy is older than this. A
+# per-id negative cache absorbs only repeats of one id; this caps refetches per
+# replica for random ids too, at the cost of at most one fail-closed 404 for a
+# market published in the last quarter second.
+_MISS_REFRESH_FLOOR_SECONDS = 0.25
 
 _SUSPENDED_PATH = "/internal/users/suspended"
 _PUBLISHED_PATH = "/internal/markets/published"
@@ -90,11 +97,19 @@ class LocalCopy:
 
     `refresh_markets` is set by the lifespan, through `coalesced`, so a burst
     of misses shares one fetch. `None` until then, and a miss then refuses
-    without refreshing.
+    without refreshing. `clock` must be the one the fetches stamp `loaded_at`
+    with, `time.monotonic`; it is replaceable for the suite, as
+    `NotFoundCache`'s is.
     """
 
-    def __init__(self, *, max_age_seconds: float) -> None:
+    def __init__(
+        self,
+        *,
+        max_age_seconds: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.max_age_seconds = max_age_seconds
+        self.clock = clock
         self.suspended: SuspendedUsers | None = None
         self.markets: PublishedMarkets | None = None
         self.refresh_markets: Callable[[], Awaitable[None]] | None = None
@@ -179,18 +194,33 @@ def _terms_in(copy: LocalCopy, market_id: uuid.UUID) -> MarketTradingTerms | Non
     return copy.markets.terms.get(market_id)
 
 
+def _is_refresh_due(copy: LocalCopy, *, now: float) -> bool:
+    """Whether a miss may refetch: a refresh is installed and the markets were
+    loaded at least `_MISS_REFRESH_FLOOR_SECONDS` before `now`."""
+    if copy.refresh_markets is None or copy.markets is None:
+        return False
+    return now - copy.markets.loaded_at >= _MISS_REFRESH_FLOOR_SECONDS
+
+
 async def _terms_after_refresh(
-    copy: LocalCopy, market_id: uuid.UUID
+    session: AsyncSession, copy: LocalCopy, market_id: uuid.UUID
 ) -> MarketTradingTerms | None:
-    """The market's terms after one refresh, or None if it is still absent or
-    nothing is installed to refresh. Raises `MarketTermsUnavailable` if the
-    refresh fails: the copy then knows nothing new about the market."""
-    if copy.refresh_markets is None:
-        return None
+    """The market's terms after one refresh, or None if it is still absent.
+
+    Rolls the session back first, so the fetch holds no connection (D-043).
+    Raises `MarketTermsUnavailable` if the refresh fails, or lands older than
+    the max age on the copy's clock: either way the copy knows nothing
+    current about the market.
+    """
+    await release_before_calling_out(session, caller="ensure_trading()")
     try:
         await copy.refresh_markets()
     except (httpx.HTTPError, ValueError) as exc:
         raise MarketTermsUnavailable from exc
+    # Again after the await: a fetch can answer more than the max age after it
+    # was stamped, and a queued caller can share a run older than its miss.
+    if not copy.is_markets_fresh(now=copy.clock()):
+        raise MarketTermsUnavailable
     return _terms_in(copy, market_id)
 
 
@@ -208,19 +238,31 @@ def coalesced(refresh: Callable[[], Awaitable[None]]) -> Callable[[], Awaitable[
     """`refresh`, wrapped so that callers who arrive while one runs share it
     rather than each starting another. A caller after it finished runs anew.
 
-    A failed run shares nothing: the next waiter runs its own, so one failure
-    does not refuse every queued caller.
+    Queued callers share a failure too: each raises the shared run's error,
+    so during an outage the upstream sees one attempt, not one per caller. A
+    run that was cancelled is not shared; the next caller runs its own.
     """
     lock = asyncio.Lock()
     finished_runs = 0
+    last_failure: Exception | None = None
 
     async def refresh_once_for_every_waiter() -> None:
-        nonlocal finished_runs
+        nonlocal finished_runs, last_failure
         runs_when_called = finished_runs
         async with lock:
             if finished_runs != runs_when_called:
+                if last_failure is not None:
+                    raise last_failure
                 return
-            await refresh()
+            # Recorded and re-raised, never swallowed: the queued callers
+            # raise it too.
+            try:
+                await refresh()
+            except Exception as failure:
+                last_failure = failure
+                finished_runs += 1
+                raise
+            last_failure = None
             finished_runs += 1
 
     return refresh_once_for_every_waiter
@@ -273,17 +315,25 @@ async def fetch_published_markets(
 async def refresh_suspended(
     copy: LocalCopy, auth_client: httpx.AsyncClient, *, service_key: str
 ) -> None:
-    """Replace the copy's suspended ids with a fresh fetch. Raises what
-    `fetch_suspended` raises, and then the old ids stay."""
-    copy.suspended = await fetch_suspended(auth_client, service_key=service_key)
+    """Replace the copy's suspended ids with a fresh fetch, unless the copy
+    already holds a newer one. Raises what `fetch_suspended` raises, and then
+    the old ids stay."""
+    fetched = await fetch_suspended(auth_client, service_key=service_key)
+    # Two refreshes may overlap; the one stamped first must not land last and
+    # put the copy back in time.
+    if copy.suspended is None or fetched.loaded_at > copy.suspended.loaded_at:
+        copy.suspended = fetched
 
 
 async def refresh_published_markets(
     copy: LocalCopy, terms_client: httpx.AsyncClient, *, service_key: str
 ) -> None:
-    """Replace the copy's published markets with a fresh fetch. Raises what
+    """Replace the copy's published markets with a fresh fetch, unless the
+    copy already holds a newer one, as `refresh_suspended` does. Raises what
     `fetch_published_markets` raises, and then the old markets stay."""
-    copy.markets = await fetch_published_markets(terms_client, service_key=service_key)
+    fetched = await fetch_published_markets(terms_client, service_key=service_key)
+    if copy.markets is None or fetched.loaded_at > copy.markets.loaded_at:
+        copy.markets = fetched
 
 
 async def run_refresher(
@@ -342,19 +392,24 @@ async def ensure_trading(
     """This market's terms, if the copy says it may be traded at `now`.
 
     Raises `MarketTermsUnavailable` for a copy never loaded or past its max
-    age. A market absent from it gets one `copy.refresh_markets()`; still
-    absent, it is `MarketTermsUnavailable` if it holds a book (market_service
-    is wrong, ADR 0017) and `MarketNotFound` if not. Then `MarketClosed` for
-    any stored status but open, a null close time, or one at or before `now`.
-    The session is read only on that miss, unlocked. The caller re-checks
-    `close_time` under the book lock.
+    age. A market absent from it gets one `copy.refresh_markets()`, unless
+    the copy is younger than `_MISS_REFRESH_FLOOR_SECONDS`, and the age is
+    checked again after it. Still absent, it is `MarketTermsUnavailable` if
+    it holds a book (market_service is wrong, ADR 0017) and `MarketNotFound`
+    if not. Then `MarketClosed` for any stored status but open, a null close
+    time, or one at or before `now`. The caller re-checks `close_time` under
+    the book lock.
+
+    **Call this with nothing pending and no row lock held**: a miss that
+    refreshes rolls the session back first (D-043). The session is read only
+    on a miss, unlocked. A market the copy holds is answered in memory.
     """
     if not copy.is_markets_fresh(now=monotonic_now):
         raise MarketTermsUnavailable
 
     terms = _terms_in(copy, market_id)
-    if terms is None:
-        terms = await _terms_after_refresh(copy, market_id)
+    if terms is None and _is_refresh_due(copy, now=monotonic_now):
+        terms = await _terms_after_refresh(session, copy, market_id)
     if terms is None:
         # Unlocked: ADR 0015 locks reads that decide a write, and this one
         # decides only an error code.
