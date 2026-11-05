@@ -181,6 +181,7 @@ expect "the admin URL is in no server's app.env" admin_url_in_no_app_env
 echo "a deploy with no Grafana settings"
 expect "app.env names no profile, so Alloy stays off" app_env_lacks '^COMPOSE_PROFILES=' server-a
 expect "app.env sends no tracing endpoint" app_env_lacks '^TRACING_ENDPOINT=' server-a
+expect "nor a sample ratio" app_env_lacks '^TRACING_SAMPLE_RATIO=' server-a
 expect "every server is labelled for the dashboard" grep -qx SERVER_LABEL=app-2 "$(app_env_of server-b)"
 expect "the first is app-1" grep -qx SERVER_LABEL=app-1 "$(app_env_of server-a)"
 
@@ -195,6 +196,7 @@ expect "Alloy is switched on" grep -qx COMPOSE_PROFILES=observability "$(app_env
 expect "and on the second server too" grep -qx COMPOSE_PROFILES=observability "$(app_env_of server-b)"
 expect "services send their traces to Alloy" \
   grep -qx TRACING_ENDPOINT=http://alloy:4318/v1/traces "$(app_env_of server-a)"
+expect "one trace in ten" grep -qx TRACING_SAMPLE_RATIO=0.1 "$(app_env_of server-a)"
 expect "Alloy gets the token" grep -qx GRAFANA_CLOUD_TOKEN=token-placeholder "$(app_env_of server-a)"
 expect "and the Loki address" grep -qx GRAFANA_LOKI_URL=https://l.invalid "$(app_env_of server-a)"
 
