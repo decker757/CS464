@@ -552,15 +552,14 @@ class TradeIn(BaseModel):
     `side` is `core.pricing.Side`: anything else is a 422 here rather than a
     refusal a layer down, and the route passes the enum straight through.
 
-    A trade names a price limit for its side — `max_cost` on a buy,
-    `min_proceeds` on a sell — or the `state_version` it was quoted, and the
-    limit is what decides when both are sent. With no limit, `state_version`
-    is required, as it always was: an optional staleness field would let a
-    client silently opt out of the only price protection a trade has. That
-    is the expand release's rule (#640), so a body from today's frontend,
-    which names no limit, keeps working until it is changed. A limit for the
-    other side is refused rather than ignored, because a client that sent
-    one believes it is protected.
+    A trade names a price limit for its side: `max_cost` on a buy,
+    `min_proceeds` on a sell. A body with a limit is decided by the limit,
+    and its `state_version` decides nothing. A body with no limit is still
+    decided by `state_version` for now, which it must then send: an optional
+    staleness field would let a client silently opt out of the only price
+    protection a trade has. Once every client sends a limit, a body with no
+    limit will be refused. A limit for the other side is refused rather than
+    ignored, because a client that sent one believes it is protected.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -589,8 +588,8 @@ class TradeIn(BaseModel):
             "A buy only: the most this trade may cost, in credits. Priced "
             "under the book's own lock; a cost above it refuses "
             "the trade and one exactly at it executes. When present it "
-            "decides and `state_version` is advisory. Four decimal places "
-            "and 18 digits, as `quantity`. Sent on a sell, it is 422."
+            "decides, and `state_version` decides nothing. Four decimal "
+            "places and 18 digits, as `quantity`. Sent on a sell, it is 422."
         ),
     )
     min_proceeds: Decimal | None = Field(
@@ -602,20 +601,20 @@ class TradeIn(BaseModel):
             "A sell only: the least this trade may pay, in credits. Priced "
             "under the book's own lock; proceeds below it refuse the trade "
             "and proceeds exactly at it execute. `0` is a limit too, one "
-            "that accepts any price. When present it decides and "
-            "`state_version` is advisory. Four decimal places and 18 digits, "
-            "as `quantity`. Sent on a buy, it is 422."
+            "that accepts any price. When present it decides, and "
+            "`state_version` decides nothing. Four decimal places and 18 "
+            "digits, as `quantity`. Sent on a buy, it is 422."
         ),
     )
     state_version: int | None = Field(
         default=None,
         description=(
-            "The `state_version` the preview quoted. Required when the trade "
-            "names no limit, and then compared, under the book's own lock, "
-            "for strict equality against the market's current one; a "
-            "mismatch either direction is `409 quote_stale`. With a limit it "
-            "is advisory, and the limit decides. Requiring it without a "
-            "limit is the expand release's rule (#640)."
+            "The `state_version` the preview quoted. With a limit it "
+            "decides nothing. A body with no limit is still decided by it "
+            "for now: it is then required, and compared under the book's "
+            "own lock for strict equality against the market's current one. "
+            "A mismatch either direction is `409 quote_stale`. Once every "
+            "client sends a limit, a body with no limit will be refused."
         ),
     )
     idempotency_key: str = Field(
