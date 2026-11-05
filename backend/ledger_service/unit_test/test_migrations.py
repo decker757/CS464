@@ -82,6 +82,14 @@ def test_migrating_an_empty_schema_builds_what_the_models_build(empty_schema) ->
         "CREATE INDEX ix_ledger_orders_open_by_user ON ledger.orders USING btree "
         "(user_id) WHERE ((status)::text = 'open'::text)"
     ) in migrated["indexes"]
+    # `amount` is carried so the balance sum under the account lock can be an
+    # index-only scan (#642). By name, for the same reason as above: losing
+    # the INCLUDE from the models and revision 0008 together is a slowdown
+    # with no other failing test.
+    assert (
+        "CREATE INDEX ix_ledger_entries_account_feed ON ledger.entries USING btree "
+        "(account_id, created_at DESC, id DESC) INCLUDE (amount)"
+    ) in migrated["indexes"]
 
 
 @pytest.mark.parametrize(
