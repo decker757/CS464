@@ -396,6 +396,9 @@ describe('TradingPanel', () => {
     await screen.findByText(/this market has closed/i)
     expect(screen.queryByText(/getting a fresh quote/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/check the new quote and confirm again/i)).not.toBeInTheDocument()
+    // Nothing in place says the trade was not made, so the alert above the
+    // tickets does, without asking for a price that is not coming (#589).
+    expect(screen.getByText(/^Your buy of 10 Yes was not made: the price moved before it went through\.$/)).toBeInTheDocument()
   })
 
   it('shows the balance and amount needed on insufficient_funds, formatted like everywhere else', async () => {
@@ -521,6 +524,79 @@ describe('TradingPanel', () => {
     await waitFor(() => expect(keys).toHaveLength(2))
 
     expect(keys[0]).toBe(keys[1])
+  })
+
+  it('says a trade refused as quote_stale was not made, naming it, after the trader picked another outcome', async () => {
+    mockPreview(previewResponse())
+    let answerTrade: () => void = () => {}
+    const tradeAnswered = new Promise<void>(resolve => { answerTrade = resolve })
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async () => {
+        await tradeAnswered
+        return HttpResponse.json(
+          { error: { code: 'quote_stale', message: 'Stale.', details: { quoted: 1, current: 2 } } },
+          { status: 409 },
+        )
+      }),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { rerender } = renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    // The No price block, clicked while the Yes buy is still in flight (#589).
+    rerender(panel({ outcomeId: 'o-no' }))
+    answerTrade()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/buy of 10 Yes was not made/i)
+  })
+
+  it('says a trade refused as quote_stale was not made after the trader switched to the Limit ticket', async () => {
+    mockPreview(previewResponse())
+    let answerTrade: () => void = () => {}
+    const tradeAnswered = new Promise<void>(resolve => { answerTrade = resolve })
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async () => {
+        await tradeAnswered
+        return HttpResponse.json(
+          { error: { code: 'quote_stale', message: 'Stale.', details: { quoted: 1, current: 2 } } },
+          { status: 409 },
+        )
+      }),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ limitOrdersAllowed: true })
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    // The market ticket, where "Prices moved" would show, is not on screen.
+    await actor.click(screen.getByRole('button', { name: 'Limit' }))
+    answerTrade()
+
+    expect(await screen.findByText(/buy of 10 Yes was not made/i)).toBeInTheDocument()
+  })
+
+  it('says a quote_stale refusal once, in place, while the trader is still on that trade', async () => {
+    mockPreview(previewResponse())
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, () =>
+        HttpResponse.json(
+          { error: { code: 'quote_stale', message: 'Stale.', details: { quoted: 1, current: 2 } } },
+          { status: 409 },
+        ),
+      ),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    await screen.findByText(/prices moved\. check the new quote/i)
+
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
   })
 
   it('says a trade with no answer could not be confirmed, naming it, after the trader picked another outcome', async () => {
