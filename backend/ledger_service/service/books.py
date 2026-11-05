@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -221,6 +221,17 @@ async def lock_book(session: AsyncSession, market_id: uuid.UUID) -> MarketBook:
     with BOOK_LOCK_WAIT.time():
         result = await session.execute(stmt)
     return result.scalar_one()
+
+
+async def clock_after_lock(session: AsyncSession) -> datetime:
+    """Postgres's clock now, for a decision made under the book lock. #640.
+
+    `clock_timestamp()`, never `now()`: that is the transaction's start, read
+    before the caller queued for the lock, so call this after `lock_book`.
+    Its own statement for now; PR #641 folds it into the trade's context
+    statement. Twin of market_service's `_database_now`.
+    """
+    return (await session.execute(select(func.clock_timestamp()))).scalar_one()
 
 
 async def find_result(
