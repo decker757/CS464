@@ -9,9 +9,7 @@ trade (replay, gate, book lock) is the trade path's to test.
 
 from __future__ import annotations
 
-import ast
 import asyncio
-import pathlib
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -27,6 +25,7 @@ from core.database import get_engine, get_session_factory
 from model.entities import Account, Entry, Transaction
 from unit_test.book_fixtures import Stalled
 from unit_test.conftest import idle_in_transaction, mint_token, terms_client_over
+from unit_test.source_pins import BACKEND, enum_member_of
 
 
 def _status():
@@ -135,9 +134,6 @@ class _Upstream:
 
 def _token() -> str:
     return mint_token(uuid.uuid4())
-
-
-_BACKEND = pathlib.Path(__file__).resolve().parents[3]
 
 
 async def _gate(
@@ -636,59 +632,23 @@ async def test_the_gate_refuses_to_run_over_a_pending_write(
 
 
 # =========================================================================
-# The copy of "open", pinned against market_service's source
+# The settlement statuses, pinned against market_service's source
 # =========================================================================
-def _enum_member(path: pathlib.Path, enum: str, member: str) -> str:
-    """One enum member's string value, read out of a source file with `ast`,
-    since market_service cannot be imported (`test_import_boundary.py`)."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-
-    for node in tree.body:
-        if not isinstance(node, ast.ClassDef) or node.name != enum:
-            continue
-        for stmt in node.body:
-            targets = stmt.targets if isinstance(stmt, ast.Assign) else []
-            for target in targets:
-                if isinstance(target, ast.Name) and target.id == member:
-                    value = stmt.value
-                    if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                        return value.value
-                    raise AssertionError(
-                        f"{enum}.{member} in {path} is not a plain string literal"
-                    )
-
-    raise AssertionError(f"{enum}.{member} not found in {path}")
-
-
-def test_the_open_status_matches_the_one_market_service_puts_on_the_wire() -> None:
-    """The money gate's copy of `"open"`, pinned against its source: a wrong
-    value refuses every trade silently."""
-    theirs = _enum_member(
-        _BACKEND / "market_service" / "model" / "entities.py",
-        "MarketStatus",
-        "OPEN",
-    )
-
-    assert _status()._OPEN == theirs, (
-        f"this service gates trading on {_status()._OPEN!r} and market_service "
-        f"publishes {theirs!r}; every trade would be refused as market_closed"
-    )
-
-
 @pytest.mark.parametrize(
     ("ours", "member"), [("_APPROVED", "APPROVED"), ("_SETTLED", "SETTLED")]
 )
 def test_the_settlement_statuses_match_the_ones_market_service_puts_on_the_wire(
     ours: str, member: str
 ) -> None:
-    """Settlement's copies of `"approved"` and `"settled"`, pinned the same
-    way. The fake upstream in `settlement_fixtures.py` types the same literal,
-    so a rename upstream would refuse every settlement as market_not_approved
-    with every settlement test still green."""
+    """Settlement's copies of `"approved"` and `"settled"`, pinned against
+    their source as `test_local_copy.py` pins `"open"`. The fake upstream in
+    `settlement_fixtures.py` types the same literal, so a rename upstream would
+    refuse every settlement as market_not_approved with every settlement test
+    still green."""
     from service import settlement  # noqa: PLC0415
 
-    theirs = _enum_member(
-        _BACKEND / "market_service" / "model" / "entities.py",
+    theirs = enum_member_of(
+        BACKEND / "market_service" / "model" / "entities.py",
         "MarketStatus",
         member,
     )
