@@ -125,6 +125,8 @@ trip gained or lost stays, a few credits at most.
 | 2026-11-04 | a laptop, the scaled stack (two of each service) | 50, 1 min | 1,137 (19 a second) | 258 ms | 431 ms | 0% | 9,603 | 1,346 |
 | 2026-11-04 | a laptop, the scaled stack, 1 market | 20, 20 s | 354 (18 a second) | 122 ms | 231 ms | 0% | — | 151 |
 | 2026-11-04 | a laptop, the scaled stack, 5 markets | 20, 20 s | 702 (35 a second) | 196 ms | 263 ms | 0% | — | 3 |
+| 2026-11-04 | production, two 1-vCPU app servers behind the load balancer, 1 market | 50, 5 min | 126 (0.4 a second) | 5.45 s | 6.59 s | 0% | 4,427 | 692 |
+| 2026-11-04 | production, two 1-vCPU app servers behind the load balancer, 5 markets | 50, 5 min | 738 (2.5 a second) | 4.52 s | 5.93 s | 0.8% | 5,091 | 633 |
 
 "A second" is over the trading time alone. k6's own `/s` figure divides by a
 time that includes setup.
@@ -144,3 +146,8 @@ time that includes setup.
 - **Spread across five markets, the same 20 traders committed twice the
   trades, and almost none gave up.** So a second server adds capacity across
   many markets, and none for one busy market.
+- **Production is much slower than a laptop.** With 50 traders for five
+  minutes, the same script committed 126 trades on one market and 738 on five,
+  against 1,137 in one minute on a laptop. Both app servers sat at 100% CPU,
+  and most attempts were refused as stale and retried. #640 is the ticket that
+  acts on it.
