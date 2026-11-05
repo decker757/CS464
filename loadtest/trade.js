@@ -189,7 +189,8 @@ function trade({ token, runId, marketId, outcomeId, side, stateVersion }) {
     if (response.status === 201) {
       tradeErrors.add(false)
       tradesCommitted.add(1)
-      return response.json('state_version')
+      // Of the response's two counters, book_state_version is the one after everything the trade did.
+      return response.json('book_state_version')
     }
     if (response.status === 409 && errorCodeOf(response) === 'quote_stale') {
       quoteStaleRetries.add(1)
