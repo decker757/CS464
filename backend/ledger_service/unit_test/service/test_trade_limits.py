@@ -83,8 +83,9 @@ async def test_a_buy_within_its_limit_executes_at_the_current_price_after_the_bo
 async def test_a_buy_beyond_its_limit_is_refused_with_the_current_total_and_nothing_moves(
     session: AsyncSession,
 ) -> None:
-    """`409 price_beyond_limit`, carrying what the trade would cost now, and
-    the rollback evidence: no transaction, no entry, no credit moved."""
+    """`409 price_beyond_limit`, carrying what the trade would cost now and
+    the book's own `state_version` rather than the 7 it quoted, and the
+    rollback evidence: no transaction, no entry, no credit moved."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -93,7 +94,7 @@ async def test_a_buy_beyond_its_limit_is_refused_with_the_current_total_and_noth
     limit = Decimal("0.0001")
 
     with pytest.raises(errors().PriceBeyondLimit) as raised:
-        await buy(session, upstream, user_id=user_id, limit=limit)
+        await buy(session, upstream, user_id=user_id, state_version=7, limit=limit)
     await session.rollback()
 
     current = pricing().trade_cost_of(

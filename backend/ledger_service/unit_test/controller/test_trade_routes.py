@@ -423,10 +423,11 @@ async def test_a_body_naming_an_account_or_an_amount_is_refused(
     assert response.status_code == 422
 
 
-async def test_the_state_version_is_required(
+async def test_the_state_version_is_required_when_no_limit_is_sent(
     trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Required, not optional with a default.
+    """Required when the body names no price limit, not optional with a
+    default — the expand release's rule (#640).
 
     An optional staleness field lets a client silently opt out of the only
     staleness protection the trade has — and the client most likely to omit
@@ -569,6 +570,112 @@ async def test_a_stale_quote_is_409_with_the_versions_in_details(
     assert error["code"] == "quote_stale"
     assert error["details"] == {"quoted": 7, "current": 0}
     assert recorder.calls == []
+
+
+# =========================================================================
+# A price limit (#640)
+# =========================================================================
+async def test_a_trade_within_its_limit_is_201_and_total_is_what_was_paid(
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`max_cost` reaches the service: a body quoting a version the book has
+    not reached is a `quote_stale` without it, and with it the trade lands
+    at the book's current price."""
+    client, _ = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms().install(monkeypatch, market)
+    cost = -expected_total(Q)
+
+    response = await client.post(
+        _path(market.market_id),
+        json=_body(market, state_version=7, max_cost=str(cost + 1)),
+        headers=bearer(uuid.uuid4()),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert Decimal(body["total"]) == -cost
+    assert body["state_version"] == 1
+
+
+async def test_a_trade_beyond_its_limit_is_409_with_limit_current_total_and_version_in_details(
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`price_beyond_limit` carries `limit` and `current_total` as decimal
+    strings, because they are money, and `state_version` as a number, the
+    book's own rather than the 7 the body quoted — what a client re-previews
+    against."""
+    client, recorder = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms().install(monkeypatch, market)
+
+    response = await client.post(
+        _path(market.market_id),
+        json=_body(market, state_version=7, max_cost="0.0001"),
+        headers=bearer(uuid.uuid4()),
+    )
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "price_beyond_limit"
+    assert error["details"] == {
+        "limit": "0.0001",
+        "current_total": str(-expected_total(Q)),
+        "state_version": 0,
+    }
+    assert recorder.calls == []
+
+
+@pytest.mark.parametrize(
+    ("side", "limit_field"),
+    [("sell", "max_cost"), ("buy", "min_proceeds")],
+)
+async def test_a_limit_for_the_other_side_is_422_invalid_request(
+    trade_client,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    side: str,
+    limit_field: str,
+) -> None:
+    """Refused rather than ignored: a client that sent it believes it is
+    protected, and a dropped limit would trade it at any price."""
+    client, recorder = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms().install(monkeypatch, market)
+
+    response = await client.post(
+        _path(market.market_id),
+        json=_body(market, side=side, **{limit_field: "1.0000"}),
+        headers=bearer(uuid.uuid4()),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert recorder.calls == []
+
+
+async def test_a_trade_with_a_limit_needs_no_state_version(
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The limit replaces the quote: a body with `max_cost` and no
+    `state_version` trades."""
+    client, _ = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms().install(monkeypatch, market)
+
+    body = _body(market, max_cost="1000000")
+    del body["state_version"]
+
+    response = await client.post(
+        _path(market.market_id), json=body, headers=bearer(uuid.uuid4())
+    )
+
+    assert response.status_code == 201
+    assert Decimal(response.json()["total"]) == expected_total(Q)
 
 
 async def test_an_unaffordable_trade_is_409_insufficient_funds(
