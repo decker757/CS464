@@ -14,15 +14,32 @@ history. The key columns and their order are unchanged, so the history page and
 the newest-entry probe read it exactly as before.
 
 Postgres cannot add an INCLUDE column to an existing index, so this drops the
-index and builds it again, both inside the migration's one transaction. The
-DROP takes an ACCESS EXCLUSIVE lock on `ledger.entries` and keeps it until the
-commit, so every read and write of the table, every balance and trade
-included, waits for the build. That is acceptable at production's size today.
-At a size where it is not, build the new index with `CREATE INDEX
-CONCURRENTLY` under a temporary name, `DROP INDEX CONCURRENTLY` the old one and
-rename the new one into place. CONCURRENTLY cannot run inside a transaction
-block, so those statements go in an `op.get_context().autocommit_block()`,
-outside the migration's transaction. ADR 0020.
+index and builds it again in one transaction. The DROP needs an ACCESS
+EXCLUSIVE lock on `ledger.entries`: it first waits behind every open
+transaction that has touched the table, every new query on the table queues
+behind it while it waits, and it holds the lock until the commit, so every
+balance and trade waits for the build too. The migrate step sets no
+`lock_timeout`, so one long transaction stretches that stall for as long as it
+stays open. The downgrade takes the same lock and does the same rebuild.
+Only a manual `alembic downgrade` reaches it, since a failed release is fixed
+forward (ADR 0026). The build took about 30 ms on 110,000 entries on a
+laptop, and it grows a little faster than the row count.
+
+When that stall is too long, a concurrent rebuild is the answer, and this
+revision cannot run one. `shared/migrating.py` runs every revision inside one
+outer `engine.begin()`, so Alembic sees an external transaction and
+`op.get_context().autocommit_block()` is not available. It fails its
+assertion before anything is built. There are two real routes:
+
+- Rebuild by hand first. In psql as `ledger_svc`, run `CREATE INDEX
+  CONCURRENTLY` under a temporary name, then `DROP INDEX CONCURRENTLY` the
+  old index and rename the new one into place. Then deploy a revision that
+  only records the change.
+- Change the runner first, to `transaction_per_migration` with no outer
+  `begin()`. That is an ADR 0020 decision, not a migration detail.
+
+A `CREATE INDEX CONCURRENTLY` that fails leaves an INVALID index behind. Drop
+it before you retry.
 
 The migration changes no column, and the old release reads the rebuilt index
 the same way it read the old one, so it works with the release before it.
