@@ -13,14 +13,23 @@ stamps, read here from `ledger.entries`, never from the read under test.
 Expected prices are literals: `WIRE_PRICES` are worked by hand in
 `price_history_fixtures.py`, and the b = 137 pair below with `Decimal.exp` at
 40 digits, rounded half up, so neither shares code with `core/lmsr.py`.
+
+The baseline is the newest trade's stored `after_q`, and a market whose newest
+trade has none is replayed (#643). A trade from before `after_q` existed is
+made here by deleting the key from a real trade's context: `ledger.entries` is
+append-only and `ledger.transactions` is not.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.book_fixtures import capture_sql, mentioning, warm
@@ -56,6 +65,41 @@ def _a_day_past_the_window() -> datetime:
 
 def _priced(prices) -> list[tuple[uuid.UUID, int, Decimal]]:  # noqa: ANN001
     return [(p.outcome_id, p.position, p.price) for p in prices]
+
+
+async def _strip_after_q(session: AsyncSession, transaction_id: uuid.UUID) -> None:
+    """The trade as one written before #643 stored it. Committed."""
+    await session.execute(
+        text(
+            "UPDATE ledger.transactions SET context = context - 'after_q' "
+            "WHERE id = :id"
+        ),
+        {"id": transaction_id},
+    )
+    await session.commit()
+
+
+async def _store_after_q(
+    session: AsyncSession, transaction_id: uuid.UUID, after_q: list[str]
+) -> None:
+    """Overwrite a trade's stored `after_q`. Committed."""
+    await session.execute(
+        text(
+            "UPDATE ledger.transactions "
+            "SET context = jsonb_set(context, '{after_q}', CAST(:after_q AS jsonb)) "
+            "WHERE id = :id"
+        ),
+        {"id": transaction_id, "after_q": json.dumps(after_q)},
+    )
+    await session.commit()
+
+
+def _replay_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.INFO and "replayed" in record.getMessage()
+    ]
 
 
 def _wire(market_outcomes: list[uuid.UUID], state_version: int):
@@ -201,3 +245,85 @@ async def test_every_markets_baseline_is_read_in_one_statement(
 
     entry_reads = mentioning(statements, "entries")
     assert len(entry_reads) == 1, f"expected one statement, sent:\n{statements}"
+
+
+async def test_the_seven_day_price_is_one_statement_when_every_market_s_newest_trade_carries_after_q(
+    session: AsyncSession,
+) -> None:
+    """AC: one statement for any number of markets when every newest trade
+    carries `after_q`, and it is the `DISTINCT ON` that reads one row per
+    market rather than every trade (#643). Three traded markets, each with
+    the price its third trade left. Catches: the replay of every trade kept
+    as the first read."""
+    scenarios = [await traded(session) for _ in range(3)]
+
+    with capture_sql() as statements:
+        result = await _snapshot_service().list_snapshots(
+            session,
+            [scenario.market_id for scenario in scenarios],
+            now=_a_day_past_the_window(),
+        )
+
+    entry_reads = mentioning(statements, "entries")
+    assert len(entry_reads) == 1, f"expected one statement, sent:\n{statements}"
+    assert "DISTINCT ON" in entry_reads[0]
+    assert [_priced(listed.prices_7d_ago) for listed in result] == [
+        _wire(scenario.upstream.outcomes, 3) for scenario in scenarios
+    ]
+
+
+async def test_a_market_whose_newest_old_trade_lacks_after_q_falls_back_and_is_logged(
+    session: AsyncSession, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AC: `prices_7d_ago` is unchanged for a market whose trades do not carry
+    `after_q`, with the fallback logged. The window starts at the second
+    trade, whose key is deleted: the replay gives version 2's prices, not the
+    first trade's stored ones (version 1) and not the third's (version 3).
+    One INFO line names the market."""
+    caplog.set_level(logging.INFO, logger="service.price_history")
+    scenario = await traded(session)
+    times = await entry_times(session, [scenario.b_buy.transaction_id])
+    await _strip_after_q(session, scenario.b_buy.transaction_id)
+
+    [listed] = await _snapshot_service().list_snapshots(
+        session,
+        [scenario.market_id],
+        now=times[scenario.b_buy.transaction_id] + _WINDOW,
+    )
+
+    assert _priced(listed.prices_7d_ago) == _wire(scenario.upstream.outcomes, 2)
+    [line] = _replay_lines(caplog)
+    assert str(scenario.market_id) in line
+
+
+async def test_the_fallback_is_per_market_not_per_batch(
+    session: AsyncSession, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A market lacking `after_q` is replayed alone, in one more statement.
+    The other market's newest trade stores a `q` of [100, 0], which its own
+    replay does not reach, so its price shows which read answered it: the
+    stored one, 0.7311 (1 / (1 + e^-1)). Catches: one missing key replaying
+    the whole batch, or a statement per market."""
+    caplog.set_level(logging.INFO, logger="service.price_history")
+    stripped = await traded(session)
+    intact = await traded(session)
+    await _strip_after_q(session, stripped.a_sell.transaction_id)
+    await _store_after_q(session, intact.a_sell.transaction_id, ["100.0000", "0.0000"])
+
+    with capture_sql() as statements:
+        result = await _snapshot_service().list_snapshots(
+            session,
+            [stripped.market_id, intact.market_id],
+            now=_a_day_past_the_window(),
+        )
+
+    assert len(mentioning(statements, "entries")) == 2, statements
+    assert [_priced(listed.prices_7d_ago) for listed in result] == [
+        _wire(stripped.upstream.outcomes, 3),
+        [
+            (intact.upstream.outcomes[0], 0, Decimal("0.7311")),
+            (intact.upstream.outcomes[1], 1, Decimal("0.2689")),
+        ],
+    ]
+    [line] = _replay_lines(caplog)
+    assert str(stripped.market_id) in line
