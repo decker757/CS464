@@ -49,9 +49,12 @@ commits.
    rather than one that predates it. A book that cannot be priced is
    `MarketBookIncomplete`, through `book_prices.refuse_unpriceable` — the
    guard the preview and the snapshot use.
-8. Staleness: strict equality between the quoted `state_version` and the
-   book's current one, either direction ("The trade's staleness check is
-   strict `state_version` equality, and the field is required").
+8. Staleness. A trade that names no limit is refused `QuoteStale` here
+   unless its quoted `state_version` equals the book's current one, either
+   direction ("The trade's staleness check is strict `state_version`
+   equality, and the field is required"). A trade
+   that names a limit skips that comparison, and the limit decides instead,
+   right after `trade_cost_of` in step 9 (#640).
 9. The outcome, the holding check on a sell (the caller's own position less
    what their live sell orders in that outcome reserve, ADR 0024, read here
    and taking no lock of its own — the book lock holds both still), then
@@ -119,7 +122,14 @@ from core.errors import (
 from core.limit_orders import PlannedFill, RestingOrder, cascade_of
 from core.lmsr import prices as lmsr_prices
 from core.metrics import ORDER_FILLS, TRADES_COMMITTED
-from core.pricing import QUANTUM, Side, TradeCost, release_basis, trade_cost_of
+from core.pricing import (
+    QUANTUM,
+    Side,
+    TradeCost,
+    refuse_if_beyond_limit,
+    release_basis,
+    trade_cost_of,
+)
 from model.entities import (
     Account,
     AccountKind,
@@ -736,7 +746,8 @@ async def execute(
     outcome_id: uuid.UUID,
     side: Side,
     quantity: Decimal,
-    state_version: int,
+    state_version: int | None,
+    limit: Decimal | None = None,
     idempotency_key: str,
     access_token: str,
     redis_client: redis.Redis,
@@ -752,12 +763,19 @@ async def execute(
     derived from it, `user_id` and `market_id` (`trade_key`), never stored
     as sent.
 
-    Raises `ValueError` on a `quantity` that is not positive, before anything
-    else: the route's `gt=0` is not the only caller this function can have,
-    and a negative sell would pass the holding check and be priced as a buy.
+    `limit` is a buy's most it will pay or a sell's least it will accept;
+    with one, `state_version` is not compared and `PriceBeyondLimit` is the
+    refusal. With none, `QuoteStale` is, on strict equality (#640).
+
+    Raises `ValueError` on a `quantity` that is not positive, or on a trade
+    naming neither a limit nor a `state_version`, before anything else: the
+    route's validators are not the only caller this function can have, and a
+    negative sell would pass the holding check and be priced as a buy.
     """
     if quantity <= 0:
         raise ValueError(f"quantity must be positive, got {quantity}")
+    if limit is None and state_version is None:
+        raise ValueError("a trade names a limit or a state_version")
 
     key = trade_key(user_id, market_id, idempotency_key)
 
@@ -826,8 +844,9 @@ async def execute(
     b = book.liquidity_b
     ids = [outcome.outcome_id for outcome in outcomes]
 
-    # 8. Staleness. Strict equality, either direction.
-    if state_version != book.state_version:
+    # 8. Staleness, for a trade with no limit only. Strict equality, either
+    # direction. A trade with a limit is decided by it after step 9 instead.
+    if limit is None and state_version != book.state_version:
         raise QuoteStale(quoted=state_version, current=book.state_version)
 
     if outcome_id not in ids:
@@ -857,6 +876,10 @@ async def execute(
     # holding check above always refuses first. It is what stands between a
     # hand-repaired book and a negative `q`.
     cost = trade_cost_of(q, b, index=index, side=side, quantity=quantity)
+    if limit is not None:
+        refuse_if_beyond_limit(
+            cost, side=side, limit=limit, state_version=book.state_version
+        )
 
     # 10. The writes. Pending, not yet committed — `posting.post_all` below is
     # the one statement that commits them.
