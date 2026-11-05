@@ -76,7 +76,8 @@ quoted version would refuse an order because the price moved.
   `min_proceeds`, is refused `409 price_beyond_limit`. Nothing is written.
   `error.details` carries `limit` (as the client sent it), `current_total`
   (the cost or proceeds at the current price, four places) and the book's
-  current `state_version`, so the client can re-preview at that version.
+  current `state_version`, so the client can re-preview, and retry once the
+  book is at that version or later.
 - Within the limit, the trade executes at the current price. A price
   exactly at the limit executes. The response is unchanged in shape:
   `total` is what was actually paid or received.
@@ -120,8 +121,10 @@ optional, move the readers, then require it.
    `main`). The limit becomes required for its side, `state_version` stays
    optional, and `quote_stale` leaves the route and `core/errors.py`.
 
-`docs/api/ledger-service.md` describes the final state, with one paragraph
-on what the expand release still accepts.
+`docs/api/ledger-service.md` describes the final state. Its "Rolling out"
+paragraph, and a `quote_stale` row in its errors table marked as lasting
+until every client sends a limit, cover what the expand release still
+accepts. The contract step deletes both.
 
 ### The tolerance is the client's
 

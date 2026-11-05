@@ -11303,8 +11303,9 @@ worse than the trader allowed. The details changed with it.
   client can match it against its own request.
 - `current_total` is the unsigned cost or proceeds at the current price,
   quantized to four places, as `total` is.
-- `state_version` is the book's, a JSON number, for `QuoteStale`'s reason. It
-  is the version to re-preview against.
+- `state_version` is the book's, a JSON number: a count, not money. A
+  client re-previews, and retries once the book is at that version or
+  later.
 
 The limit is checked after `trade_cost_of`, not where the version check
 stood, because the cost is what it compares.

@@ -802,8 +802,8 @@ is refused as `cost_below_tick` (422). You will essentially never see it in
 practice, but handle it the same way.
 
 **`state_version`** is the quote reference (D-011) — a JSON number, not a
-string, because it is a count and not money — and the only one. A trade no
-longer compares it: it names a price limit worked out from this preview's
+string, because it is a count and not money — and the only one. A trade with
+a limit no longer compares it: it names a price limit worked out from this preview's
 `total`, and a refusal reports the book's `state_version`, so a client can
 tell whether a new preview has caught up (ADR 0029).
 
@@ -1299,8 +1299,9 @@ decides nothing.
   `"13.508"` back.
 - `current_total` is what the trade would cost, or pay, at the current
   price: unsigned, and quantized to four places, as `total` is.
-- `state_version` is the book's current version, a JSON number. Re-preview at
-  that `state_version` or later, and retry with a new limit.
+- `state_version` is the book's current version, a JSON number. Re-preview,
+  and retry with a new limit once the book is at that `state_version` or
+  later.
 
 The limit is compared after the holding check and the tick checks. A sell
 larger than your position is `insufficient_shares_held`, and a cost that
@@ -1362,9 +1363,9 @@ or from `GET .../snapshot` instead.
   your live sell orders in that outcome reserve. `error.details` gains
   `reserved` beside `held` and `requested`. Built.
 
-The errors table below describes the route's contract, without the
-expand release's `quote_stale` (see "Rolling out" above). Its
-`insufficient_funds` and `insufficient_shares_held` rows both count
+The errors table below describes the route's contract. Its `quote_stale`
+row holds only until every client sends a limit (see "Rolling out" above).
+Its `insufficient_funds` and `insufficient_shares_held` rows both count
 reservations.
 
 A trade can fill your own resting orders. That is allowed, at each order's
@@ -1436,6 +1437,7 @@ Errors:
 | 403 | `account_suspended` | An administrator has suspended this account. The same code and message the auth service uses, so one handler covers both: end the session and show the message. Not retryable. A refused trade writes nothing, and the account's balance and positions stay as they were. |
 | 404 | `market_not_found` | No such market. |
 | 409 | `market_closed` | The market's derived status is not `"open"`. Spelled the same way market_service spells its own version of this refusal. |
+| 409 | `quote_stale` | For a body that names no limit, until every client sends one (see "Rolling out"): the quoted `state_version` no longer names the book, either direction. `error.details` carries `quoted` and `current`. |
 | 409 | `price_beyond_limit` | A buy whose cost at the current price is above `max_cost`, or a sell whose proceeds are below `min_proceeds`. Nothing was written. `error.details` carries `limit`, exactly as sent, `current_total`, a decimal string at scale 4, and the book's current `state_version`, a JSON number. Re-preview and retry with a new limit. |
 | 409 | `insufficient_funds` | A buy this account's `available` credits, its balance less what its buy orders reserve, cannot cover. `error.details` carries `balance`, `required`, `reserved` and `available`, decimal strings at scale 4: `available` is `balance - reserved`, and the trade needed `required`. |
 | 409 | `insufficient_shares_held` | A sell larger than this caller's position in this outcome less the shares their live sell orders in it reserve. `error.details` carries `held`, the whole position, `reserved` and `requested`, decimal strings at scale 4. |
@@ -2353,8 +2355,8 @@ for it today.
 #14, `insufficient_funds` (409), `insufficient_shares_held` (409, new in [T-3]
 #23), `idempotency_key_reused` (409), `market_closed` (409) and
 `price_beyond_limit` (409, new in #640, replacing [T-2] #22's `quote_stale`,
-which the expand release still returns) are the trade route's own, documented in its section
-above. `insufficient_shares_outstanding` (409) is unreachable on the trade
+which a body with no limit still gets until every client sends a limit; see
+"Rolling out") are the trade route's own, documented in its section above. `insufficient_shares_outstanding` (409) is unreachable on the trade
 route: each outcome's shares outstanding equal the sum of its positions, so
 `insufficient_shares_held` always refuses first. It stays in the code as a
 backstop and is out of the trade route's table on purpose; only the preview
