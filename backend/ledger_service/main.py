@@ -105,10 +105,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         observability.instrument_redis()
 
-        # One market_service client for the process too, because the gate
-        # calls it on every trade that is not a replay (ADR 0017, D-047), and
-        # one auth client for the account check on the same trades (ADR
-        # 0022). `async with` closes both before the `finally`.
+        # One client per upstream for the process too (D-047). market_service's
+        # serves the market copy's refresher, a market's first touch, and
+        # settlement and void; auth's serves the suspended copy's refresher and
+        # the leaderboard. A trade calls neither (ADR 0030). `async with`
+        # closes both before the `finally`.
         async with (
             market_terms.open_client() as terms_client,
             account_status.open_client() as auth_client,
