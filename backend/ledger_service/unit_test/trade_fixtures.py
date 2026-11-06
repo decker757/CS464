@@ -281,14 +281,15 @@ def token() -> str:
 def terms_of(upstream: Upstream):
     """The upstream's market as the copy holds it: the stored status and
     close time its body says now, which is open at `FUTURE` until a test
-    closes it."""
+    closes it. The close time is read as the refresh reads it, UTC if the
+    body gives no offset, so the copy never holds a naive one."""
+    from core.clock import as_utc  # noqa: PLC0415
     from service.local_copy import MarketTradingTerms  # noqa: PLC0415
 
     close_time = upstream.body["close_time"]
-    return MarketTradingTerms(
-        status=str(upstream.body["status"]),
-        close_time=None if close_time is None else datetime.fromisoformat(str(close_time)),
-    )
+    if close_time is not None:
+        close_time = as_utc(datetime.fromisoformat(str(close_time)))
+    return MarketTradingTerms(status=str(upstream.body["status"]), close_time=close_time)
 
 
 def fresh_copy(upstream: Upstream, *, suspended: Iterable[uuid.UUID] = ()):
