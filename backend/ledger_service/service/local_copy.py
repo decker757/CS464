@@ -336,6 +336,34 @@ async def refresh_published_markets(
         copy.markets = fetched
 
 
+def _log_refresh_failure(
+    name: str,
+    failure: Exception,
+    *,
+    failures_in_a_row: int,
+    interval_seconds: float,
+) -> None:
+    """The first failure of a streak at ERROR with its traceback, and each
+    repeat at WARNING without one: an upstream down for a minute is sixty
+    failures per half per replica, and one traceback says what they all say."""
+    if failures_in_a_row == 1:
+        logger.error(
+            "%s copy refresh failed; keeping the old copy, retrying in %.1fs",
+            name,
+            interval_seconds,
+            exc_info=failure,
+        )
+        return
+    logger.warning(
+        "%s copy refresh failed again, %d in a row; keeping the old copy, "
+        "retrying in %.1fs: %r",
+        name,
+        failures_in_a_row,
+        interval_seconds,
+        failure,
+    )
+
+
 async def run_refresher(
     name: str,
     refresh_once: Callable[[], Awaitable[None]],
@@ -355,16 +383,27 @@ async def run_refresher(
         name,
         interval_seconds,
     )
+    failures_in_a_row = 0
     while True:
         with observability.background_run():
             try:
                 await refresh_once()
-            except Exception:
-                logger.exception(
-                    "%s copy refresh failed; keeping the old copy, retrying in %.1fs",
+            except Exception as failure:
+                failures_in_a_row += 1
+                _log_refresh_failure(
                     name,
-                    interval_seconds,
+                    failure,
+                    failures_in_a_row=failures_in_a_row,
+                    interval_seconds=interval_seconds,
                 )
+            else:
+                if failures_in_a_row > 0:
+                    logger.info(
+                        "%s copy refresh recovered after %d failures",
+                        name,
+                        failures_in_a_row,
+                    )
+                failures_in_a_row = 0
         await asyncio.sleep(interval_seconds)
 
 

@@ -49,7 +49,7 @@ what each share cost: [ADR 0025](../adr/0025-voiding-a-flawed-market.md).
 | POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (ADR 0024) |
 | POST | `/ledger/admin/orders/{order_id}/cancel` | Cancel any trader's limit order, with a reason (admin) |
 | GET | `/health` | Liveness probe: the process is up |
-| GET | `/ready` | Readiness probe: the database answers. 503 names the one that does not. Not public: the production gateway returns 404 for it (ADR 0028) |
+| GET | `/ready` | Readiness probe: the database answers, and both halves of the ledger's local copy (`suspended_copy`, `market_copy`) loaded within their max age. 503 names each one that is down; a replica whose copy is down refuses every trade 503. Not public: the production gateway returns 404 for it (ADR 0028) |
 
 **Five routes write, and none takes money.** `POST .../trades` takes no
 account, no amount and no leg, so a trader's own token is a safe credential
