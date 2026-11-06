@@ -1217,7 +1217,9 @@ async def test_a_placement_whose_close_time_passed_under_the_lock_is_refused_by_
     the latch in `orders.place` and this order rests."""
     upstream = await _example_market(session)
     user_id = await _funded(session)
-    close_time = datetime.now(UTC) + timedelta(milliseconds=500)
+    # Wide enough that a slow runner still passes the copy's check before
+    # the close; one that does not refuses early and fails red, never green.
+    close_time = datetime.now(UTC) + timedelta(seconds=2)
     upstream.body["close_time"] = close_time.isoformat()
     copy = fresh_copy(upstream)
 

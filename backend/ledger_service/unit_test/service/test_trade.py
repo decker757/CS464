@@ -1269,7 +1269,9 @@ async def test_a_market_whose_close_time_passed_under_the_lock_is_refused_by_the
     user_id = uuid.uuid4()
     await warm(session, upstream)
     await fund(session, user_id)
-    close_time = datetime.now(UTC) + timedelta(milliseconds=500)
+    # Wide enough that a slow runner still passes the copy's check before
+    # the close; one that does not refuses early and fails red, never green.
+    close_time = datetime.now(UTC) + timedelta(seconds=2)
     upstream.body["close_time"] = close_time.isoformat()
     copy = fresh_copy(upstream)
     before = await entry_count(session)
