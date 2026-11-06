@@ -796,6 +796,61 @@ async def test_a_refresh_that_raises_is_logged_at_error_and_does_not_stop_the_ne
     assert [record.levelno for record in logged] == [logging.ERROR]
 
 
+class _FailsThenRecovers:
+    """Raises `failures` times, succeeds once, then sets `waiting` and waits
+    until cancelled."""
+
+    def __init__(self, *, failures: int) -> None:
+        self.failures = failures
+        self.calls = 0
+        self.waiting = asyncio.Event()
+
+    async def __call__(self) -> None:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise RuntimeError(f"failure {self.calls}")
+        if self.calls == self.failures + 1:
+            return
+        self.waiting.set()
+        await asyncio.Event().wait()
+
+
+async def test_a_failure_streak_logs_one_error_then_warnings_then_its_recovery(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An upstream down for a minute is sixty failures a minute per half per
+    replica, so only the first of a streak carries a traceback at ERROR; the
+    repeats are WARNINGs without one, and a success after a streak says it
+    recovered. Catches: every failure at ERROR (three ERRORs), the streak
+    never reset (no INFO), or a traceback on every repeat."""
+    stand_in = _FailsThenRecovers(failures=3)
+    caplog.set_level(logging.INFO, logger="service.local_copy")
+
+    task = asyncio.create_task(
+        _local_copy().run_refresher("suspended", stand_in, interval_seconds=0.001)
+    )
+    try:
+        await reached(stand_in.waiting, "the loop never refreshed after recovering", [task])
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "service.local_copy" and "started" not in record.getMessage()
+    ]
+    assert [record.levelno for record in records] == [
+        logging.ERROR,
+        logging.WARNING,
+        logging.WARNING,
+        logging.INFO,
+    ]
+    assert [record.exc_info is not None for record in records] == [True, False, False, False]
+    assert "3" in records[-1].getMessage()
+
+
 async def test_the_first_refresh_runs_before_the_first_sleep() -> None:
     """The copy is empty until its first refresh, and an empty copy refuses
     every trade, so the first one runs at once. Catches: sleep, then
