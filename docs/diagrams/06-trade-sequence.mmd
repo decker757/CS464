@@ -1,0 +1,35 @@
+%% 06 — A trade, end to end
+%% Drawn from: ADR 0009, ADR 0010, ADR 0015, ADR 0017, ADR 0022, D-049,
+%%   DECISIONS.md "One price frame per commit, at the final state_version",
+%%   backend/ledger_service/service/trading.py (execute),
+%%   backend/ledger_service/service/account_status.py, market_status.py,
+%%   backend/ledger_service/core/errors.py (AccountSuspended, MarketClosed),
+%%   backend/ledger_service/controller/routes.py (POST /markets/{id}/trades),
+%%   backend/ledger_service/service/bus.py, backend/realtime_service/service/bus.py
+%% Filled arrowheads: synchronous calls. Open arrowheads (-)): async pub/sub.
+%%{init: {"sequence": {"width": 100, "actorMargin": 35}, "themeCSS": ".actor-line { stroke: #C3CBD5 !important; stroke-dasharray: 3 3; }"}}%%
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant RT as realtime
+    participant A as auth
+    participant M as market
+    participant L as ledger
+    participant DB as Postgres
+    participant R as Redis
+
+    B->>L: POST /ledger/markets/{id}/trades
+    L->>DB: read key,<br/>no lock
+    alt key already committed: a replay
+        L-->>B: 201, the stored result
+    else first time
+        L->>A: GET /auth/me
+        A-->>L: 200 (suspended: ledger 403)
+        L->>M: GET /public/<br/>markets/{id}
+        M-->>L: status (not open: ledger 409)
+        L->>DB: lock book, re-check key, LMSR price, fill orders, COMMIT
+        L-)R: PUBLISH market.price<br/>(failure logged)
+        L-->>B: 201, the trade result
+        R-)RT: price frame
+        RT-)B: price frame<br/>on /ws/prices
+    end

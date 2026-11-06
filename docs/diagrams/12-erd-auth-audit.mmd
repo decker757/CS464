@@ -1,0 +1,63 @@
+%% 12 — The auth and audit schemas
+%% Drawn from: ADR 0001, ADR 0002, ADR 0003, ADR 0006, ADR 0007,
+%%   backend/auth_service/model/entities.py, backend/auth_service/migrations/versions/0001_baseline.py,
+%%   backend/auth_service/core/security.py, backend/auth_service/service/auth_service.py,
+%%   sql/02-schemas.sql, backend/shared/audit.py, backend/audit_service/model/entities.py
+%% -
+%% Legend
+%%   solid line   a real foreign key (refresh_tokens.user_id, ON DELETE CASCADE)
+%%   dotted line  an id stored with no foreign key; here actor_id, which names
+%%                an auth.users row from a schema audit cannot see. Its
+%%                cardinality is what the writer guarantees (one actor, from
+%%                the token's sub), not what the database enforces.
+%%   Every column is drawn. Types are the Postgres types the migration and
+%%   sql/02-schemas.sql create. audit.admin_actions has no FKs and no CHECKs
+%%   at all: any constraint it could violate would abort the admin action
+%%   it records (ADR 0006).
+%% -
+%% Layout: every quoted label uses non-breaking spaces (U+00A0) so it does not wrap
+%%   (and U+2011 non-breaking hyphens, for the same reason),
+%%   and the init line enlarges text for print, as in 04-erd-overview.
+%%   TB, not LR: auth.users above its two children keeps the figure narrow
+%%   enough for a portrait column (15.9 cm) at 26px text. The init line also
+%%   makes edge labels opaque, since both lines run through their labels.
+%%{init: {"themeVariables": {"fontSize": "26px"}, "themeCSS": ".edgeLabel .label, .edgeLabel p, .edgeLabel span { font-size: 26px !important; } .labelBkg { background-color: #FFFFFF !important; }"}}%%
+erDiagram
+    direction TB
+
+    auth_users["auth.users"] {
+        uuid id PK
+        varchar(32) username "as typed; unique on lower(username)"
+        varchar(320) email "unique on lower(email)"
+        varchar(255) password_hash "Argon2id"
+        boolean is_suspended "refuses login and refresh"
+        varchar(16) role "trader or admin; non‑native enum, no CHECK"
+        timestamptz created_at
+    }
+
+    auth_refresh_tokens["auth.refresh_tokens"] {
+        uuid id PK
+        uuid user_id FK "ON DELETE CASCADE"
+        varchar(64) token_hash UK "SHA‑256 of an opaque random token"
+        timestamptz expires_at "issued plus 14 days"
+        timestamptz revoked_at "set on use or logout; reuse revokes all"
+        timestamptz created_at
+    }
+
+    audit_admin_actions["audit.admin_actions (append‑only; writers INSERT, only audit_svc SELECTs)"] {
+        uuid id PK "generated by the writer"
+        timestamptz occurred_at "writer's clock; now() only as fallback"
+        uuid actor_id "token sub; no FK"
+        varchar(32) actor_username "snapshot when they acted"
+        varchar(16) actor_role "snapshot when they acted"
+        varchar(64) action_type "no CHECK; vocabulary lives in code"
+        varchar(32) target_type "user, market or order"
+        uuid target_id "nullable; another schema's row, no FK"
+        text target_label "snapshot, e.g. the market's question"
+        text reason "required by some action types"
+        jsonb context "per‑action detail, so never an ALTER"
+        varchar(32) source_service "auth_, market_ or ledger_service"
+    }
+
+    auth_users ||--o{ auth_refresh_tokens : "single use, rotated each refresh"
+    auth_users ||..o{ audit_admin_actions : "actor_id, id only, no FK"

@@ -7,6 +7,12 @@ each names the ADR or `DECISIONS.md` entry it was drawn from, and where a
 diagram and its source disagree, the source is right and the diagram is the
 bug.
 
+[The diagram set](#the-diagram-set), at the end, is a second set drawn for the
+final proposal: shorter labels that print at half or full A4 width, and the
+parts these three do not draw — the production deployment, CI/CD, security,
+the market lifecycle, settlement, scaling, the live-price fan-out and a
+delivery timeline.
+
 ## The services and what they own
 
 **Drawn from:** [ADR 0003](adr/0003-market-service-boundary.md) (the boundary
@@ -358,3 +364,194 @@ grants that file explains at length. No relationship in any of the four crosses
 a schema boundary, and the ids that look like they should —
 `market.markets.creator_id`, `ledger.accounts.owner_id`,
 `ledger.market_books.market_id` — are the cost ADR 0003 chose to pay.
+
+## The diagram set
+
+Twelve diagrams for the final proposal. Each `.mmd` in
+[`diagrams/`](diagrams/) is the source of truth and starts with the files and
+ADRs it was drawn from; the images below are its renders, made with
+`python docs/diagrams/render.py` (white background, 1600 px wide, one colour
+per service). [`diagrams/_conventions.md`](diagrams/_conventions.md) has the
+rules: solid for what exists, dashed and labelled "not built" for what does not.
+The three diagrams above stay the detailed reference; where these and the code
+disagree, the code is right.
+
+### 1. System architecture
+
+![System architecture](diagrams/rendered/01-system-architecture.svg)
+
+In production the browser reaches the load balancer, then the gateway on an app
+server, which serves the frontend and sends each subdomain to its service. Each
+service but realtime connects as its own Postgres role, the ledger calls
+auth and market directly and publishes prices to Valkey after every commit, and
+the close sweeper and leaderboard refresher run inside their services. Locally
+compose publishes one port per service, no gateway runs, and the bus is Redis.
+`audit_svc` holds INSERT as well as SELECT only so that its own suite can seed
+rows; the audit service has no write route.
+**Drawn from:** ADR 0003, 0006, 0010, 0011, 0017, 0019, 0021, 0022, 0025, 0026;
+`deploy/production/`, `infra/terraform/load_balancer.tf`, `docker-compose.yml`,
+`sql/`.
+[Source](diagrams/01-system-architecture.mmd)
+
+### 2. Production deployment
+
+![Production deployment](diagrams/rendered/02-cloud-deployment.svg)
+
+Production as built, at <https://predictsmu.xyz>, in DigitalOcean's `sgp1`. The
+load balancer ends TLS with a Let's Encrypt certificate and sends HTTP to port 80
+of each server whose `/lb-health` answers 200, which is the ledger's `/health`
+through the gateway. The firewall admits port 80 from the load balancer only, and
+port 22 from anywhere with keys only, because GitHub's runners have no fixed
+address. Each gateway serves the frontend and routes `auth.`, `market.`,
+`ledger.`, `audit.` and `realtime.` to the containers on its own server. Managed
+Postgres and Valkey accept only servers tagged `cs464-app`, over the private
+network. Terraform generates the application's secrets and reads the two that
+DigitalOcean makes, the `doadmin` password and the Valkey URL.
+`infra/push-secrets.sh` copies them to the GitHub `production` environment, and
+`release.sh` writes `app.env` on each server, role passwords included, inside each
+role's URL. Only the admin URL stays out of it, reaching a server on stdin. Dashed
+boxes are what ADR 0026 records as not built.
+**Drawn from:** ADR 0026, 0002, 0010, 0011, 0020, 0021; `infra/terraform/`,
+`infra/push-secrets.sh`, `deploy/production/`, `.github/workflows/deploy.yml`,
+[deployment.md](deployment.md).
+[Source](diagrams/02-cloud-deployment.mmd)
+
+### 3. CI/CD
+
+![CI/CD](diagrams/rendered/03-cicd.svg)
+
+CI runs path-filtered workflows on every pull request and on pushes to `dev`,
+`staging` and `main`. A push to `main`, or a run started by hand on `main`, starts
+the deploy: six images go to GHCR, then `release.sh` copies the release directory
+to each server, ensures the roles and grants and runs each migration once from the
+first server, rolls the servers one at a time, and checks every public name. The
+deploy runs no suite and does not wait for CI. `main` is normally reached by
+promoting `dev`, but CI is advisory and nothing requires it green. A failed migration
+stops the deploy before any server rolls. A failed pull, or a service that does not
+start or answer `/health`, sends the servers back to the old release, unless a server
+cannot go back, in which case it stays drained and the others stay as they are. No
+`/health` reads a database or calls another service, so a release that starts
+but cannot serve is not caught. A failed public check rolls nothing back.
+**Drawn from:** `.github/workflows/*`, `deploy/production/{release,migrate,roll}.sh`,
+ADR 0020, 0026, [deployment.md](deployment.md).
+[Source](diagrams/03-cicd.mmd)
+
+### 4. Entity-relationship overview
+
+![ERD overview](diagrams/rendered/04-erd-overview.svg)
+
+Key columns of all sixteen tables across the four schemas. Solid lines are
+foreign keys, all within one schema; dotted lines labelled "no FK" and columns
+marked "→ auth.users" are ids that name a row in another table without a
+foreign key: across schemas because no service holds a grant on another's,
+and for `proposed_outcome_id` by choice. On solid lines the crow's-foot ends
+show what the constraints enforce, on dotted lines what the writing code
+does; Mermaid's identifying/non-identifying distinction is not used.
+**Drawn from:** `backend/*/model/entities.py`, each service's
+`migrations/versions/`, `sql/02-schemas.sql`, ADR 0003.
+[Source](diagrams/04-erd-overview.mmd)
+
+### 5. Security
+
+![Security](diagrams/rendered/05-security.svg)
+
+Browsers hold a 15-minute JWT and a single-use, rotating refresh token in
+httpOnly cookies; every service verifies the token itself; the ledger checks
+the trader with auth on each trade and order, and names leaderboard holders
+with the one service key; Postgres grants confine each service to its own
+schema plus INSERT-only access to the append-only audit log.
+**Drawn from:** ADR 0001, 0002, 0006, 0007, 0021, 0022; `sql/`,
+`backend/shared/security.py`, `backend/auth_service/`.
+[Source](diagrams/05-security.mmd)
+
+### 6. A trade, print version
+
+![Trade sequence](diagrams/rendered/06-trade-sequence.svg)
+
+A replayed idempotency key is answered at once; otherwise the ledger confirms
+the trader with auth and the market's status with market, prices and commits
+under the `market_books` row lock, and publishes the new price through the bus,
+Redis locally and Valkey in production, to subscribed browsers. The detailed version is
+[above](#a-trade-end-to-end).
+**Drawn from:** ADR 0009, 0010, 0015, 0017, 0022, D-049;
+`backend/ledger_service/service/trading.py`.
+[Source](diagrams/06-trade-sequence.mmd)
+
+### 7. Delivery timeline
+
+![Timeline](diagrams/rendered/07-gantt.svg)
+
+297 pull requests merged into `dev` or a stack branch, 13 September to 29 October
+2026: one bar per epic
+from its first to its last merged PR (backend plain, frontend shaded), with the
+releases to `main`. The deploy (#19) shipped on 1 November: #603 to #607 merged
+into `dev` and #613 took them to `main`; the other pull requests merged after 29
+October are not drawn. Staging and the load test (#20) are still to do, with no
+date. #19 is closed and no open issue tracks staging.
+**Drawn from:** `gh pr list --state merged` and each PR's issue's `epic:`
+label. [Source](diagrams/07-gantt.mmd)
+
+### 8. Market lifecycle
+
+![Market lifecycle](diagrams/rendered/08-market-lifecycle.svg)
+
+The creator drafts, submits and publishes; the clock or an administrator
+closes trading; a second administrator approves or rejects the creator's
+proposed outcome; and the ledger settles or voids the market after moving the
+money. Trading stops at `close_time` whatever the status column says.
+**Drawn from:** `MarketStatus` in `backend/market_service/model/entities.py`,
+`service/market_service.py`; ADR 0008, 0011, 0013, 0014, 0016, 0023, 0025.
+[Source](diagrams/08-market-lifecycle.mmd)
+
+### 9. Settlement
+
+![Settlement sequence](diagrams/rendered/09-settlement-sequence.svg)
+
+The ledger confirms the market is approved and past its dispute window, pays
+the winning holders and records the result in one transaction under the book lock,
+then asks market to mark it settled, answering 503 for the administrator to
+repeat if that confirmation fails; a repeat is answered from the stored
+record.
+**Drawn from:** ADR 0019, 0023; `backend/ledger_service/service/settlement.py`.
+[Source](diagrams/09-settlement-sequence.mmd)
+
+### 10. Horizontal scaling, in production
+
+![Horizontal scaling](diagrams/rendered/10-horizontal-scaling.svg)
+
+The two app servers run the same services, so a server can be added or replaced;
+Postgres and Valkey stay at one each. Pool and overflow per service add up to 20
+connections a server, so two servers use 40 of about 47, which leaves room for the
+migrate steps, run one after another. A third server needs smaller pools or a
+bigger plan. The close sweeper runs
+on both servers, safely under SKIP LOCKED, and the leaderboard refresher on the
+first only. A server's ledger calls the auth and market on that same server. The
+same idea was first run locally, two replicas behind one nginx, in
+[horizontal-scaling.md](horizontal-scaling.md).
+**Drawn from:** ADR 0011, 0020, 0021, 0026; `deploy/production/`,
+`infra/terraform/variables.tf`, DECISIONS.md "Each service's connection pool is a
+setting, sized to the database's ceiling".
+[Source](diagrams/10-horizontal-scaling.mmd)
+
+### 11. Live-price fan-out
+
+![Realtime fan-out](diagrams/rendered/11-realtime-fanout.svg)
+
+The ledger publishes once to the bus after each commit, Redis locally and Valkey
+in production, every realtime replica
+receives every frame and forwards it to its own subscribed sockets, and a
+browser reconciles against the ledger's snapshot on mount and on every
+subscription acknowledgement.
+**Drawn from:** ADR 0010, D-049; `backend/realtime_service/`,
+`docs/api/realtime-service.md`. [Source](diagrams/11-realtime-fanout.mmd)
+
+### 12. The `auth` and `audit` schemas
+
+![Auth and audit ERD](diagrams/rendered/12-erd-auth-audit.svg)
+
+Refresh tokens are stored only as SHA-256 hashes and rotated on every use;
+the append-only audit log records who acted on what, with no foreign keys,
+and only `audit_svc` may read it.
+**Drawn from:** `backend/auth_service/model/entities.py`,
+`sql/02-schemas.sql`, ADR 0001, 0002, 0006.
+[Source](diagrams/12-erd-auth-audit.mmd)
