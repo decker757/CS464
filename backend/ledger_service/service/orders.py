@@ -535,8 +535,7 @@ async def place(
         raise MarketClosed
     # The deciding close check, on Postgres's clock after the lock, as the
     # trade's step 6 makes it.
-    if terms.close_time is None or terms.close_time <= await books.clock_after_lock(session):
-        raise MarketClosed
+    await books.refuse_if_closed_under_lock(session, terms)
 
     outcomes = await list_outcomes(session, market_id)
     book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)

@@ -840,8 +840,7 @@ async def execute(
         raise MarketClosed
     # The deciding close check, on Postgres's clock after the lock: the copy's
     # was the early refusal, and this trade may have queued past `close_time`.
-    if terms.close_time is None or terms.close_time <= await books.clock_after_lock(session):
-        raise MarketClosed
+    await books.refuse_if_closed_under_lock(session, terms)
 
     # 7. Read fresh, after the lock. Local rather than
     # `book_prices.read_or_open`: the trade writes `q` through these entities,

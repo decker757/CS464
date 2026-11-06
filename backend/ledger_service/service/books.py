@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import httpx
 from sqlalchemy import func, select
@@ -20,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import has_pending_writes, release_before_calling_out
-from core.errors import MarketNotPublished, MarketTermsUnavailable
+from core.errors import MarketClosed, MarketNotPublished, MarketTermsUnavailable
 from core.metrics import BOOK_LOCK_WAIT
 from model.entities import (
     AccountKind,
@@ -32,6 +33,10 @@ from model.entities import (
 from service import accounts, market_terms, posting
 from service.market_terms import OutcomeTerms
 from service.posting import Leg
+
+if TYPE_CHECKING:
+    # `local_copy` imports this module, so the type is named, not imported.
+    from service.local_copy import MarketTradingTerms
 
 # The fewest outcomes a market can be priced with; `service/book_prices.py`
 # holds the same floor on the way out. Restated from market_service's
@@ -232,6 +237,22 @@ async def clock_after_lock(session: AsyncSession) -> datetime:
     statement. Twin of market_service's `_database_now`.
     """
     return (await session.execute(select(func.clock_timestamp()))).scalar_one()
+
+
+async def refuse_if_closed_under_lock(
+    session: AsyncSession, terms: MarketTradingTerms
+) -> None:
+    """Raise `MarketClosed` if the market has no close time, or it has
+    passed on Postgres's clock now. #640.
+
+    The deciding close check for a trade and a placement: the copy's was the
+    early refusal, and the caller may have queued past `close_time`. Call it
+    after `lock_book`, as `clock_after_lock` requires.
+    """
+    if terms.close_time is None:
+        raise MarketClosed
+    if terms.close_time <= await clock_after_lock(session):
+        raise MarketClosed
 
 
 async def find_result(
