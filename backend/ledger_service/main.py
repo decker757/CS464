@@ -116,14 +116,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.terms_client = terms_client
             app.state.auth_client = auth_client
 
-            copy = local_copy.LocalCopy(
-                max_age_seconds=settings.local_copy_max_age_seconds
-            )
-            app.state.local_copy = copy
-            copy_refreshers = _start_copy_refreshers(
-                copy, settings, auth_client=auth_client, terms_client=terms_client
-            )
-
             # The first refresh runs inside the task, so boot never waits for
             # auth (DECISIONS.md, "The first refresh runs inside the
             # refresher's task").
@@ -143,6 +135,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     "on this replica; if it is off on every replica, the ranking "
                     "stops updating and turns stale after two intervals"
                 )
+
+            # Last before the yield, so nothing that can raise sits between
+            # starting these tasks and the `finally` that cancels them.
+            copy = local_copy.LocalCopy(
+                max_age_seconds=settings.local_copy_max_age_seconds
+            )
+            app.state.local_copy = copy
+            copy_refreshers = _start_copy_refreshers(
+                copy, settings, auth_client=auth_client, terms_client=terms_client
+            )
 
             try:
                 yield
