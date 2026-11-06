@@ -25,10 +25,13 @@ trades at a p95 of 5.45 s. Run B, five markets, committed 738 at 4.52 s, and
 0.8% of its trades ended in an error. Both app servers sat at 100% CPU, the
 database at 45% (ADR 0029). auth and market_service run on the same servers
 as the ledger, so the two calls spend the same CPU the trade is waiting for.
-Run B's 0.8% was six `503`s, and all six came from those two calls timing
-out (the run's k6 summary, read in #646's review). Price limits (ADR 0029)
-remove the retry storm. They do not remove the two calls, which every trade
-still pays.
+Run B's 0.8% errors (`docs/load-test.md`, Run B row), six of 744 trades,
+were three `503 auth_unavailable` and three `503 market_terms_unavailable`:
+the two per-trade calls failing under load, whether by timeout or refused
+connection. The breakdown is from the saved k6 summary of that run
+(`loadtest/results/20261104T133155Z.txt`, not committed). Price limits
+(ADR 0029) remove the retry storm. They do not remove the two calls, which
+every trade still pays.
 
 ADR 0022's reversal note saw this coming and ruled out the obvious fix:
 
@@ -184,7 +187,8 @@ nothing in the log.
 ## Alternatives rejected
 
 - **Keep the two calls.** Run B is the evidence against it: both servers at
-  100% CPU, and the only errors in the run came from these calls.
+  100% CPU, and the run's errors were these two calls failing (the k6
+  summary named under Context).
 - **A shorter path to the same row**, ADR 0022's own suggestion. It makes
   each call cheaper and keeps one call per trade per service, so it keeps
   the timeouts and the CPU that scales with trades. It also does nothing for

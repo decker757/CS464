@@ -85,9 +85,10 @@ other way. What the drawing cannot say for itself:
   `:8002` and the dashed arrows are not calls to it (ADR 0006). `audit_svc`
   also holds INSERT, so its own suite can seed rows; nobody anywhere holds
   UPDATE, DELETE or TRUNCATE.
-- **The three arrows out of the ledger carry two different credentials.**
-  `/public/markets/{id}` and `/markets/{id}/settle` forward the caller's own
-  access token unchanged; the three `/internal/` routes present
+- **The two arrows from the ledger to auth and market carry five routes and
+  two different credentials.** `/public/markets/{id}` and
+  `/markets/{id}/settle` forward the caller's own access token unchanged;
+  the three `/internal/` routes present
   `LEDGER_SERVICE_KEY`, which is the only service credential in the system and
   has one caller and three routes (ADR 0021, ADR 0030).
 - **Nothing depends on `audit` or `realtime`**, and compose says so: neither is

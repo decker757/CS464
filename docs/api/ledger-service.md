@@ -1595,7 +1595,9 @@ account (ADR 0022), then the market gate, then opening the market's book on
 its first touch, then minting your starting credits if you have never been
 granted them, then everything under the book lock. So a limit order can be
 your first action on the platform: the grant is minted before the budget is
-checked.
+checked. The account check and the gate read the same local copy a trade
+does, so a placement gets the same two `503`s when that copy is stale (the
+trade route's `503` rows, ADR 0030).
 
 **What a placement locks.** Under the book lock, a buy that rests entirely
 also locks your account until it commits, so a trade of yours in another

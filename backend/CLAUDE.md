@@ -127,8 +127,8 @@ reconnect loop (ADR 0010, and DECISIONS.md, "The bus waits
 between retries outside the error branch"), the market close sweeper
 (ADR 0011), the leaderboard refresher (ADR 0021), the ledger's two
 local-copy refreshers (`service/local_copy.py::run_refresher`, ADR 0030) and
-the auth attempt limiter, which catches Redis's own errors rather than bare `Exception` and
-lets the login or registration through when Redis is down
+the auth attempt limiter, which catches Redis's own errors rather than bare
+`Exception` and lets the login or registration through when Redis is down
 (`auth_service/service/attempt_limits.py`, ADR 0027). Each service's
 `core/database.py` catches it too, in `get_session`, to roll back and
 re-raise: that is not a swallow and needs no sanctioning.

@@ -442,5 +442,7 @@ first move if [5.4] #20 says otherwise.
 > `test_the_trading_predicate_restates_market_service_s_closing_rule`. A
 > close on `close_time` is decided under the book lock on Postgres's clock,
 > and an early close reaches trades within about a second, a window ADR 0030
-> accepts because a stale copy refuses rather than says yes. The order above
+> accepts because a stale copy refuses rather than says yes. A market absent
+> from the copy is refreshed once, then refused `404 market_not_found` if
+> still absent, or `503` if the ledger holds a book for it. The order above
 > is unchanged.
