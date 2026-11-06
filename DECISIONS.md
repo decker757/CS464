@@ -11371,3 +11371,55 @@ stood, because the cost is what it compares.
 - Until the contract step, `TradeIn` refuses a body with neither a limit nor
   a `state_version` (`422 invalid_request`), and `execute` raises
   `ValueError` on one, so no caller can trade with no price protection.
+
+---
+
+### D-NEW — The ledger's copy refuses when stale, decides a close under the lock, and floors miss refreshes at 250 ms
+
+**Date:** 2026-11-06 · **Ticket:** #640 · **Status:** active
+
+**Decision.** ADR 0030 gives the ledger a local copy of auth's suspended ids
+and market_service's published markets. This entry records its bounds and
+the rules that keep them true.
+
+- **Two settings.** `LOCAL_COPY_REFRESH_SECONDS` (default 1.0) is the wait
+  between refreshes. `LOCAL_COPY_MAX_AGE_SECONDS` (default 5.0) is the age
+  past which the copy refuses: `503 auth_unavailable` or `503
+  market_terms_unavailable`, the codes the per-trade calls used.
+- **Age is monotonic, stamped at send.** `loaded_at` is `time.monotonic()`
+  read before the request goes out, so the copy's age includes however long
+  the answer took. A trade that waited for a refresh checks the age again
+  after it.
+- **A close is decided under the lock.** The copy's check before the lock,
+  on the container's clock, is only the early refusal. Under the book lock,
+  `books.refuse_if_closed_under_lock` compares the copied `close_time` with
+  Postgres's `clock_timestamp()`, the clock market_service decides its own
+  closes on.
+- **A miss refreshes once, at most every 250 ms.** A market absent from the
+  copy refreshes it only if the copy is at least 250 ms old
+  (`_MISS_REFRESH_FLOOR_SECONDS`). Still absent: `404 market_not_found` if
+  the ledger has no book for it, `503 market_terms_unavailable` if it has.
+- **Single flight.** The market refresher and the miss path share one
+  coalesced refresh (`local_copy.coalesced`). Callers who arrive while it
+  runs share its result, and its error if it fails.
+- **Strictly newer.** A refresh replaces the copy only if its `loaded_at` is
+  later than the copy's, so two overlapping refreshes never put it back in
+  time.
+
+**Why.** Each rule closes a way for the copy to say yes when it should not,
+or to cost more than the calls it replaced. Stamping at send stops a slow
+answer from looking fresh. The under-lock check makes a close on `close_time`
+exact even for a trade that queued on the lock past it. The floor caps
+refetches for random ids, which a per-id cache would not. Single flight means
+that during an outage the upstream sees one attempt, not one per trade.
+
+**Rejected.** *A per-id negative cache instead of the floor*: it absorbs
+repeats of one id and nothing else. *Stamping `loaded_at` when the answer
+arrives*: it understates the age by the length of the call. *Comparing
+`close_time` only before the lock*: a trade queued behind others could
+commit after `close_time`.
+
+**Notes.** The floor costs at most one fail-closed `404` for a market
+published in the last quarter second; the next refresh brings it in.
+The refresher logs the first failure of a streak at ERROR, repeats at
+WARNING with the count, and the recovery at INFO.

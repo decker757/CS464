@@ -389,7 +389,10 @@ and only the caller knows which.
 `POST /ledger/markets/{id}/trades` ([T-2] #22) accepts a trader's own token,
 which is safe only because the body names no account, no amount and no leg:
 `TradeIn` is `extra="forbid"`, the debited account comes from the token's
-`sub`, and the price is computed under the book lock.
+`sub`, and the price is computed under the book lock. Whether the trader is
+suspended and the market still trading, it reads from its own one-second copy
+rather than asking auth and market_service, and a copy older than five seconds
+refuses `503` (ADR 0030).
 `POST /ledger/markets/{id}/orders` ([T-6] #26) is the same shape: `OrderIn`
 names a limit price and a quantity, and the budget is computed from them.
 `POST /ledger/orders/{id}/cancel` ([T-8] #28) takes an empty body: the order
@@ -700,12 +703,12 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0014** closing a market early, by any admin, with the reason in the log
 - **0015** every read that decides a write is locked, and the wider lock goes first
 - **0016** deciding a proposal, by any admin but the proposer, with APPROVED as a status
-- **0017** the ledger asks market_service whether a market is still trading, once per trade, and a replay answers first
+- **0017** the ledger asks market_service whether a market is still trading, once per trade, and a replay answers first (until ADR 0030)
 - **0018** positions are valued at liquidation, not at the marginal price
 - **0019** settlement is the ledger's request, paid in one transaction, and market_service is told afterwards
 - **0020** migrations by Alembic, per service, run as a one-off step
 - **0021** the leaderboard is a snapshot on the ledger, and auth names its users through the first service credential
-- **0022** the ledger asks auth whether a trader is still active, once per trade
+- **0022** the ledger asks auth whether a trader is still active, once per trade (until ADR 0030)
 - **0023** sending an approved outcome back inside its stored dispute window, by any admin
 - **0024** resting orders fill against the AMM inside the trade that moved the price
 - **0025** voiding a flawed market, by any admin without a stake, refunded at cost
@@ -713,6 +716,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0027** login and registration limits in Redis, per username or email and address, failing open
 - **0028** /health is liveness for the balancer, /ready is readiness for dashboards and alerts
 - **0029** price limits replace exact quotes on the trade route, shipped expand then contract
+- **0030** the ledger keeps a one-second local copy of suspensions and trading terms, and calls nobody on a trade; stale is a refusal
 
 Four known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

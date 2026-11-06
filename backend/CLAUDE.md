@@ -120,13 +120,14 @@ One error class per distinct thing the client can do about it, each with a
 stable `snake_case` code. `service/` raises them; only `controller/` turns
 them into HTTP. No `HTTPException` below `controller/`.
 
-Do not catch bare `Exception` to swallow it. The five sanctioned places are
+Do not catch bare `Exception` to swallow it. The six sanctioned places are
 the ledger's bus publish after a commit, price and order frames alike, in
 `service/bus.py::_publish` (root `CLAUDE.md`, ADR 0010), the realtime bus's
 reconnect loop (ADR 0010, and DECISIONS.md, "The bus waits
 between retries outside the error branch"), the market close sweeper
-(ADR 0011), the leaderboard refresher (ADR 0021) and the auth attempt
-limiter, which catches Redis's own errors rather than bare `Exception` and
+(ADR 0011), the leaderboard refresher (ADR 0021), the ledger's two
+local-copy refreshers (`service/local_copy.py::run_refresher`, ADR 0030) and
+the auth attempt limiter, which catches Redis's own errors rather than bare `Exception` and
 lets the login or registration through when Redis is down
 (`auth_service/service/attempt_limits.py`, ADR 0027). Each service's
 `core/database.py` catches it too, in `get_session`, to roll back and

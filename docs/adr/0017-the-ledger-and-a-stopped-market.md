@@ -431,3 +431,16 @@ first move if [5.4] #20 says otherwise.
 > of them. No trade arrives without a caller token. A placement asks the gate
 > with the placer's token, like a trade. A cancel does not ask, because it only
 > releases and a closed market's orders must stay cancellable.
+
+> **Amended 2026-11-06 by
+> [ADR 0030](0030-the-ledger-keeps-a-local-copy.md).** The gate no longer
+> calls `GET /public/markets/{id}`: it reads the ledger's local copy of
+> every published market's stored status and `close_time`, refreshed about
+> every second, and refuses `503 market_terms_unavailable` once the copy is
+> older than five seconds. "Exactly one predicate" becomes one predicate,
+> restated once across the boundary and pinned by
+> `test_the_trading_predicate_restates_market_service_s_closing_rule`. A
+> close on `close_time` is decided under the book lock on Postgres's clock,
+> and an early close reaches trades within about a second, a window ADR 0030
+> accepts because a stale copy refuses rather than says yes. The order above
+> is unchanged.
