@@ -54,6 +54,26 @@ function mockPreviewError(code: string, message: string, status = 422, details?:
 
 // More shares of either outcome than any test here sells, so the sell clamp
 // is never what refuses a trade unless a test says what is held.
+// The two refusals that mean the price moved (#589, #644), as the ledger sends them.
+const PRICE_MOVED_DETAILS = {
+  quote_stale: { quoted: 1, current: 2 },
+  price_beyond_limit: { limit: '5.1763', current_total: '5.3000', state_version: 2 },
+}
+
+// The next trade is refused with `code`, but only once the returned function
+// is called, so the test can change the panel while the trade is in flight.
+function holdPriceMovedRefusal(code: keyof typeof PRICE_MOVED_DETAILS): () => void {
+  let answerTrade: () => void = () => {}
+  const tradeAnswered = new Promise<void>(resolve => { answerTrade = resolve })
+  server.use(
+    http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async () => {
+      await tradeAnswered
+      return HttpResponse.json({ error: { code, message: 'Refused.', details: PRICE_MOVED_DETAILS[code] } }, { status: 409 })
+    }),
+  )
+  return () => answerTrade()
+}
+
 const HELD_PLENTY = { 'o-yes': '100.0000', 'o-no': '100.0000' }
 
 interface PanelOptions {
@@ -642,19 +662,9 @@ describe('TradingPanel', () => {
     expect(keys[0]).toBe(keys[1])
   })
 
-  it('says a trade refused as quote_stale was not made, naming it, after the trader picked another outcome', async () => {
+  it.each(['quote_stale', 'price_beyond_limit'] as const)('says a trade refused as %s was not made, naming it, after the trader picked another outcome', async code => {
     mockPreview(previewResponse())
-    let answerTrade: () => void = () => {}
-    const tradeAnswered = new Promise<void>(resolve => { answerTrade = resolve })
-    server.use(
-      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async () => {
-        await tradeAnswered
-        return HttpResponse.json(
-          { error: { code: 'quote_stale', message: 'Stale.', details: { quoted: 1, current: 2 } } },
-          { status: 409 },
-        )
-      }),
-    )
+    const answerTrade = holdPriceMovedRefusal(code)
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     const { rerender } = renderPanel()
     await typeQuantity(actor, '10')
@@ -670,17 +680,7 @@ describe('TradingPanel', () => {
 
   it('says a trade refused as quote_stale was not made after the trader switched to the Limit ticket', async () => {
     mockPreview(previewResponse())
-    let answerTrade: () => void = () => {}
-    const tradeAnswered = new Promise<void>(resolve => { answerTrade = resolve })
-    server.use(
-      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async () => {
-        await tradeAnswered
-        return HttpResponse.json(
-          { error: { code: 'quote_stale', message: 'Stale.', details: { quoted: 1, current: 2 } } },
-          { status: 409 },
-        )
-      }),
-    )
+    const answerTrade = holdPriceMovedRefusal('quote_stale')
     const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     renderPanel({ limitOrdersAllowed: true })
     await typeQuantity(actor, '10')
