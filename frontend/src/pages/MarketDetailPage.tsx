@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { getMyPortfolio } from '../api/ledgerApi'
 import { type PublicMarketDetail, getMarket } from '../api/marketApi'
 import AppLayout from '../components/layout/AppLayout'
+import ClosedMarketTradeChecks from '../components/markets/ClosedMarketTradeChecks'
 import PriceFeedStatus from '../components/markets/PriceFeedStatus'
 import { formatCloseCountdown, type MarketStatus } from '../components/markets/marketStatus'
 import OpenOrdersList from '../components/markets/OpenOrdersList'
@@ -170,6 +171,13 @@ export default function MarketDetailPage() {
     refetchHeld()
     setTradesMade(count => count + 1)
   }, [refetchHeld])
+
+  // A trade sent before the market closed turned out to have committed; the
+  // panel refreshes the balance itself, and this page has no panel then.
+  const handleFoundCommitted = () => {
+    void refetchBalance()
+    handleTraded()
+  }
 
   // A placement or a cancel moves credits, or what they reserve. A sell's
   // reservation is read off the portfolio row (#410), so every sell placement
@@ -347,7 +355,16 @@ export default function MarketDetailPage() {
                 onOrderPlaced={handleOrderPlaced}
               />
             ) : (
-              <p className="text-sm text-muted">{closedMessage(market.status)}</p>
+              <>
+                {user && (
+                  <ClosedMarketTradeChecks
+                    marketId={market.id}
+                    traderId={user.id}
+                    onFoundCommitted={handleFoundCommitted}
+                  />
+                )}
+                <p className="text-sm text-muted">{closedMessage(market.status)}</p>
+              </>
             )}
           </Card>
 
