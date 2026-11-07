@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import InsufficientFunds, LedgerError
 from model.entities import OrderStatus, Transaction, TransactionKind
-from service import reservations, trading
+from service import trading
 from unit_test.market_fixtures import market_with_outcomes
 from unit_test.order_fixtures import add_order
 from unit_test.placement_fixtures import (
@@ -41,6 +41,7 @@ from unit_test.placement_fixtures import (
     order_row,
     place,
     reserved_credits_of,
+    reserved_shares_of,
 )
 from unit_test.sell_fixtures import (
     Footprint,
@@ -518,7 +519,7 @@ async def test_a_cascade_fill_of_a_resting_sell_credits_its_owner_and_releases_b
     sell_row = await order_row(session, sell_order.order.id)
     assert sell_row.status is OrderStatus.OPEN
     assert (sell_row.filled_quantity, sell_row.filled_value) == (SELL_FILL, SELL_FILL_PROCEEDS)
-    assert await reservations.reserved_shares_of(
+    assert await reserved_shares_of(
         session, owner, market_id=upstream.market_id, outcome_id=upstream.outcomes[0]
     ) == RESTING_SELL - SELL_FILL
     sold_from = await holding(session, owner, upstream.market_id, upstream.outcomes[0])

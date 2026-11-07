@@ -40,14 +40,6 @@ def attempt_limiter(make_limiter: Callable[..., AttemptLimiter]) -> AttemptLimit
     return make_limiter(login_account_ip=FIVE_PER_ACCOUNT_AND_IP)
 
 
-def _counting(real: Callable, name: str, calls: Counter[str]) -> Callable:
-    def count_then_call(*args: object, **kwargs: object) -> object:
-        calls[name] += 1
-        return real(*args, **kwargs)
-
-    return count_then_call
-
-
 def _counting_async(real: Callable, name: str, calls: Counter[str]) -> Callable:
     async def count_then_await(*args: object, **kwargs: object) -> object:
         calls[name] += 1
@@ -61,7 +53,7 @@ def hash_calls(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
     """How many times each hashing function ran, by name."""
     calls: Counter[str] = Counter()
     for name in ("verify_password", "dummy_verify", "hash_password"):
-        monkeypatch.setattr(security, name, _counting(getattr(security, name), name, calls))
+        monkeypatch.setattr(security, name, _counting_async(getattr(security, name), name, calls))
     return calls
 
 

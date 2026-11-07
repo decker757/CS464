@@ -1,8 +1,9 @@
-"""Naming accounts for another service, and for an administrator. [L-1] #38, ADR 0021, [2.4] #273
+"""Naming accounts for another service, and for an administrator. [L-1] #38, ADR 0021, [2.4] #273, #640
 
-Two callers: the internal lookup the ledger's leaderboard uses, and the admin
-lookup behind the trade table. A read with no lock and no audit entry: the log
-records decisions, and this decides nothing.
+Three callers: the internal lookup the ledger's leaderboard uses, the admin
+lookup behind the trade table, and the internal suspended list the ledger's
+local copy refreshes from. Reads with no lock and no audit entry: the log
+records decisions, and these decide nothing.
 """
 
 from __future__ import annotations
@@ -33,4 +34,10 @@ async def list_by_ids(session: AsyncSession, user_ids: Sequence[uuid.UUID]) -> l
         .order_by(User.id)
         .options(raiseload(User.refresh_tokens))
     )
+    return list((await session.execute(stmt)).scalars())
+
+
+async def list_suspended_ids(session: AsyncSession) -> list[uuid.UUID]:
+    """The id of every suspended user, ordered by `id`."""
+    stmt = select(User.id).where(User.is_suspended).order_by(User.id)
     return list((await session.execute(stmt)).scalars())

@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Awaitable, Callable
-from types import SimpleNamespace
 from decimal import Decimal
 from typing import Any
 
@@ -121,27 +120,6 @@ class VoidUpstream:
             raise AssertionError(f"unexpected call {request.method} {request.url}")
 
         return httpx.MockTransport(handler)
-
-    @property
-    def gate_open(self) -> httpx.MockTransport:
-        """The same market, answering `open`: the trade's gate stubbed open, so
-        only the latch and the book lock can refuse a trade. Counts nothing."""
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={**self.body, "status": "open"})
-
-        return httpx.MockTransport(handler)
-
-
-def gate_open_view(upstream: VoidUpstream) -> SimpleNamespace:
-    """The market as a placement sees it with its gate stubbed open: the same
-    ids, and `gate_open` as its transport, for `placement_fixtures.place`,
-    which reads only these three."""
-    return SimpleNamespace(
-        market_id=upstream.market_id,
-        outcomes=upstream.outcomes,
-        transport=upstream.gate_open,
-    )
 
 
 async def open_book(session: AsyncSession, upstream: VoidUpstream):

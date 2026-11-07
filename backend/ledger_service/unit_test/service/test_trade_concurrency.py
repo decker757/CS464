@@ -2,9 +2,9 @@
 
 Every party has its own session and transaction, and every race waits on an
 `asyncio.Barrier` after connecting (ADR 0015). The two duplicate-key tests
-instead run the second request inside the first's market-service call, the
-one window where only the under-lock re-check stands between a retry and a
-doubled `q`. Each test names what to remove to watch it go red.
+instead run the first request inside the second's refresh of the local copy
+(`trade_fixtures.late_copy`), the one window where only the under-lock
+re-check stands between a retry and a doubled `q`. Each test names what to remove to watch it go red.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from unit_test.trade_fixtures import (
     errors,
     expected_total,
     fund,
+    late_copy,
     largest_buy_within,
     pool_balance,
     position_of,
@@ -119,9 +120,10 @@ async def test_a_duplicate_arriving_after_the_pre_gate_lookup_is_replayed_under_
     the only defence.
 
     Remove the re-check after the book `FOR UPDATE` and this fails. The
-    duplicate runs inside the original's market-service call and quotes the
-    version the original creates, so neither the pre-gate lookup nor the
-    staleness check can rescue it. See DECISIONS.md, "A caller holding pending
+    original runs inside the duplicate's copy refresh, after the duplicate's
+    pre-gate lookup missed, and the duplicate quotes the version the original
+    creates, so neither the pre-gate lookup nor the staleness check can
+    rescue it. See DECISIONS.md, "A caller holding pending
     writes must establish under its own lock that the idempotency key is
     absent".
     """
@@ -133,9 +135,7 @@ async def test_a_duplicate_arriving_after_the_pre_gate_lookup_is_replayed_under_
     factory = session_factory()
     original: dict[str, object] = {}
 
-    async def run_the_original_mid_hop() -> None:
-        # One-shot, or the original's own gate call recurses into this.
-        upstream.before_response = None
+    async def run_the_original_mid_refresh() -> None:
         async with factory() as own:
             original["result"] = await buy(
                 own,
@@ -145,8 +145,6 @@ async def test_a_duplicate_arriving_after_the_pre_gate_lookup_is_replayed_under_
                 state_version=0,
             )
 
-    upstream.before_response = run_the_original_mid_hop
-
     async with asyncio.timeout(TIMEOUT):
         async with factory() as duplicate_session:
             duplicate = await buy(
@@ -155,6 +153,9 @@ async def test_a_duplicate_arriving_after_the_pre_gate_lookup_is_replayed_under_
                 user_id=user_id,
                 client_key="lost-response",
                 state_version=1,
+                local_copy=late_copy(
+                    upstream, before_publishing=run_the_original_mid_refresh
+                ),
             )
 
     assert original.get("result") is not None, (
@@ -195,8 +196,7 @@ async def test_one_key_with_two_different_quantities_is_refused_not_replayed(
     factory = session_factory()
     original: dict[str, object] = {}
 
-    async def run_the_original_mid_hop() -> None:
-        upstream.before_response = None
+    async def run_the_original_mid_refresh() -> None:
         async with factory() as own:
             original["result"] = await buy(
                 own,
@@ -206,8 +206,6 @@ async def test_one_key_with_two_different_quantities_is_refused_not_replayed(
                 state_version=0,
                 quantity=QUANTITY,
             )
-
-    upstream.before_response = run_the_original_mid_hop
 
     async with asyncio.timeout(TIMEOUT):
         async with factory() as duplicate_session:
@@ -219,6 +217,9 @@ async def test_one_key_with_two_different_quantities_is_refused_not_replayed(
                     client_key="reused",
                     state_version=1,
                     quantity=SMALL_QUANTITY,
+                    local_copy=late_copy(
+                        upstream, before_publishing=run_the_original_mid_refresh
+                    ),
                 )
             await duplicate_session.rollback()
 
@@ -516,6 +517,51 @@ async def test_concurrent_traders_that_requote_each_fill_and_are_priced_in_turn(
     await assert_ledger_balances(session)
 
 
+async def test_two_trades_within_their_limits_both_execute_in_order(
+    session: AsyncSession,
+) -> None:
+    """Two buys quoting version 0, each with a limit nothing can breach: both
+    fill, one after the other, where the strict rule would refuse one as
+    `quote_stale` (#640).
+
+    Remove `.with_for_update()` from `books.lock_book`'s `market_books` read
+    and this fails: both read version 0 and `q` at `Q`, both are charged the
+    first cost, and both write `state_version = 1`.
+    """
+    upstream = Upstream()
+    users = [uuid.uuid4() for _ in range(2)]
+    await warm(session, upstream)
+    for user_id in users:
+        await fund(session, user_id)
+
+    start = asyncio.Barrier(len(users))
+    factory = session_factory()
+
+    async def attempt(user_id: uuid.UUID):
+        async with factory() as own:
+            await own.connection()
+            await start.wait()
+            return await buy(
+                own,
+                upstream,
+                user_id=user_id,
+                state_version=0,
+                limit=Decimal("1e6"),
+                client_key=f"key-{user_id}",
+            )
+
+    async with asyncio.timeout(TIMEOUT):
+        results = await asyncio.gather(*(attempt(u) for u in users))
+
+    assert sorted(r.state_version for r in results) == [1, 2]
+    assert sorted(r.total for r in results) == sorted(_sequential_totals(2)), (
+        "the two fills were not priced one after another"
+    )
+    assert await q_of(session, upstream.market_id) == [Q[0] + QUANTITY * 2, Q[1]]
+    assert (await book_row(session, upstream.market_id)).state_version == 2
+    await assert_ledger_balances(session)
+
+
 # =========================================================================
 # Ordering: what the lock is not held across
 # =========================================================================
@@ -523,7 +569,7 @@ async def test_the_book_row_is_not_held_across_the_market_service_call(
     session: AsyncSession,
 ) -> None:
     """ADR 0017: the gate runs before the book lock, so a held book row cannot
-    stop the hop.
+    stop its one call out, a miss's refresh of the copy.
 
     Move `ensure_trading` after the `FOR UPDATE` and this times out.
     """
@@ -534,12 +580,14 @@ async def test_the_book_row_is_not_held_across_the_market_service_call(
 
     hop_started = asyncio.Event()
     may_answer = asyncio.Event()
+    refreshes: list[None] = []
 
     async def hold_until_released() -> None:
+        refreshes.append(None)
         hop_started.set()
         await may_answer.wait()
 
-    upstream.before_response = hold_until_released
+    copy = late_copy(upstream, before_publishing=hold_until_released)
     factory = session_factory()
 
     async def hold_the_book_row():
@@ -551,19 +599,19 @@ async def test_the_book_row_is_not_held_across_the_market_service_call(
                 .with_for_update()
             )
             await hop_started.wait()
-            # Observed: the trade reached the upstream although this
+            # Observed: the trade reached the refresh although this
             # transaction has held the book row the whole time.
             await holder.rollback()
             may_answer.set()
 
     async def trade():
         async with factory() as own:
-            return await buy(own, upstream, user_id=user_id)
+            return await buy(own, upstream, user_id=user_id, local_copy=copy)
 
     async with asyncio.timeout(TIMEOUT):
         result, _ = await asyncio.gather(trade(), hold_the_book_row())
 
-    assert upstream.calls == 1
+    assert len(refreshes) == 1
     assert result.state_version == 1
     await assert_ledger_balances(session)
 

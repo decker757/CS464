@@ -11,6 +11,8 @@ the trade route calls, and no `q` is ever set by hand.
 - `gapped`: one real trade, then a balanced `trade_buy` movement posted
   through `posting.post` whose context claims `state_version` 3. Money moves,
   nothing is set behind the ledger's back, and the pool's feed runs 1, 3.
+  The second carries no `after_q`, as a trade from before #643 did not, so
+  the batch snapshot replays this feed too rather than pricing the copy.
 
 The expected times come from `ledger.entries` and the book row, read here,
 never from the read under test.
@@ -125,6 +127,7 @@ async def gapped(session: AsyncSession) -> Upstream:
 
     context = dict(await stored_context(session, first.transaction_id))
     context["state_version"] = 3
+    del context["after_q"]
     ents = entities()
     user_account = await grants().ensure_granted(session, user_id)
     pool_account = await accounts_module().find(

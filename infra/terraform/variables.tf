@@ -10,7 +10,7 @@ variable "region" {
 }
 
 variable "app_server_count" {
-  description = "How many app servers run behind the load balancer. A third needs the pool sizes in deploy/production/compose.yml lowered, or a bigger database plan (DECISIONS.md, \"Each service's connection pool is a setting, sized to the database's ceiling\")."
+  description = "How many app servers run behind the load balancer. Every server shares the four connection pools in databases.tf, so a third fits the database (docs/deployment.md, \"Connection budget\")."
   type        = number
   default     = 2
 

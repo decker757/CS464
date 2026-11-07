@@ -6,6 +6,7 @@ from the code and authoritative if this page ever disagrees, at
 
 Covers [A-1] #29, [A-2] #30, [A-3] #31, [4.4] #16, [4.2] #14 and the
 user-search half of [4.1] #13, the user lookup [L-1] #38's leaderboard reads,
+the suspended list #640's ledger copy reads,
 the admin user lookup behind [2.4] #273's trade table, and the frontend halves
 [FE][A-1] #46, [FE][A-2] #47, [FE][A-3] #48, [FE][4.1] #57 and [FE][4.2] #60.
 
@@ -30,7 +31,8 @@ a balance field anywhere below.
 | POST | `/admin/users/lookup` | Usernames for up to 200 user ids, for the trade table |
 | PATCH | `/admin/users/{user_id}/role` | Move a user between `trader` and `admin` |
 | PATCH | `/admin/users/{user_id}/suspension` | Suspend or unsuspend an account, with a reason |
-| POST | `/internal/users/lookup` | Usernames and suspension, for the ledger only (service key) |
+| POST | `/internal/users/lookup` | Usernames and suspension, for the ledger only (service key). Not public: the production gateway returns 404 for it (ADR 0030) |
+| GET | `/internal/users/suspended` | Every suspended account's id, for the ledger only (service key). Not public: the production gateway returns 404 for it (ADR 0030) |
 | GET | `/health` | Liveness probe: the process is up |
 | GET | `/ready` | Readiness probe: the database answers. 503 names the one that does not. Not public: the production gateway returns 404 for it (ADR 0028) |
 
@@ -44,10 +46,10 @@ Two ways in, one verification.
 - **Service:** `Authorization: Bearer <jwt>`, and `X-Refresh-Token` for the
   refresh call. **The header wins over the cookie**, so a service call carrying
   its own token is never reinterpreted as whoever happens to be logged in.
-- **Service key:** `X-Service-Key`, accepted by `/internal/users/lookup` and
-  by nothing else — not by `/admin/users/lookup`, which answers the same
+- **Service key:** `X-Service-Key`, accepted by the `/internal` routes and
+  by nothing else — not by `/admin/users/lookup`, which answers the lookup's
   question for an administrator. It belongs to the ledger, not to a person;
-  see that route below.
+  see those routes below.
 
 | Cookie | Path | Lifetime |
 | --- | --- | --- |
@@ -509,13 +511,56 @@ balance: this service still does not know that credits exist.
 - `X-Service-Key` must equal `LEDGER_SERVICE_KEY`, compared in constant time.
 - A missing or wrong key is `401 invalid_service_key`, the same for both.
 - An access token, by cookie or bearer header, does not open this route, and
-  the key opens no other route.
+  the key opens none outside `/internal`.
 - `LEDGER_SERVICE_KEY` is required, has no default, and must be at least 32
   characters, or the service refuses to boot. Generate one with
   `python -c "import secrets; print(secrets.token_urlsafe(48))"` and put the
   same value in the ledger's environment.
 
 **Not audited**, like the user search above: it is a read.
+
+**Not public.** The production gateway returns 404 for every path under
+`/internal/`, with the key or without it; the ledger reaches this route on
+the private network. ADR 0030.
+
+## GET /internal/users/suspended
+
+`200`. **Not for the frontend.** A service-to-service read with one caller:
+the ledger's local copy of who is suspended, which refreshes from here so that
+a trade asks that copy rather than calling this service (#640). The key, and
+why it is a key: [ADR 0021](../adr/0021-the-leaderboard-and-the-first-service-credential.md).
+Why the ledger keeps a copy: ADR 0030, the ledger's local copy.
+
+```
+GET /internal/users/suspended
+X-Service-Key: <LEDGER_SERVICE_KEY>
+```
+
+```json
+{
+  "as_of": "2026-11-05T09:30:00.000000Z",
+  "user_ids": ["5f3e...", "9a01..."]
+}
+```
+
+**The request.** No body and no query parameters.
+
+**The answer.**
+- `user_ids` is every suspended account's id, ordered by `id`, and nothing
+  else: an active account is absent. No suspended account is `[]`.
+- `as_of` is taken just before the read, so the list is at least as fresh as
+  it says.
+- Suspended means the `is_suspended` flag `GET /admin/users` shows, written
+  by [4.2] #14.
+
+**The key, and only the key.** The same rules as the lookup above: a missing
+or wrong `X-Service-Key` is `401 invalid_service_key`, the same for both, and
+an access token does not open this route.
+
+**Not audited**, like the lookup: it is a read.
+
+**Not public.** The production gateway returns 404 for it, with the key or
+without it; the ledger reaches it on the private network. ADR 0030.
 
 ## Errors
 
@@ -529,7 +574,7 @@ The same envelope the market service uses, so one parser covers both:
 | --- | --- | --- |
 | 401 | `invalid_credentials` | wrong password, or no such account — deliberately the same |
 | 401 | `invalid_token` | no access token, or it is expired, forged or malformed |
-| 401 | `invalid_service_key` | `/internal/users/lookup` without the right `X-Service-Key` |
+| 401 | `invalid_service_key` | an `/internal` route without the right `X-Service-Key` |
 | 403 | `account_suspended` | credentials were right; the account is suspended |
 | 429 | `too_many_attempts` | too many logins or registrations; wait the number of seconds in the `Retry-After` header (exposed to the browser through CORS) |
 | 400 | `malformed_cursor` | `cursor` was not one this service issued |

@@ -98,7 +98,7 @@ async def require_service_key(request: Request) -> None:
 
     Raises InvalidServiceKey. A missing header is compared as an empty string,
     so a missing and a wrong key take one code path and the same time. Guards
-    `/internal/users/lookup` and nothing else; an access token does not pass
+    the `/internal` routes and nothing else; an access token does not pass
     here, and this key does not pass `get_current_user`.
     """
     presented = request.headers.get("X-Service-Key") or ""

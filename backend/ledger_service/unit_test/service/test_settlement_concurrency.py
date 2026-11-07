@@ -48,6 +48,7 @@ from unit_test.trade_fixtures import (
     errors,
     finish,
     fund,
+    open_copy,
     pool_balance,
     reached,
     session_factory,
@@ -116,7 +117,7 @@ async def test_a_trade_queued_behind_a_settlement_is_refused_and_the_pool_ends_e
                 quantity=SMALL_QUANTITY,
                 state_version=version,
                 client_key="racing-the-settlement",
-                transport=upstream.gate_open,
+                local_copy=open_copy(upstream),
             )
         except errors().MarketClosed:
             return "market_closed"
@@ -339,7 +340,7 @@ async def test_a_trade_retried_behind_a_settlement_replays_its_original(
                 quantity=SMALL_QUANTITY,
                 state_version=0,
                 client_key="retried-trade",
-                transport=upstream.gate_open,
+                local_copy=open_copy(upstream),
             )
         except errors().MarketClosed:
             result = "market_closed"

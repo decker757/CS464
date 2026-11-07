@@ -9,8 +9,10 @@ applied in `core`, after the replay of every trade"). The result sits beside
 the points, which end at the last trade ("Settlement adds no point to the
 price history; the series ends at the last trade").
 
-`list_prices_at` is the same replay cut at one moment, for many markets at
-once: the batch snapshot's prices a week ago ([X-1] #446).
+`list_prices_at` is the batch snapshot's prices a week ago, for many markets
+at once ([X-1] #446). It reads each market's newest trade by then and prices
+the `after_q` that trade stored, and replays as above only a market whose
+newest trade predates the key (#643).
 """
 
 from __future__ import annotations
@@ -20,11 +22,13 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import Row, Select, select
+from sqlalchemy import Row, Select, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import PriceHistoryInconsistent
+from core.lmsr import prices as lmsr_prices
 from core.price_history import ReplayedTrade, price_history_of, window_of
 from model.entities import Entry, MarketBook, ResultKind, Transaction
 from service import book_prices, books, ledger_service, trading
@@ -91,6 +95,86 @@ def _trades_up_to_query(market_ids: Sequence[uuid.UUID], at: datetime) -> Select
         .where(MarketBook.market_id.in_(market_ids), Entry.created_at <= at)
         .order_by(MarketBook.market_id, Entry.created_at, Entry.id)
     )
+
+
+def _newest_trade_at_or_before_query(
+    market_ids: Sequence[uuid.UUID], at: datetime
+) -> Select:
+    """Each market's newest trade at or before `at`, one row per market with a
+    trade by then, in one statement for any number of markets.
+
+    A `LATERAL ... LIMIT 1` per book, so each pool costs one probe of
+    `ix_ledger_entries_account_feed` however many trades it holds. Do not
+    turn it into a `DISTINCT ON`, which reads and sorts every trade up to
+    `at`. DECISIONS.md, "The prices a week ago are replayed from each pool's
+    trades up to the window's start, in one statement for every market",
+    amended.
+    """
+    newest = (
+        ledger_service.trade_entries_query()
+        .where(
+            Entry.account_id == MarketBook.pool_account_id,
+            Entry.created_at <= at,
+        )
+        .order_by(Entry.created_at.desc(), Entry.id.desc())
+        .limit(1)
+        .lateral("newest")
+    )
+    return (
+        select(MarketBook.market_id, newest.c.context)
+        .select_from(MarketBook)
+        .join(newest, true())
+        .where(MarketBook.market_id.in_(market_ids))
+    )
+
+
+def _prices_of(outcomes: Sequence[Row], after_q: Sequence[str]) -> list[PricedOutcome]:
+    """A stored `after_q` priced with the book's `b`, through `priced`, as the
+    snapshot prices its `q`. Raises `ValueError` when `after_q` holds a
+    different number of outcomes from the book's rows."""
+    q = [Decimal(value) for value in after_q]
+    return book_prices.priced(outcomes, lmsr_prices(q, outcomes[0].liquidity_b))
+
+
+async def _list_replayed_prices_at(
+    session: AsyncSession,
+    outcomes_by_market: Mapping[uuid.UUID, Sequence[Row]],
+    *,
+    at: datetime,
+) -> dict[uuid.UUID, list[PricedOutcome]]:
+    """Each market's prices at `at`, replayed from every trade up to then. One
+    statement for all of them. A market whose trades cannot be replayed is
+    absent, and logged."""
+    query = _trades_up_to_query(list(outcomes_by_market), at)
+    trades_by_market: dict[uuid.UUID, list[Row]] = {}
+    for row in (await session.execute(query)).all():
+        trades_by_market.setdefault(row.market_id, []).append(row)
+
+    prices_by_market = {}
+    for market_id, trade_rows in trades_by_market.items():
+        outcomes = outcomes_by_market[market_id]
+        position_of = {row.outcome_id: row.position for row in outcomes}
+        try:
+            replayed = price_history_of(
+                trades=[_replayed_trade_of(row, position_of) for row in trade_rows],
+                outcome_count=len(outcomes),
+                b=outcomes[0].liquidity_b,
+                opened_at=trade_rows[0].opened_at,
+            )
+        # ValueError: the trades skip or reorder a state version. LookupError:
+        # a trade on an outcome row the book no longer holds. Either costs this
+        # card its baseline, never the whole list (DECISIONS.md, "A book the
+        # batch snapshot cannot price is left out and logged").
+        except (ValueError, LookupError):
+            logger.warning(
+                "no prices at %s for market %s: its trades cannot be replayed",
+                at,
+                market_id,
+            )
+            continue
+        last_point = replayed[-1]
+        prices_by_market[market_id] = book_prices.priced(outcomes, list(last_point.prices))
+    return prices_by_market
 
 
 async def price_history_of_market(
@@ -160,40 +244,45 @@ async def list_prices_at(
     at: datetime,
 ) -> dict[uuid.UUID, list[PricedOutcome]]:
     """Each market's prices as they stood at `at`, after its last trade at or
-    before then. [X-1] #446.
+    before then. [X-1] #446, #643.
 
     `outcomes_by_market` holds each market's book rows in position order, as
     `book_prices.list_book_outcomes_for_markets` reads them. One statement
-    reads every market's trades, with no lock. A market with no trade by `at`
-    is absent, and so is one whose trades cannot be replayed, which is logged.
+    reads every market's newest trade, with no lock, and its stored `after_q`
+    is priced. A market whose newest trade has no `after_q` is replayed
+    instead, all such markets in one more statement, and each is logged. A
+    market with no trade by `at` is absent, and so is one whose trades cannot
+    be priced, which is logged.
     """
-    query = _trades_up_to_query(list(outcomes_by_market), at)
-    trades_by_market: dict[uuid.UUID, list[Row]] = {}
-    for row in (await session.execute(query)).all():
-        trades_by_market.setdefault(row.market_id, []).append(row)
-
+    query = _newest_trade_at_or_before_query(list(outcomes_by_market), at)
     prices_by_market = {}
-    for market_id, trade_rows in trades_by_market.items():
-        outcomes = outcomes_by_market[market_id]
-        position_of = {row.outcome_id: row.position for row in outcomes}
-        try:
-            replayed = price_history_of(
-                trades=[_replayed_trade_of(row, position_of) for row in trade_rows],
-                outcome_count=len(outcomes),
-                b=outcomes[0].liquidity_b,
-                opened_at=trade_rows[0].opened_at,
-            )
-        # ValueError: the trades skip or reorder a state version. LookupError:
-        # a trade on an outcome row the book no longer holds. Either costs this
-        # card its baseline, never the whole list (DECISIONS.md, "A book the
-        # batch snapshot cannot price is left out and logged").
-        except (ValueError, LookupError):
-            logger.warning(
-                "no prices at %s for market %s: its trades cannot be replayed",
+    to_replay: dict[uuid.UUID, Sequence[Row]] = {}
+    for row in (await session.execute(query)).all():
+        outcomes = outcomes_by_market[row.market_id]
+        after_q = row.context.get("after_q")
+        if after_q is None:
+            logger.info(
+                "prices at %s for market %s replayed: its newest trade predates after_q",
                 at,
-                market_id,
+                row.market_id,
             )
+            to_replay[row.market_id] = outcomes
             continue
-        last_point = replayed[-1]
-        prices_by_market[market_id] = book_prices.priced(outcomes, list(last_point.prices))
+        # A stored `q` that does not fit the book's rows costs this card its
+        # baseline, as a replay that cannot run does (DECISIONS.md, "A book
+        # the batch snapshot cannot price is left out and logged").
+        try:
+            prices_by_market[row.market_id] = _prices_of(outcomes, after_q)
+        except ValueError:
+            logger.warning(
+                "no prices at %s for market %s: its newest trade's after_q does "
+                "not fit its book",
+                at,
+                row.market_id,
+            )
+
+    if to_replay:
+        prices_by_market.update(
+            await _list_replayed_prices_at(session, to_replay, at=at)
+        )
     return prices_by_market

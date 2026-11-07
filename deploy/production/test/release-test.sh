@@ -9,6 +9,8 @@
 #   - every server gets the release's files in the release's own directory,
 #     its own app.env shared by every release, and a registry login
 #   - only the first server rebuilds the leaderboard
+#   - every app.env carries the direct database addresses beside the pooled
+#     ones, and a deploy without them touches no server
 #   - every server is sent Alloy's config, is labelled for the dashboard, and
 #     has Alloy switched on only when Grafana Cloud is configured, whole and
 #     with https addresses, or not at all
@@ -122,7 +124,7 @@ new_servers() {
 extra_env=()
 
 deploy() {
-  env ${extra_env[@]+"${extra_env[@]}"} \
+  env \
     FAKE_ROOT="$root" PATH="$root/bin:$PATH" DEPLOY_SSH="$root/bin/ssh" \
     APP_DIR=. SKIP_PUBLIC_CHECK=1 APP_HOSTS="${servers[*]}" \
     PRODUCTION_DOMAIN=cs464.test IMAGE_REGISTRY=ghcr.io/example \
@@ -131,6 +133,9 @@ deploy() {
     JWT_SECRET=jwt LEDGER_SERVICE_KEY=key AUTH_DATABASE_URL=a MARKET_DATABASE_URL=m \
     LEDGER_DATABASE_URL=l AUDIT_DATABASE_URL=u AUTH_DB_PASSWORD=1 MARKET_DB_PASSWORD=2 \
     LEDGER_DB_PASSWORD=3 AUDIT_DB_PASSWORD=4 \
+    AUTH_DIRECT_DATABASE_URL=da MARKET_DIRECT_DATABASE_URL=dm \
+    LEDGER_DIRECT_DATABASE_URL=dl AUDIT_DIRECT_DATABASE_URL=du \
+    ${extra_env[@]+"${extra_env[@]}"} \
     "$release" "$1" > "$root/deploy.log" 2>&1
 }
 
@@ -175,12 +180,20 @@ expect "the database is migrated once, from the first server, with the admin URL
   test "$(calls server-a migrate-calls)" = "new with-admin-url"
 expect "and not from the second" never_called server-b migrate-calls
 expect "the admin URL is in no server's app.env" admin_url_in_no_app_env
+# #640: the apps reach Postgres through the pooler, and the migrate steps
+# directly, so app.env carries both addresses for every role.
+for pair in AUTH=da MARKET=dm LEDGER=dl AUDIT=du; do
+  expect "app.env carries ${pair%%=*}'s direct address" \
+    grep -qx "${pair%%=*}_DIRECT_DATABASE_URL=${pair#*=}" "$(app_env_of server-b)"
+done
+expect "beside its pooled one" grep -qx LEDGER_DATABASE_URL=l "$(app_env_of server-b)"
 
 # --- Grafana Cloud, optional ---------------------------------------------------
 
 echo "a deploy with no Grafana settings"
 expect "app.env names no profile, so Alloy stays off" app_env_lacks '^COMPOSE_PROFILES=' server-a
 expect "app.env sends no tracing endpoint" app_env_lacks '^TRACING_ENDPOINT=' server-a
+expect "nor a sample ratio" app_env_lacks '^TRACING_SAMPLE_RATIO=' server-a
 expect "every server is labelled for the dashboard" grep -qx SERVER_LABEL=app-2 "$(app_env_of server-b)"
 expect "the first is app-1" grep -qx SERVER_LABEL=app-1 "$(app_env_of server-a)"
 
@@ -195,6 +208,7 @@ expect "Alloy is switched on" grep -qx COMPOSE_PROFILES=observability "$(app_env
 expect "and on the second server too" grep -qx COMPOSE_PROFILES=observability "$(app_env_of server-b)"
 expect "services send their traces to Alloy" \
   grep -qx TRACING_ENDPOINT=http://alloy:4318/v1/traces "$(app_env_of server-a)"
+expect "one trace in ten" grep -qx TRACING_SAMPLE_RATIO=0.1 "$(app_env_of server-a)"
 expect "Alloy gets the token" grep -qx GRAFANA_CLOUD_TOKEN=token-placeholder "$(app_env_of server-a)"
 expect "and the Loki address" grep -qx GRAFANA_LOKI_URL=https://l.invalid "$(app_env_of server-a)"
 
@@ -222,6 +236,17 @@ extra_env=("${grafana_env[@]}" "GRAFANA_OTLP_URL=https://o.invalid /otlp")
 expect "the deploy fails" deploy_fails spaced
 expect "before any server is sent the release" never_called server-a releases/spaced
 expect "and names the bad setting" log_says "GRAFANA_OTLP_URL must be https://"
+extra_env=()
+
+# --- The direct addresses, required --------------------------------------------
+
+# Later settings win in `env`, so this empties one of the good addresses.
+echo "a deploy before the direct addresses were pushed"
+reset_servers
+extra_env=(LEDGER_DIRECT_DATABASE_URL=)
+expect "the deploy fails" deploy_fails nodirect
+expect "before any server is sent the release" never_called server-a releases/nodirect
+expect "and names the missing setting" log_says "LEDGER_DIRECT_DATABASE_URL is required"
 extra_env=()
 
 # --- A migration that fails ---------------------------------------------------

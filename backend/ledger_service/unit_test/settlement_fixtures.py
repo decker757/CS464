@@ -155,17 +155,6 @@ class SettleUpstream:
 
         return httpx.MockTransport(handler)
 
-    @property
-    def gate_open(self) -> httpx.MockTransport:
-        """The same market, answering `open`: the trade's gate stubbed open, so
-        only the latch and the book lock can refuse a trade (#12's test notes).
-        Counts nothing; a test asserts on the settlement's calls only."""
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={**self.body, "status": "open"})
-
-        return httpx.MockTransport(handler)
-
 
 def admin_token(actor) -> str:  # noqa: ANN001
     return mint_token(actor.id, UserRole.ADMIN, username=actor.username)

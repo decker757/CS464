@@ -212,6 +212,24 @@ def test_the_leaderboard_refresh_is_switched_off_from_the_environment(
 
 
 # =========================================================================
+# LOCAL_COPY_MAX_AGE_SECONDS — when the copy refuses a trade. #640, ADR 0030
+# =========================================================================
+def test_the_copy_s_max_age_must_exceed_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`gt=0`: a max age of zero is a copy that is stale the instant it loads,
+    so every trade fails closed. Fed through the environment as a deploy
+    would, and the error must name this field. Catches: `ge=0`, or no bound;
+    the variable not bound to the field."""
+    monkeypatch.setenv("LOCAL_COPY_MAX_AGE_SECONDS", "0")
+
+    with pytest.raises(ValidationError) as refused:
+        Settings(**_REQUIRED, _env_file=None)
+
+    assert [error["loc"] for error in refused.value.errors()] == [
+        ("local_copy_max_age_seconds",)
+    ]
+
+
+# =========================================================================
 # #307 — a printed Settings carries no credential
 # =========================================================================
 def test_no_secret_appears_when_the_settings_are_printed() -> None:

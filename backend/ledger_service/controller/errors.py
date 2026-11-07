@@ -15,6 +15,7 @@ from core.errors import (
     InsufficientSharesHeld,
     LedgerError,
     OrderCrossesBook,
+    PriceBeyondLimit,
     QuoteStale,
 )
 from model.schemas import ErrorOut, InvalidFieldOut, ValidationErrorOut
@@ -91,6 +92,14 @@ def register_error_handlers(app: FastAPI) -> None:
             # reason `PreviewOut.state_version` is a JSON number rather than
             # a string.
             error["details"] = {"quoted": exc.quoted, "current": exc.current}
+        elif isinstance(exc, PriceBeyondLimit):
+            # Money as decimal strings, the version as a number, for
+            # `QuoteStale`'s reason; it is the book's, to re-preview against.
+            error["details"] = {
+                "limit": str(exc.limit),
+                "current_total": str(exc.current_total),
+                "state_version": exc.state_version,
+            }
 
         # A 5xx in this envelope is the ledger saying its own data is wrong,
         # and before this it was the only 500 in the service that reached the

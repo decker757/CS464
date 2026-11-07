@@ -15,8 +15,10 @@ contract's example, `b = 100` at `q = [20, 0]`, where a buy of outcome 0 at
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -46,7 +48,7 @@ from model.entities import (
     Transaction,
     TransactionKind,
 )
-from service import accounts, grants, orders, posting, reservations
+from service import accounts, grants, orders, posting
 from unit_test.conftest import mint_token
 from unit_test.order_fixtures import add_order
 from unit_test.placement_fixtures import (
@@ -58,22 +60,27 @@ from unit_test.placement_fixtures import (
     place,
     record_result,
     reserved_credits_of,
+    reserved_shares_of,
 )
 from unit_test.portfolio_fixtures import read_portfolio
 from unit_test.sell_fixtures import hold
-from unit_test.service.test_account_status import _Auth
 from unit_test.trade_fixtures import (
+    TIMEOUT,
     Recorder,
     assert_ledger_balances,
     balance_of_user,
     book_row,
     buy,
+    capture_sql,
     capture_sql_with_parameters,
+    fresh_copy,
     fund,
     position_of,
     q_of,
+    queued_past_close,
     session_factory,
     transaction_count,
+    writes,
 )
 
 ZERO_Q = (Decimal("0.0000"), Decimal("0.0000"))
@@ -287,7 +294,7 @@ async def test_a_marketable_sell_fills_down_to_its_limit_and_reserves_the_rest(
     assert await balance_of_user(session, user_id) == balance + Decimal("8.4978")
     position = await position_of(session, user_id, upstream.market_id, upstream.outcomes[0])
     assert position.quantity == HELD - Decimal("13.7867")
-    assert await reservations.reserved_shares_of(
+    assert await reserved_shares_of(
         session, user_id, market_id=upstream.market_id, outcome_id=upstream.outcomes[0]
     ) == Decimal("16.2133")
 
@@ -743,7 +750,7 @@ async def test_a_suspended_placers_attempt_on_a_cold_market_opens_no_book_and_mi
             user_id=user_id,
             limit_price=RESTING_LIMIT,
             quantity=RESTING_QUANTITY,
-            auth_transport=_Auth.suspended().transport,
+            local_copy=fresh_copy(upstream, suspended={user_id}),
         )
 
     async with session_factory()() as other:
@@ -781,7 +788,7 @@ async def test_a_retry_answers_first_with_the_same_placement_and_writes_nothing(
         limit_price=EXAMPLE_LIMIT,
         quantity=Decimal("100"),
         client_key="retry-me",
-        auth_transport=_Auth.suspended().transport,
+        local_copy=fresh_copy(upstream, suspended={user_id}),
     )
 
     assert retry == original
@@ -968,6 +975,63 @@ async def test_a_placement_locks_the_placers_account_by_one_path_at_most(
         assert _first_lock_on(statements, "market_books") < _first_lock_on(statements, "accounts")
 
 
+async def test_the_placement_reads_its_context_in_one_statement_after_the_lock(
+    session: AsyncSession,
+) -> None:
+    """ADR 0015 and #641, the placement's twin of the trade's
+    `test_the_context_is_one_statement_issued_after_the_lock`: a resting sell,
+    which reads everything the context carries, sends exactly three statements
+    between the book's `FOR UPDATE` and its first write or lock. They are its
+    own key re-check on `orders`, then the one context statement, then the
+    crossing check's read of the open orders, which a placement always makes.
+
+    Read the latch, the clock, the outcomes, the position or the reservation
+    on its own again, or fold the context into the lock statement, and this
+    fails.
+    """
+    upstream = limit_upstream()
+    await open_at(session, upstream, ZERO_Q)
+    user_id = await _funded(session)
+    await hold(session, upstream, user_id=user_id, quantity=HELD)
+
+    with capture_sql() as statements:
+        await place(
+            session,
+            upstream,
+            user_id=user_id,
+            side="sell",
+            limit_price=Decimal("0.9000"),
+            quantity=Decimal("20.0000"),
+        )
+
+    lowered = [s.lower() for s in statements]
+    lock_at = next(
+        i for i, s in enumerate(lowered) if "for update" in s and "market_books" in s
+    )
+    first_write_or_lock = next(
+        i
+        for i, s in enumerate(lowered)
+        if i > lock_at and ("for update" in s or writes([s]))
+    )
+    between = lowered[lock_at + 1 : first_write_or_lock]
+    labelled = "\n---\n".join(f"[{i}] {s}" for i, s in enumerate(between))
+    assert len(between) == 3, (
+        f"{len(between)} statements under the book lock before the first write "
+        f"or lock, not the re-check, the context and the open orders:\n{labelled}"
+    )
+    recheck, context, open_orders = between
+    assert recheck.lstrip().startswith("select ledger.orders."), labelled
+    assert "idempotency_key" in recheck, labelled
+    for read in ("market_outcomes", "positions", "market_results"):
+        assert read in context, f"the context statement does not read {read}:\n{labelled}"
+    assert "clock_timestamp" in context, labelled
+    # Whole order rows like the re-check, but filtered by market and status.
+    assert open_orders.lstrip().startswith("select ledger.orders."), labelled
+    open_orders_filter = open_orders.split("where", 1)[1]
+    assert "status" in open_orders_filter, labelled
+    assert "idempotency_key" not in open_orders_filter, labelled
+
+
 async def test_a_placement_that_fills_publishes_one_price_frame_and_one_that_rests_none(
     session: AsyncSession,
 ) -> None:
@@ -1111,7 +1175,7 @@ async def test_a_placement_whose_commit_fails_writes_nothing(
     async def fail(*_args, **_kwargs):
         raise RuntimeError("the commit never happens")
 
-    monkeypatch.setattr(posting, "_stamp_after_newest", fail)
+    monkeypatch.setattr(posting, "_floors_and_stamp", fail)
     with pytest.raises(RuntimeError):
         await place(
             session,
@@ -1182,12 +1246,13 @@ async def test_my_open_orders_are_the_live_ones_newest_first(
     assert listed[1].quantity == RESTING_QUANTITY
 
 
-async def test_the_gate_is_asked_with_the_placers_own_token(
+async def test_the_first_touch_is_asked_with_the_placers_own_token(
     session: AsyncSession,
 ) -> None:
-    """The gate is asked with the placer's token, forwarded unchanged and
-    nothing minted here, as on the trade path (ADR 0017)."""
-    upstream = await _example_market(session)
+    """A placement's one call out, a cold market's first touch, carries the
+    placer's token, forwarded unchanged and nothing minted here, as on the
+    trade path (D-018)."""
+    upstream = limit_upstream()
     user_id = await _funded(session)
     token = mint_token(user_id)
 
@@ -1201,3 +1266,35 @@ async def test_the_gate_is_asked_with_the_placers_own_token(
     )
 
     assert upstream.tokens == [token]
+
+
+async def test_a_placement_whose_close_time_passed_under_the_lock_is_refused_by_the_database_clock(
+    session: AsyncSession,
+) -> None:
+    """The trade's under-lock close check, on the placement: one that passed
+    the copy's check and queued on the book row past `close_time` is
+    `market_closed`, and no order is written. Remove the close check after
+    the latch in `orders.place` and this order rests."""
+    upstream = await _example_market(session)
+    user_id = await _funded(session)
+    # Wide enough that a slow runner still passes the copy's check before
+    # the close; one that does not refuses early and fails red, never green.
+    close_time = datetime.now(UTC) + timedelta(seconds=2)
+    upstream.body["close_time"] = close_time.isoformat()
+    copy = fresh_copy(upstream)
+
+    async def placement(own: AsyncSession):
+        return await place(
+            own,
+            upstream,
+            user_id=user_id,
+            limit_price=RESTING_LIMIT,
+            quantity=RESTING_QUANTITY,
+            local_copy=copy,
+        )
+
+    async with asyncio.timeout(TIMEOUT):
+        outcome = await queued_past_close(upstream.market_id, close_time, placement)
+
+    assert isinstance(outcome, MarketClosed), outcome
+    assert await order_count(session) == 0

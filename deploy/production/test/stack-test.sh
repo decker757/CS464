@@ -8,12 +8,19 @@
 # It builds the six images and pushes them to a throwaway local registry, so
 # the scripts pull exactly as they do from GHCR. It stands in for the managed
 # database with a Postgres whose admin is NOT a superuser, as DigitalOcean's
-# doadmin is not. Then it runs migrate.sh and roll.sh and checks:
+# doadmin is not, and with DigitalOcean's connection pools by a
+# transaction-mode PgBouncer, which the apps reach it through and the migrate
+# steps bypass. Then it runs migrate.sh and roll.sh and checks:
 #
 #   - the frontend is served on the domain, and was built for it
 #   - each service answers on its own subdomain
+#   - /ready, /metrics and /internal/ answer only on the private network
+#   - ensure-database.sh puts the database admin's password on no command
+#     line, docker's or psql's
 #   - a trader can register and log in, and the login cookie names the domain
 #   - the ledger, market service and database work together through the gateway
+#   - auth, market and the ledger reached the database through the pooler,
+#     and their migrate steps did not
 #   - the price websocket upgrades through the gateway, for the site's origin only
 #   - draining makes /lb-health answer 503, and undraining brings it back
 #   - a release that cannot be pulled leaves the server untouched
@@ -53,8 +60,9 @@ expect() {
 }
 
 status_of() {
-  # The HTTP status of a GET to the gateway, addressed to one host name.
-  curl -s -o /dev/null -w '%{http_code}' -H "Host: $1" "$gateway$2"
+  # status_of <host> <path> [curl arguments...]: the HTTP status of a GET to
+  # the gateway, addressed to one host name.
+  curl -s -o /dev/null -w '%{http_code}' -H "Host: $1" "${@:3}" "$gateway$2"
 }
 
 status_becomes() {
@@ -120,6 +128,16 @@ metric_inside() {
   grep -q "^$2" <<<"$body"
 }
 
+internal_answers_inside() {
+  # internal_answers_inside <service> <path>: the route answers the service
+  # key. Asked from the gateway container, on the private network, where
+  # /internal/ is not hidden. Fetched first, for metric_inside's reason.
+  local body
+  body=$(compose exec -T gateway wget -qO- --header "X-Service-Key: $ledger_service_key" \
+    "http://$1:8000$2") || return 1
+  grep -q '"as_of"' <<<"$body"
+}
+
 every_image_is_at() {
   # Every image this stack pulled from the registry carries tag $1. The
   # stand-in Postgres and Redis come from Docker Hub and are not counted.
@@ -169,6 +187,35 @@ releases_kept_are() {
     names+="$(basename "$directory") "
   done
   test "$names" = "$1 "
+}
+
+pooled_transactions_of() {
+  # pooled_transactions_of <service>: how many transactions the stand-in
+  # pooler has carried for that service's pool, from its admin console. The
+  # password is the container's own variable, so it is on no command line.
+  # shellcheck disable=SC2016 # expanded by the container's shell, not this one
+  backing exec -T pgbouncer sh -c \
+    'PGPASSWORD=$TEST_POSTGRES_PASSWORD psql -h 127.0.0.1 -p 6432 -U postgres -d pgbouncer --csv -c "SHOW STATS"' |
+    python3 -c '
+import csv, sys
+for row in csv.DictReader(sys.stdin):
+    if row["database"] == sys.argv[1]:
+        print(row["total_xact_count"])
+' "cs464-$1"
+}
+
+went_through_the_pooler() {
+  local count
+  count=$(pooled_transactions_of "$1") || return 1
+  test "${count:-0}" -gt 0
+}
+
+bypassed_the_pooler() {
+  # A pool nobody has used has no row, which counts as none. A probe that
+  # fails is a failure, not a pass.
+  local count
+  count=$(pooled_transactions_of "$1") || return 1
+  test "${count:-0}" -eq 0
 }
 
 image_is_here() {
@@ -227,7 +274,12 @@ build_stand_in "$registry/cs464-extra:three"
 
 # --- A server's directory, as the deploy lays it out --------------------
 
-admin_password=$(random_secret)
+# The admin's password ends in the four characters a URL has to escape, so
+# ensure-database.sh has to decode the URL to log in. admin_secret is the part
+# that reads the same in the URL and out of it, which the command-line check
+# below looks for.
+admin_secret=$(random_secret)
+admin_password="$admin_secret@:/%"
 export TEST_POSTGRES_PASSWORD
 TEST_POSTGRES_PASSWORD=$(random_secret)
 export AUTH_DB_PASSWORD MARKET_DB_PASSWORD LEDGER_DB_PASSWORD AUDIT_DB_PASSWORD
@@ -235,6 +287,12 @@ AUTH_DB_PASSWORD=$(random_secret)
 MARKET_DB_PASSWORD=$(random_secret)
 LEDGER_DB_PASSWORD=$(random_secret)
 AUDIT_DB_PASSWORD=$(random_secret)
+ledger_service_key=$(random_secret)
+
+# As production's: the apps through their pool, named where the database
+# would be, and the migrate steps straight to Postgres.
+pooled_url() { echo "postgresql+asyncpg://$1_svc:$2@pgbouncer:6432/cs464-$1"; }
+direct_url() { echo "postgresql+asyncpg://$1_svc:$2@postgres:5432/cs464"; }
 
 cat > "$work/app.env" <<EOF
 COMPOSE_PROJECT_NAME=$project
@@ -242,11 +300,15 @@ COMPOSE_FILE=compose.yml:backing.yml
 IMAGE_REGISTRY=$registry
 DOMAIN=$domain
 JWT_SECRET=$(random_secret)
-LEDGER_SERVICE_KEY=$(random_secret)
-AUTH_DATABASE_URL=postgresql+asyncpg://auth_svc:$AUTH_DB_PASSWORD@postgres:5432/cs464
-MARKET_DATABASE_URL=postgresql+asyncpg://market_svc:$MARKET_DB_PASSWORD@postgres:5432/cs464
-LEDGER_DATABASE_URL=postgresql+asyncpg://ledger_svc:$LEDGER_DB_PASSWORD@postgres:5432/cs464
-AUDIT_DATABASE_URL=postgresql+asyncpg://audit_svc:$AUDIT_DB_PASSWORD@postgres:5432/cs464
+LEDGER_SERVICE_KEY=$ledger_service_key
+AUTH_DATABASE_URL=$(pooled_url auth "$AUTH_DB_PASSWORD")
+MARKET_DATABASE_URL=$(pooled_url market "$MARKET_DB_PASSWORD")
+LEDGER_DATABASE_URL=$(pooled_url ledger "$LEDGER_DB_PASSWORD")
+AUDIT_DATABASE_URL=$(pooled_url audit "$AUDIT_DB_PASSWORD")
+AUTH_DIRECT_DATABASE_URL=$(direct_url auth "$AUTH_DB_PASSWORD")
+MARKET_DIRECT_DATABASE_URL=$(direct_url market "$MARKET_DB_PASSWORD")
+LEDGER_DIRECT_DATABASE_URL=$(direct_url ledger "$LEDGER_DB_PASSWORD")
+AUDIT_DIRECT_DATABASE_URL=$(direct_url audit "$AUDIT_DB_PASSWORD")
 REDIS_URL=redis://redis:6379/0
 LEADERBOARD_REFRESH_ENABLED=true
 TEST_POSTGRES_PASSWORD=$TEST_POSTGRES_PASSWORD
@@ -275,15 +337,15 @@ backing() {
   (cd "$work/releases/one" && docker compose --env-file "$work/app.env" --env-file release.env "$@")
 }
 
-echo "starting the stand-in database and Redis"
-backing up -d --wait postgres redis > /dev/null
+echo "starting the stand-in database, its pooler and Redis"
+backing up -d --wait postgres pgbouncer redis > /dev/null
 backing exec -T postgres psql -q -U postgres -v ON_ERROR_STOP=1 \
   -c "CREATE ROLE doadmin LOGIN CREATEROLE PASSWORD '$admin_password'" \
   -c "CREATE DATABASE cs464 OWNER doadmin" > /dev/null
 
 # --- Deploy release one --------------------------------------------------
 
-export DATABASE_ADMIN_URL="postgresql://doadmin:$admin_password@postgres:5432/cs464"
+export DATABASE_ADMIN_URL="postgresql://doadmin:$admin_secret%40%3A%2F%25@postgres:5432/cs464"
 export DOCKER_NETWORK="${project}_default"
 export DRAIN_SECONDS=1 WAIT_SECONDS=90
 
@@ -291,6 +353,46 @@ echo "migrate.sh, release one"
 "$work/releases/one/migrate.sh"
 echo "migrate.sh, release one, again: it must be safe to repeat"
 "$work/releases/one/migrate.sh"
+# Nothing else has connected yet, so the pooler has carried only what the
+# migrate steps sent it, which must be nothing.
+for service in auth market ledger; do
+  expect "$service's migrate step went straight to the database" bypassed_the_pooler "$service"
+done
+
+# #611. Run ensure-database.sh once more with every command line recorded:
+# docker's, by a docker on the PATH that logs and passes through, and psql's
+# inside the container, by a psql earlier on the container's PATH that logs
+# and runs the real one. psql's is the one that matters: a shell inside the
+# container expanding the URL into psql's arguments is invisible from here.
+echo "ensure-database.sh, with every command line recorded"
+spy=$work/spy
+mkdir -p "$spy/host" "$spy/container"
+cat > "$spy/host/docker" <<'SPY'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SPY_DIR/host-argv"
+if [ "$1" = run ]; then
+  shift
+  exec "$REAL_DOCKER" run -v "$SPY_DIR/container:/spy" \
+    -e PATH=/spy:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$@"
+fi
+exec "$REAL_DOCKER" "$@"
+SPY
+cat > "$spy/container/psql" <<'SPY'
+#!/bin/sh
+printf '%s\n' "$*" >> /spy/argv
+exec /usr/local/bin/psql "$@"
+SPY
+chmod +x "$spy/host/docker" "$spy/container/psql"
+REAL_DOCKER=$(command -v docker) SPY_DIR=$spy PATH="$spy/host:$PATH" \
+  "$work/releases/one/ensure-database.sh"
+expect "ensure-database's psql ran with its command line recorded" test -s "$spy/container/argv"
+in_no_file() {
+  # in_no_file <text> <file>...
+  ! grep -qF "$1" "${@:2}"
+}
+expect "the database admin's password is on no command line" \
+  in_no_file "$admin_secret" "$spy/host-argv" "$spy/container/argv"
+
 echo "roll.sh, release one"
 "$work/releases/one/roll.sh"
 
@@ -310,6 +412,20 @@ for service in auth market ledger audit realtime; do
   expect "$service is ready on the private network" is_ready_inside "$service"
 done
 expect "an unknown host name gets 404" test "$(status_of nobody.test /health)" = 404
+
+# #640, ADR 0030. The routes the ledger's local copies refresh from are for
+# the private network. From the internet the gateway answers 404, even to a
+# request that carries the key. Auth's lookup (ADR 0021) is hidden the same way.
+for pair in auth:/internal/users/suspended market:/internal/markets/published; do
+  service=${pair%%:*}
+  path=${pair#*:}
+  expect "$service's $path is not public, even with the key" \
+    test "$(status_of "$service.$domain" "$path" -H "X-Service-Key: $ledger_service_key")" = 404
+  expect "$service's $path answers the key on the private network" \
+    internal_answers_inside "$service" "$path"
+done
+expect "auth's /internal/users/lookup is not public" \
+  test "$(status_of "auth.$domain" /internal/users/lookup)" = 404
 
 username="stack$(date +%s)"
 password=$(random_secret)
@@ -384,6 +500,9 @@ expect "the ledger's log line for a request is JSON and carries its ID" ledger_l
 expect "the ledger mints the starting grant on first read" has_starting_grant
 expect "the market service reads its schema" \
   test "$(curl -s -o /dev/null -w '%{http_code}' -H "Host: market.$domain" -H "Authorization: Bearer $token" "$gateway/public/markets")" = 200
+for service in auth market ledger; do
+  expect "$service reached the database through the pooler" went_through_the_pooler "$service"
+done
 
 upgrade_status() {
   # The first status line of a websocket handshake from one origin.
@@ -459,8 +578,10 @@ expect "and serving" status_becomes 127.0.0.1 /lb-health 200
 
 echo "the ledger's database password changes, and Grafana is switched off, as a deploy would"
 LEDGER_DB_PASSWORD=$(random_secret)
-without_lines '^LEDGER_DATABASE_URL=' '^COMPOSE_PROFILES=' '^TRACING_ENDPOINT=' '^GRAFANA_'
-echo "LEDGER_DATABASE_URL=postgresql+asyncpg://ledger_svc:$LEDGER_DB_PASSWORD@postgres:5432/cs464" >> "$work/app.env"
+without_lines '^LEDGER_DATABASE_URL=' '^LEDGER_DIRECT_DATABASE_URL=' '^COMPOSE_PROFILES=' \
+  '^TRACING_ENDPOINT=' '^GRAFANA_'
+echo "LEDGER_DATABASE_URL=$(pooled_url ledger "$LEDGER_DB_PASSWORD")" >> "$work/app.env"
+echo "LEDGER_DIRECT_DATABASE_URL=$(direct_url ledger "$LEDGER_DB_PASSWORD")" >> "$work/app.env"
 "$work/releases/two/migrate.sh"
 
 echo "roll.sh, a release that adds a service and never becomes healthy"

@@ -23,7 +23,13 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from unit_test.conftest import auth_client_over, bearer, set_b
+from unit_test.conftest import (
+    COPY_CLOSE_TIME,
+    bearer,
+    publish_markets,
+    set_b,
+    suspend_users,
+)
 from unit_test.controller.test_sell_routes import _doc, _section, _table_rows
 from unit_test.controller.test_trade_routes import (  # noqa: F401 - fixture
     _Market,
@@ -550,28 +556,27 @@ async def test_a_cancel_of_an_order_that_has_ended_is_409_with_its_code(
 
 
 async def test_a_suspended_trader_can_cancel_on_a_closed_market(
-    trade_client, app_under_test, session, monkeypatch
+    trade_client, local_copy, session, monkeypatch
 ) -> None:
     """The contract: "No account check and no market gate: a suspended account
     can still cancel while its token is valid, and a closed market's orders
-    can be cancelled." Placed while both were open; cancelled after auth
-    says suspended and market_service says closed."""
-    from controller.dependencies import get_auth_client  # noqa: PLC0415
+    can be cancelled." Placed while both were open; cancelled after the copy
+    lists the trader as suspended and the market as closed."""
+    from service.local_copy import MarketTradingTerms  # noqa: PLC0415
 
     client, _ = trade_client
     market = await _market(session, monkeypatch, ZERO_Q)
-    headers = bearer(uuid.uuid4())
+    user_id = uuid.uuid4()
+    headers = bearer(user_id)
     order = await _placed(client, market, headers, limit_price="0.4000", quantity="10.0000")
     _Terms(status="closed").install(monkeypatch, market)
+    suspend_users(local_copy, {user_id})
+    publish_markets(
+        local_copy,
+        {market.market_id: MarketTradingTerms(status="closed", close_time=COPY_CLOSE_TIME)},
+    )
 
-    def suspended(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            403, json={"error": {"code": "account_suspended", "message": "Suspended."}}
-        )
-
-    async with auth_client_over(httpx.MockTransport(suspended)) as auth_client:
-        app_under_test.dependency_overrides[get_auth_client] = lambda: auth_client
-        response = await client.post(_cancel_path(order["id"]), headers=headers)
+    response = await client.post(_cancel_path(order["id"]), headers=headers)
 
     assert response.status_code == 200, response.text
     assert response.json()["order"]["status"] == "cancelled"

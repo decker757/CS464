@@ -1,7 +1,9 @@
 """Buying shares. [T-2] #22
 
 The arithmetic, the rows written and the rows not, driven through
-`service/trading.py` with the outbound call stubbed at the transport. Routes
+`service/trading.py` against a local copy built per trade
+(`trade_fixtures.fresh_copy`), with a cold market's one outbound call stubbed
+at the transport. The gate's own refusals are `test_trade_gate.py`'s. Routes
 are `test_trade_routes.py`'s; races `test_trade_concurrency.py`'s; retries
 `test_trade_replay.py`'s; the publish `test_trade_publish.py`'s.
 
@@ -11,28 +13,40 @@ tolerance would pass a buy that floored, or a total that went through a float.
 
 from __future__ import annotations
 
+import asyncio
+import re
 import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.conftest import (
-    active_auth_transport,
-    auth_client_over,
     drop_outcome_row,
     idle_in_transaction,
+    loaded_copy,
     set_b,
     strip_outcomes,
     terms_client_over,
 )
 from unit_test.market_fixtures import market_with_outcomes
 from unit_test.order_fixtures import add_order
+from unit_test.sell_fixtures import (
+    assert_wrote_nothing,
+    footprint,
+    hold,
+    open_at_zero,
+    sell,
+    version_of,
+)
 from unit_test.trade_fixtures import (
     B,
     Q,
     QUANTITY,
     SMALL_QUANTITY,
+    TIMEOUT,
     ZERO,
     Recorder,
     Upstream,
@@ -47,13 +61,16 @@ from unit_test.trade_fixtures import (
     errors,
     expected_total,
     floored_total,
+    fresh_copy,
     fund,
     grants,
+    late_copy,
     pool_balance,
     position_of,
     preview,
     pricing,
     q_of,
+    queued_past_close,
     session_factory,
     token,
     trading,
@@ -578,20 +595,23 @@ async def test_a_user_who_has_never_been_read_is_granted_first(
     await assert_ledger_balances(session)
 
 
-async def test_the_market_is_asked_once_per_trade_with_the_callers_own_token(
+async def test_a_warm_trade_makes_no_http_call_and_a_first_touch_makes_one(
     session: AsyncSession,
 ) -> None:
-    """ADR 0017's hop: one call per trade, with the caller's own token."""
+    """#640, ADR 0030: the copy answers the account check and the gate, so a
+    trade on a market with a book calls nobody, and the trade that opens the
+    book calls market_service once, for its terms. Catches: either check
+    still calling out; the first touch asking twice."""
     upstream = Upstream()
     user_id = uuid.uuid4()
-    await warm(session, upstream)
     await fund(session, user_id)
-    mine = token()
 
-    await buy(session, upstream, user_id=user_id, access_token=mine)
+    await buy(session, upstream, user_id=user_id, client_key="first")
+    assert upstream.calls == 1, "the first touch asks market_service once"
 
-    assert upstream.calls == 1
-    assert upstream.tokens == [mine]
+    upstream.calls = 0
+    await buy(session, upstream, user_id=user_id, client_key="second", state_version=1)
+    assert upstream.calls == 0, "a warm trade made an HTTP call"
 
 
 # =========================================================================
@@ -601,7 +621,7 @@ async def test_a_closed_market_is_refused_and_writes_nothing(
     session: AsyncSession,
 ) -> None:
     """ADR 0017's `409 market_closed`, on a market closed after its book was
-    opened, so the gate must be a live read."""
+    opened: the gate reads the copy, never the book."""
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
@@ -719,7 +739,7 @@ async def test_an_unknown_outcome_is_refused_and_writes_nothing(
             access_token=token(),
             redis_client=Recorder(),
             terms_client=terms_client_over(upstream.transport),
-            auth_client=auth_client_over(active_auth_transport()),
+            local_copy=fresh_copy(upstream),
         )
     await session.rollback()
 
@@ -749,18 +769,26 @@ async def test_a_quantity_that_prices_above_the_column_is_refused(
     assert await _committed_state(entry_count) == before
 
 
-async def test_an_unreachable_market_service_is_refused_and_writes_nothing(
+async def test_a_copy_past_its_max_age_is_refused_and_writes_nothing(
     session: AsyncSession,
 ) -> None:
-    """`market_terms_unavailable` (503): the gate fails closed (ADR 0017)."""
+    """`market_terms_unavailable` (503): a copy too old to trust is a
+    dependency that is not answering, and the gate fails closed (ADR 0017,
+    ADR 0030). The suspended ids are fresh, so only the markets' age
+    refuses."""
+    from unit_test.conftest import suspend_users  # noqa: PLC0415
+
     upstream = Upstream()
     user_id = uuid.uuid4()
     await warm(session, upstream)
     await fund(session, user_id)
     before = await entry_count(session)
+    stale = fresh_copy(upstream)
+    stale.clock.now += stale.max_age_seconds + 1
+    suspend_users(stale, ())
 
     with pytest.raises(errors().MarketTermsUnavailable):
-        await buy(session, upstream, user_id=user_id, transport=upstream.dead)
+        await buy(session, upstream, user_id=user_id, local_copy=stale)
     await session.rollback()
 
     assert await _committed_state(entry_count) == before
@@ -770,15 +798,17 @@ async def test_an_unreachable_market_service_is_refused_and_writes_nothing(
 async def test_a_market_nobody_has_heard_of_is_not_found(
     session: AsyncSession,
 ) -> None:
-    """404 on a cold market the upstream does not know; `test_market_status.py`
-    owns the 503 case."""
+    """404 on a market the copy does not hold and the ledger has no book for;
+    `test_local_copy.py` owns the 503 case, a book with no published market."""
     upstream = Upstream(status_code=404)
     user_id = uuid.uuid4()
     await fund(session, user_id)
 
     with pytest.raises(errors().MarketNotFound):
-        await buy(session, upstream, user_id=user_id)
+        await buy(session, upstream, user_id=user_id, local_copy=loaded_copy({}))
     await session.rollback()
+
+    assert upstream.calls == 0
 
 
 # =========================================================================
@@ -879,20 +909,80 @@ async def test_the_staleness_check_reads_the_version_under_the_lock(
     )
 
 
+# The most statements a warm trade with no open orders sends from its book
+# lock to the end of its commit, the lock itself included. #641's budget:
+# lock 1, context 1, account locks 2, key lookup 1, floors and stamp 1,
+# writes 7.
+_LOCKED_SECTION_BUDGET = 13
+
+_LEDGER_TABLE = re.compile(r"\bledger\.(\w+)")
+
+
+def _label_of(statement: str) -> str:
+    """One statement as the 2026-11-05 measurement printed it: its verb, the
+    tables it names in the order it names them, and whether it locks."""
+    lowered = statement.lower()
+    verb = lowered.split(maxsplit=1)[0].upper()
+    tables = dict.fromkeys(_LEDGER_TABLE.findall(lowered))
+    label = f"{verb} {', '.join(tables)}".rstrip()
+    if "for update" in lowered:
+        label += " FOR UPDATE"
+    return label
+
+
+@pytest.mark.parametrize("side", ["buy", "sell"])
+async def test_a_warm_trade_stays_within_its_statement_budget(
+    session: AsyncSession, side: str
+) -> None:
+    """#641: on a warm market with no open orders, a trade by a funded user
+    who already holds a position sends at most 13 statements from the book's
+    `FOR UPDATE` to its commit, the lock included, so the book row is held
+    for that many round trips and no more. The design's section B counts
+    them; read the orders again unconditionally, or split the context or the
+    floors back into separate reads, and this fails with the list."""
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    await warm(session, upstream)
+    await fund(session, user_id)
+    await buy(session, upstream, user_id=user_id, client_key="first")
+
+    with capture_sql() as statements:
+        await buy(
+            session,
+            upstream,
+            user_id=user_id,
+            side=side,
+            quantity=SMALL_QUANTITY,
+            state_version=1,
+            client_key="second",
+        )
+
+    lock_at = next(
+        i
+        for i, s in enumerate(statements)
+        if "for update" in s.lower() and "market_books" in s.lower()
+    )
+    locked_section = [_label_of(s) for s in statements[lock_at:]]
+    assert len(locked_section) <= _LOCKED_SECTION_BUDGET, (
+        f"a warm {side} held the book lock for {len(locked_section)} "
+        f"statements, over its budget of {_LOCKED_SECTION_BUDGET}:\n"
+        + "\n".join(f"{i:>2}. {label}" for i, label in enumerate(locked_section, 1))
+    )
+
+
 # =========================================================================
 # The gate's connection, damaged books, and the edges of the quantization
 # =========================================================================
-async def test_a_trade_holds_no_connection_while_the_gate_waits_on_market_service(
+async def test_a_trade_holds_no_connection_while_the_gate_refreshes_the_copy(
     session: AsyncSession,
 ) -> None:
-    """The gate's HTTP call runs with no transaction open (D-043's fault on the
-    trade path).
+    """The gate's one remaining call out, a miss's refresh, runs with no
+    transaction open, although the replay lookup opened one (D-043's fault on
+    the trade path).
 
-    Checked from the session, the pool and Postgres. Remove the rollback in
-    `market_status.ensure_trading` and this goes red.
+    Checked from the session, the pool and Postgres. Remove the release in
+    `local_copy._terms_after_refresh` and this goes red.
     """
-    import asyncio  # noqa: PLC0415
-
     from core.database import get_engine  # noqa: PLC0415
 
     upstream = Upstream()
@@ -915,9 +1005,14 @@ async def test_a_trade_holds_no_connection_while_the_gate_waits_on_market_servic
         entered.set()
         await release.wait()
 
-    upstream.before_response = stall
-
-    task = asyncio.create_task(buy(session, upstream, user_id=user_id))
+    task = asyncio.create_task(
+        buy(
+            session,
+            upstream,
+            user_id=user_id,
+            local_copy=late_copy(upstream, before_publishing=stall),
+        )
+    )
     try:
         async with asyncio.timeout(10):
             await entered.wait()
@@ -928,8 +1023,7 @@ async def test_a_trade_holds_no_connection_while_the_gate_waits_on_market_servic
 
     clean = {"session in a transaction": False, "pooled connections checked out": 0}
     assert seen == [clean]
-    assert idle == 0, f"{idle} backend(s) idle in transaction across the gate's call"
-    assert upstream.calls == 1
+    assert idle == 0, f"{idle} backend(s) idle in transaction across the refresh"
     assert trade.state_version == 1
 
 
@@ -937,7 +1031,7 @@ async def test_a_cold_trade_reaches_ensure_open_with_nothing_pending(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The trade reaches `books.ensure_open` with nothing pending, recorded at
-    the call. Two upstream calls show the cold path ran.
+    the call. One upstream call shows the cold path ran.
     """
     from service import books as books_module  # noqa: PLC0415
 
@@ -957,7 +1051,7 @@ async def test_a_cold_trade_reaches_ensure_open_with_nothing_pending(
     trade = await buy(session, upstream, user_id=user_id)
 
     assert pending == [(0, 0, 0)]
-    assert upstream.calls == 2
+    assert upstream.calls == 1
     assert trade.state_version == 1
 
 
@@ -1110,3 +1204,148 @@ async def test_a_buy_that_prices_at_zero_is_cost_below_tick_and_writes_nothing(
 
     assert await _committed_state(entry_count) == before
     assert await _committed_state(lambda s: q_of(s, upstream.market_id)) == skewed
+
+
+# =========================================================================
+# The account check, from the copy (ADR 0022, ADR 0030)
+# =========================================================================
+@pytest.mark.parametrize("side", ["buy", "sell"])
+async def test_a_suspended_trader_s_trade_is_refused_and_nothing_moves(
+    session: AsyncSession, side: str
+) -> None:
+    """[4.2] #14: suspension blocks trading, and existing positions are kept.
+
+    The trader holds shares bought before the suspension; once the copy lists
+    them, neither a buy nor a sell writes anything, and the balance and
+    position stay put.
+    """
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    await open_at_zero(session, upstream)
+    await hold(session, upstream, user_id=user_id)
+    balance = await balance_of_user(session, user_id)
+    before = await footprint(session, upstream.market_id)
+    suspended = fresh_copy(upstream, suspended={user_id})
+
+    with pytest.raises(errors().AccountSuspended):
+        if side == "buy":
+            await buy(
+                session,
+                upstream,
+                user_id=user_id,
+                state_version=await version_of(session, upstream.market_id),
+                client_key="after-suspension",
+                local_copy=suspended,
+            )
+        else:
+            await sell(session, upstream, user_id=user_id, local_copy=suspended)
+
+    await assert_wrote_nothing(session, upstream.market_id, before)
+    assert await balance_of_user(session, user_id) == balance
+
+
+async def test_a_suspended_trader_hears_about_the_suspension_not_the_market(
+    session: AsyncSession,
+) -> None:
+    """ADR 0022's placement: the account check runs before the gate, so a
+    trader both suspended and on a closed market is told about themselves.
+    Nobody is called."""
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    upstream.closes()
+
+    with pytest.raises(errors().AccountSuspended):
+        await buy(
+            session,
+            upstream,
+            user_id=user_id,
+            local_copy=fresh_copy(upstream, suspended={user_id}),
+        )
+
+    assert upstream.calls == 0
+
+
+async def test_a_replay_of_a_trade_made_before_suspension_still_answers(
+    session: AsyncSession,
+) -> None:
+    """ADR 0017's order, which ADR 0022 keeps: a replay is answered before any
+    check and writes nothing."""
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    await open_at_zero(session, upstream)
+    original = await buy(session, upstream, user_id=user_id, client_key="before")
+    before = await footprint(session, upstream.market_id)
+
+    replay = await buy(
+        session,
+        upstream,
+        user_id=user_id,
+        quantity=QUANTITY,
+        client_key="before",
+        state_version=original.state_version,
+        local_copy=fresh_copy(upstream, suspended={user_id}),
+    )
+
+    assert replay == original
+    assert await footprint(session, upstream.market_id) == before
+
+
+async def test_a_suspended_traders_attempt_on_a_cold_market_opens_no_book_and_mints_nothing(
+    session: AsyncSession,
+) -> None:
+    """ADR 0022: before `books.ensure_open` and `grants.ensure_granted`, "so a
+    suspended account's attempt cannot open and fund a cold market's pool or
+    mint its own starting grant". The market has never been touched, and the
+    trader never read a balance."""
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+
+    with pytest.raises(errors().AccountSuspended):
+        await buy(
+            session,
+            upstream,
+            user_id=user_id,
+            local_copy=fresh_copy(upstream, suspended={user_id}),
+        )
+
+    ents = entities()
+    async with session_factory()() as other:
+        for table in (ents.MarketBook, ents.Account, ents.Transaction):
+            count = (await other.execute(select(func.count()).select_from(table))).scalar_one()
+            assert count == 0, f"a suspended attempt wrote to {table.__tablename__}"
+    assert upstream.calls == 0
+
+
+# =========================================================================
+# The close time, decided under the book lock
+# =========================================================================
+async def test_a_market_whose_close_time_passed_under_the_lock_is_refused_by_the_database_clock(
+    session: AsyncSession,
+) -> None:
+    """The copy's close-time check runs before the book lock, so a trade that
+    passed it and then queued on the lock past `close_time` would trade on a
+    closed market (ADR 0011). The check under the lock, on Postgres's
+    `clock_timestamp()`, refuses it. Remove the close check after the latch in
+    `trading.execute` and this trade executes."""
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    await warm(session, upstream)
+    await fund(session, user_id)
+    # Wide enough that a slow runner still passes the copy's check before
+    # the close; one that does not refuses early and fails red, never green.
+    close_time = datetime.now(UTC) + timedelta(seconds=2)
+    upstream.body["close_time"] = close_time.isoformat()
+    copy = fresh_copy(upstream)
+    before = await entry_count(session)
+
+    async def trade(own: AsyncSession):
+        return await buy(own, upstream, user_id=user_id, local_copy=copy)
+
+    async with asyncio.timeout(TIMEOUT):
+        outcome = await queued_past_close(upstream.market_id, close_time, trade)
+
+    assert isinstance(outcome, errors().MarketClosed), outcome
+    assert await _committed_state(entry_count) == before
+    assert (
+        await _committed_state(lambda s: book_row(s, upstream.market_id))
+    ).state_version == 0

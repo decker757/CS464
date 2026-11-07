@@ -60,9 +60,9 @@ async def test_two_sells_exceeding_the_position_one_fills_one_is_refused_held(
     asserted because the criterion lists them, and probably survive the bug.
     "Never goes negative" is deliberately not asserted — it passes on the bug.
 
-    If this ever passes with the lock removed, add a second, one-shot
-    `asyncio.Barrier(2)` at `Upstream.before_response` so both parties leave
-    the gate together.
+    If this ever passes with the lock removed, hand each party a
+    `trade_fixtures.late_copy` whose refresh waits on a second, one-shot
+    `asyncio.Barrier(2)`, so both parties leave the gate together.
     """
     upstream = Upstream()
     user_id = uuid.uuid4()

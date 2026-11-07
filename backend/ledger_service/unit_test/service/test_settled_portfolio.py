@@ -49,7 +49,7 @@ from unit_test.settlement_fixtures import (
     warm,
 )
 from unit_test.settlement_fixtures import hold as hold_shares
-from unit_test.trade_fixtures import ZERO, buy, entities
+from unit_test.trade_fixtures import ZERO, buy, entities, open_copy
 
 # Bought for real in the P&L section, on `settlement_fixtures`' b = 137 book.
 BOUGHT = Decimal("41.0000")
@@ -219,7 +219,7 @@ async def _bought_then_settled(
     """A market this user really bought `outcome` in, then settled — for
     `WINNER`, as every market here is. Returns the market and what the shares
     cost, so a test can state the P&L in terms of money that actually moved.
-    `gate_open` answers the trade's gate; the settlement reads the approved
+    `open_copy` answers the trade's gate; the settlement reads the approved
     body."""
     upstream = SettleUpstream()
     await warm(session, upstream)
@@ -231,7 +231,7 @@ async def _bought_then_settled(
         quantity=quantity,
         state_version=await version_of(session, upstream.market_id),
         client_key=f"pnl-{uuid.uuid4()}",
-        transport=upstream.gate_open,
+        local_copy=open_copy(upstream),
     )
     await settle(session, upstream)
     return upstream, -trade.total

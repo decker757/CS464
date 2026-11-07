@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from argon2 import PasswordHasher
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core import security
 from core.errors import AccountSuspended, InvalidCredentials
 from model.entities import User
 from service import auth_service
@@ -104,3 +106,20 @@ async def test_login_loads_no_refresh_tokens_while_it_holds_the_user_lock(
     locked_at = next(i for i, sql in enumerate(statements) if "FOR UPDATE" in sql)
     under_the_lock = statements[locked_at:]
     assert not [sql for sql in under_the_lock if "auth.refresh_tokens" in sql]
+
+
+async def test_a_login_rehashes_a_password_stored_with_weaker_argon2_settings(
+    session: AsyncSession, registered_user: User, attempt_limiter: AttemptLimiter
+) -> None:
+    """The rehash on login still awaits a real hash (#637): a fresh hash that verifies."""
+    weak_hash = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1).hash(VALID_PASSWORD)
+    registered_user.password_hash = weak_hash
+    await session.commit()
+
+    found = await auth_service.authenticate(
+        session, "ernest_t", VALID_PASSWORD, limiter=attempt_limiter, client_ip=TEST_IP
+    )
+
+    assert found.password_hash != weak_hash
+    assert not security.needs_rehash(found.password_hash)
+    assert await security.verify_password(found.password_hash, VALID_PASSWORD)

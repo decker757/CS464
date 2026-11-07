@@ -10,7 +10,8 @@ flowchart LR
   browser([Browser]) -->|https| lb[Load balancer<br/>TLS, health checks]
   lb -->|http| g1[App server 1<br/>gateway + 5 services]
   lb -->|http| g2[App server 2<br/>gateway + 5 services]
-  g1 & g2 -->|private network| pg[(Managed Postgres)]
+  g1 & g2 -->|private network| pool[Connection pools<br/>one per service]
+  pool --> pg[(Managed Postgres)]
   g1 & g2 -->|private network| vk[(Managed Valkey)]
   gh[GitHub Actions] -->|images| ghcr[(GHCR)]
   gh -->|ssh: migrate, then roll| g1 & g2
@@ -80,6 +81,12 @@ admin of this repository.
 
    `infra/terraform/terraform.tfstate` now holds every production secret. It
    is gitignored. Keep it, and do not share it.
+
+   On a database that has never been deployed to, the four connection pools
+   may fail here: each logs in as its service's role, and the first deploy's
+   `ensure-database.sh` is what creates those roles. This has not been tried,
+   and if it happens there is no tested way through yet. See "Connection
+   budget" below, "A new environment".
 6. **Give GitHub the secrets:**
 
    ```bash
@@ -116,7 +123,8 @@ admin of this repository.
    Seeded the day before, everything else is there and those two are not.
 
    The seed registers eleven accounts from one address in a few seconds.
-   Login rate limiting (#600) must allow that, or the seed runs before it.
+   That fits inside #600's limits, 20 registrations an hour and 30 logins a
+   minute from one address (ADR 0027).
 9. **Your own administrator account.** Register on the site.
    - If you seeded, log in as `admin_rachel` and promote yourself from Admin →
      Users. That is how every administrator after the first is made, and the
@@ -187,6 +195,14 @@ already newer than the code it is given. Fix forward instead, keeping the
 migration, or go back on each server by hand, which does not migrate. A
 server keeps the release before, so: `ssh deploy@<server>`, then
 `/opt/cs464/releases/<commit>/roll.sh`, one server at a time.
+A release from before #640 (the connection pools) keeps asyncpg's statement
+cache, which fails through a transaction-mode pool, so it needs the direct
+addresses however you go back to it. Before a revert on `main`, copy each
+role's direct address over its pooled one in GitHub, with the one-line
+command in "Connection budget", "If a service cannot log in through its
+pool". Before `roll.sh` by hand, do the same in `/opt/cs464/app.env` on
+each server: give each `<SVC>_DATABASE_URL` the value of the
+`<SVC>_DIRECT_DATABASE_URL` line in the same file.
 Its images may have been removed, and the server is logged out of GHCR after
 every deploy. So either make the `cs464-*` packages public once (each
 package's settings on GitHub; the repository already is), or log in first:
@@ -198,8 +214,14 @@ package's settings on GitHub; the repository already is), or log in first:
 remove a setting's name there, only add: the release before still reads the
 old name, and going back to it would start it without one.
 
+**Running compose on a server by hand:** every command on this page names
+the shared `app.env` by its absolute path, because `current` is a symlink and
+`../../app.env` from inside it is `/opt/app.env`. Each also sets `DRAIN_DIR`,
+which `roll.sh` sets for itself: compose reads the whole file for any command,
+and refuses to run without it.
+
 **Logs:** `ssh deploy@<server>`, `cd /opt/cs464/current`, then
-`docker compose --env-file ../../app.env --env-file release.env logs -f ledger`.
+`DRAIN_DIR=/opt/cs464/drain docker compose --env-file /opt/cs464/app.env --env-file release.env logs -f ledger`.
 The logs rotate at 50 MB per container. The services log JSON, one object per
 line. To follow one request, grep or filter by `request_id`: a response's
 `X-Request-ID` header is the value to search for, in the service logs and in
@@ -223,7 +245,7 @@ public address you know (`curl -s https://ifconfig.me`), send one identifiable
 request: `curl -s -H 'X-Request-ID: probe-600' https://auth.<domain>/health`.
 Then, on an app server in `/opt/cs464/current`, find that request's line by
 its ID (the gateway logs the path, never the query string):
-`docker compose --env-file ../../app.env --env-file release.env logs --tail 200 gateway | grep 'rid=probe-600'`.
+`DRAIN_DIR=/opt/cs464/drain docker compose --env-file /opt/cs464/app.env --env-file release.env logs --tail 200 gateway | grep 'rid=probe-600'`.
 Its first field, the client address, must be exactly your public address. Ignore
 the `/lb-health` lines: the load balancer sends those itself every few
 seconds, so they are expected to show an address inside `10.64.0.0/20`. If
@@ -253,7 +275,7 @@ reasoning.
 The gateway returns 404 for `/ready` on every service's subdomain. It names
 the failing dependency, and only the monitoring on the private network needs
 it. To look yourself:
-`docker compose --env-file ../../app.env --env-file release.env exec gateway wget -qO- http://ledger:8000/ready`.
+`DRAIN_DIR=/opt/cs464/drain docker compose --env-file /opt/cs464/app.env --env-file release.env exec gateway wget -qO- http://ledger:8000/ready`.
 Ready prints `{"status":"ready",...}`. Not ready prints no body: busybox
 `wget` shows only `wget: server returned error: HTTP/1.1 503 ...`, and that
 line is the answer.
@@ -263,6 +285,12 @@ scrapes. It is private the same way: the gateway returns 404 for it on every
 subdomain, and only Alloy, on the private network, reads it. To look
 yourself, use the `exec gateway wget` command above with `/metrics` in place
 of `/ready`.
+
+Every path under `/internal/` is private too: the gateway returns 404 for it
+on every subdomain, with `LEDGER_SERVICE_KEY` or without it. Those are the
+routes the ledger reads from auth and market over the private network (ADR
+0021, ADR 0030). All three hidden paths are listed in
+`deploy/production/gateway/private-paths.inc`; add a path there to hide it.
 
 ## Monitoring: first-time setup
 
@@ -328,7 +356,7 @@ same alert fires. After an hour that alert clears by itself, even if the
 server is still silent, so a "resolved" email is not proof that data is back:
 check the dashboard. Alloy's log on a server says why: in
 `/opt/cs464/current`, run
-`docker compose --profile observability --env-file ../../app.env --env-file release.env logs --tail 100 alloy`.
+`DRAIN_DIR=/opt/cs464/drain docker compose --profile observability --env-file /opt/cs464/app.env --env-file release.env logs --tail 100 alloy`.
 
 **To switch Alloy off,** delete the token and deploy:
 
@@ -383,10 +411,10 @@ still be edited in the UI. The contact point went in the same way. Grafana's
 export of the group matched this file, apart from defaults it fills in
 itself, so the file in the repo is the commented original.
 
-**`cs464-service-down` is paused until the first release.** Until a server
-sends metrics, it has no data, and no data counts as down, so it would email
-every few minutes. Unpausing it is the first step of the post-release
-checklist below.
+**On a new stack, import `cs464-service-down` paused,** or resume it only once
+every server is sending. Until a server sends metrics the rule has no data,
+and no data counts as down, so it would email every few minutes. Ours was
+resumed after #632 reached production.
 
 **Linking a log line to its trace.** Grafana Cloud's own Loki datasource is
 read-only, so it cannot take a derived field. A *correlation* does the same
@@ -424,6 +452,9 @@ query string, by design (docs/api/realtime-service.md), so nothing secret is in 
   address ending in `/otlp`, and Alloy adds `/v1/traces` itself (first-time
   setup, step 4). A wrong `TRACING_ENDPOINT` breaks nothing else: the
   service's log just shows OpenTelemetry warnings that it is dropping spans.
+  `release.sh` also sets `TRACING_SAMPLE_RATIO=0.1`, so production keeps one
+  trace in ten, because a 1-vCPU server spent 12–16% of its CPU on tracing at
+  100% (#20, 2026-11-04); local and CI keep 1.0.
 - The same "dropping span" warnings appear while Alloy is down, including
   the moments between a roll and Alloy starting. They are harmless.
 - Background work makes small traces with no request behind them: the close
@@ -439,14 +470,15 @@ query string, by design (docs/api/realtime-service.md), so nothing secret is in 
 method-route pairs × 12 histogram series ≈ 540, plus about 135
 request-counter series, about 200 process/Python series, and about 40
 business series. That is ≈ 950 per server, ≈ 1,900 for two, well under 10k.
-Re-measure it on the *Usage* page a week after the first release, and update
-this paragraph.
+Re-measure it on the *Usage* page around 2026-11-11, a week after monitoring
+went live, and update this paragraph.
 
 **Post-release checklist.** Run it once, after the first deploy from `main`
-that carries this work. That deploy comes only after the showcase.
+that carries this work. It was run after #632, on 2026-11-04. What it found
+is under the list.
 
-1. Unpause `cs464-service-down`: *Alerting*, *Alert rules*, *CS464*, the
-   rule, *Resume evaluation*. Do it once every server has been sending for
+1. Unpause `cs464-service-down`, which a new stack imports paused:
+   *Alerting*, *Alert rules*, *CS464*, the rule, *Resume evaluation*. Do it once every server has been sending for
    a few minutes, or it pages at once.
 2. Every panel on *CS464 / Overview* has data. Make a trade first, or the
    trading panels have nothing to show.
@@ -457,26 +489,184 @@ that carries this work. That deploy comes only after the showcase.
    cost paragraph, in place of "a little memory". If it is over about
    300 MB, consider a `mem_limit` on `alloy` in
    `deploy/production/compose.yml`.
-5. Tempo shows a trade as one trace across ledger, market and auth, and its
-   spans carry no query string, cookie or Authorization header (the client
-   address and user agent are kept, by decision).
+5. Tempo shows a trade's spans in the ledger. A trade on a market that has
+   already been traded calls no other service (ADR 0030), so to see one
+   trace across services, use a market's first trade, which fetches its
+   terms from market, or a settlement. No span carries a query string,
+   cookie or Authorization header (the client address and user agent are
+   kept, by decision).
 6. Trigger `cs464-service-down` once. **Ask Ernest before you SSH.** On one
    server, in `/opt/cs464/current`, run
-   `docker compose --env-file ../../app.env --env-file release.env stop audit`.
+   `DRAIN_DIR=/opt/cs464/drain docker compose --env-file /opt/cs464/app.env --env-file release.env stop audit`.
    Wait 6 minutes, and check that the email arrives. It can take a minute
    more. Then run the same command with `start audit` and check that the
    alert clears.
+
+What the first run found (2026-11-04, after #632):
+- Steps 1, 3, 4 and 6 passed. Both servers report every service and
+  dependency.
+- Alloy used 169 MB on `app-1` and 51 MB on `app-2`, so it needs no
+  `mem_limit`.
+- `audit` stopped on `app-1` at 20:08 SGT. The firing email arrived inside
+  six minutes. After the restart at 20:17, the resolved email came within
+  about five, the notification policy's batching interval.
+- The dashboard first opened on the wrong Loki, and the server commands here
+  failed as written. Both were fixed in #634.
+- Steps 2 and 5 wait for the load test's trades (#20).
+
+## Connection budget
+
+The managed Postgres has one connection limit for everything that connects
+to it: about 47 on the 2 GB plan (25 for each GB, less 3 DigitalOcean keeps
+for itself). Every app server runs auth, market, ledger and audit, so if each
+connected straight to Postgres, two servers would use 40 and a third would
+not fit.
+
+So the apps do not connect to Postgres. Each service role has its own
+DigitalOcean connection pool (PgBouncer), in `infra/terraform/databases.tf`:
+
+| Pool | Logs in as | Mode | Server connections |
+| --- | --- | --- | --- |
+| `cs464-auth` | `auth_svc` | transaction | 6 |
+| `cs464-market` | `market_svc` | transaction | 6 |
+| `cs464-ledger` | `ledger_svc` | transaction | 14 |
+| `cs464-audit` | `audit_svc` | transaction | 2 |
+
+The pools hold 28 connections to Postgres, however many servers run. The
+other 19 or so stay free for what connects directly: the three migrate steps
+(one at a time), `ensure-database.sh`, and an operator with `psql`. A request
+that finds its pool busy waits its turn inside the pool, instead of failing
+with "too many connections".
+
+The services' own SQLAlchemy pools (`DATABASE_POOL_SIZE` and
+`DATABASE_MAX_OVERFLOW` in `deploy/production/compose.yml`) now count
+connections to the pooler, which are cheap: each pool takes up to 5,000. Per
+server: auth 3+1, market 3+2, ledger 10+5, audit 1+1, so 26. Three servers
+make 78, all sharing the same 28.
+
+**Two addresses per role.** `app.env` carries both, and `release.sh` writes
+them from the GitHub secrets that `infra/push-secrets.sh` sets:
+
+- `<SVC>_DATABASE_URL`, which the apps use, is the pool:
+  `postgresql+asyncpg://<svc>_svc:<PASSWORD>@<pool private host>:<pool port>/cs464-<svc>?ssl=require`.
+  The part after the port names the pool, not the database. That is how
+  DigitalOcean addresses a pool: its API documents one on `defaultdb` as
+  `...:25061/backend-pool`. The pool knows which database it serves.
+- `<SVC>_DIRECT_DATABASE_URL`, which the migrate steps use, is Postgres
+  itself, the address every service used before the pools. A migration is
+  one long transaction that takes table locks, and should not hold one of a
+  pool's few server connections while it does. The migrate engine also
+  keeps asyncpg's statement cache, which the apps turn off (below). The
+  stack test checks that the migrate steps never reach the pooler. Audit has
+  no migrate step.
+  Its direct address is there for an operator, and so that every role has
+  both.
+
+**What transaction mode rules out.** A pooled connection belongs to a client
+only for one transaction, so nothing may leave state on a connection for the
+next transaction. Checked in `backend/` on 2026-11-07:
+
+- The leaderboard refresh's advisory lock is `pg_advisory_xact_lock`, which
+  ends with its transaction, and it is the only advisory lock.
+- No service uses LISTEN or NOTIFY: live prices go over Redis (ADR 0010).
+- No service makes a temporary table or runs a session-level `SET`. The
+  one `SET LOCAL` is in a test.
+- A named prepared statement lives on one server connection, and the next
+  transaction may get another. So every service's `core/database.py` turns
+  asyncpg's statement cache off (`connect_args={"statement_cache_size": 0}`),
+  and asyncpg sends only unnamed statements. SQLAlchemy's own cache stays
+  on. DECISIONS.md, "asyncpg's statement cache is off in every engine", has
+  the measurements.
+- `pool_pre_ping` stays on in every service's `core/database.py`, and
+  nothing there rewrites the address.
+
+**Which users a pool may log in as (checked 2026-11-07).** #640's design
+asked first whether DigitalOcean would pool a role created by SQL, like
+`ledger_svc`, or only a user made through its API. In the console, the
+Create Connection Pool dialog's user list shows `audit_svc`, `auth_svc`,
+`doadmin`, `ledger_svc` and `market_svc`, so SQL-created roles are accepted.
+Its default is "Use inbound user", under the label "User privileges override
+(Optional)". It also says each pool "shares its assigned backend processes
+with up to 5000 client connections". What the dialog cannot show is whether
+the pool logs in with the password `ensure-database.sh` sets. The first
+apply and deploy are the test of that. If it cannot, the fallback in #640's
+design is a PgBouncer container on each server instead.
+
+**Turning the pools on (once, in two deploys).** Every release on a server
+reads the one shared `app.env`, and `release.sh` rewrites it on every server
+before it rolls any of them. So whatever address a deploy writes, the release
+before is also run with it: when a roll fails and `roll.sh` restarts the old
+release, and when a release is sent back. Code from before #640 keeps
+asyncpg's statement cache, and through a transaction-mode pool it fails with
+`prepared statement "__asyncpg_stmt_N__" does not exist`. `/health` stays
+green while it does. So the apps move to the pools only once the release
+before them is code that turns the cache off:
+
+1. Before the release that brings the pools reaches `main`, run
+   `infra/tf plan`. It should add the four
+   `digitalocean_database_connection_pool.service[...]`, change the four
+   `*_database_url` outputs and add four `*_direct_database_url` ones, and
+   destroy nothing.
+2. `infra/tf apply`. The pools now exist and nothing uses them yet.
+3. Set only the four direct addresses in GitHub, and leave
+   `<SVC>_DATABASE_URL` as it is, on the direct addresses:
+
+   ```bash
+   infra/tf output -raw auth_direct_database_url | gh secret set AUTH_DIRECT_DATABASE_URL --env production
+   infra/tf output -raw market_direct_database_url | gh secret set MARKET_DIRECT_DATABASE_URL --env production
+   infra/tf output -raw ledger_direct_database_url | gh secret set LEDGER_DIRECT_DATABASE_URL --env production
+   infra/tf output -raw audit_direct_database_url | gh secret set AUDIT_DIRECT_DATABASE_URL --env production
+   ```
+
+   Do not run `infra/push-secrets.sh` yet: it would also move
+   `<SVC>_DATABASE_URL` to the pools.
+4. Merge to `main`, which deploys. The new code runs on the direct
+   addresses, with the cache off. Deploying it before step 3 fails at once
+   and touches nothing, because `release.sh` requires the direct addresses.
+   Check each service's `/ready` (the `exec gateway wget` command in
+   "Health and readiness").
+5. `infra/push-secrets.sh`, then run the Deploy workflow again by hand.
+   This deploy moves the apps to the pools. The release before it is now step
+   4's, which turns the cache off, so a failed roll or a send-back is safe.
+   `/health` checks nothing, so a green deploy does not prove the pools
+   work. Check each service's `/ready` again, and make a trade.
+
+Until step 5's deploy has succeeded, let no deploy of older code run with
+the pooled addresses in GitHub. Its apps would keep the cache on through the
+pools, and its migrate steps would go through the pools too.
+
+**If a service cannot log in through its pool,** put the apps back on the
+direct addresses. This needs no code change. For each role, copy the direct
+address over the pooled one, then run the Deploy workflow again:
+
+```bash
+infra/tf output -raw ledger_direct_database_url | gh secret set LEDGER_DATABASE_URL --env production
+```
+
+The next `infra/push-secrets.sh` puts the pooled addresses back.
+
+**A new environment: not solved yet.** The pools need the service roles,
+and the roles are made by the first deploy. If `infra/tf apply` cannot create
+the pools on a database that has never been deployed to, this page has no
+tested way through. Without the pools there are no `*_database_url` outputs,
+so `infra/push-secrets.sh` stops at its first `AUTH_DATABASE_URL`, and
+nothing after it is set. The way through would be a first apply that leaves
+the pools out, or every remaining secret set by hand. Nobody has tried
+either. Production already has the roles, so this matters only for a
+rebuild from nothing.
 
 ## Scaling
 
 - **More app servers:** raise `app_server_count` in
   `infra/terraform/variables.tf`, `infra/tf apply`, `infra/push-secrets.sh`,
   then deploy. The load balancer picks the new server up by its tag.
-- **The limit is Postgres's connections.** Two servers use 40 of the 2 GB
-  plan's 47 or so, plus three for the migrate steps. A third server needs the
-  pool sizes in `deploy/production/compose.yml` lowered, or a bigger
-  `database_size`. DECISIONS.md, "Each service's connection pool is a
-  setting, sized to the database's ceiling".
+- **Postgres's connections no longer limit the number of servers.** Every
+  server shares the four connection pools, which hold 28 of the 2 GB plan's
+  47 or so, however many servers run ("Connection budget" above). What a
+  third server adds is clients waiting on the same 28. To give the database
+  more work at once, raise a pool's `size` in `infra/terraform/databases.tf`.
+  The pools together must leave room for the direct connections. Past about
+  40 in all, take a bigger `database_size`.
 - **Bigger servers:** change `app_server_size`, then resize one server at a
   time, or both go down together: `infra/tf apply
   -target='digitalocean_droplet.app[0]'`, wait for it to be healthy behind
@@ -498,9 +688,9 @@ today's.
 
 Grafana Cloud's free tier allows 10,000 active series, 50 GB of logs and
 50 GB of traces, kept for 14 days, and 3 users. We expect about 1,900 series
-(the series budget above). Alloy itself costs only a little memory on each
-server. Images on GHCR are free for a public repository. To stop paying, run
-`infra/tf destroy`. That deletes the database too, so take a backup first if
+(the series budget above). Alloy itself used 51–169 MB of memory per server,
+minutes after its first deploy. Images on GHCR are free for a public
+repository. To stop paying, run `infra/tf destroy`. That deletes the database too, so take a backup first if
 anything in it matters.
 
 ## Tests
@@ -518,7 +708,12 @@ need only Docker.
   nothing, and that one failed server sends every other server back.
 
 What only a real deploy proves: the DigitalOcean resources themselves, the
-certificate, and TLS to the managed databases.
+certificate, TLS to the managed databases, and DigitalOcean's own pools. The
+stack test stands in for those pools with a PgBouncer in transaction mode,
+at least as strict as DigitalOcean's: no prepared-statement tracking, and each
+client's next transaction on another server connection. The apps reach
+Postgres through it, the migrate steps reach Postgres directly, and the test
+checks both.
 
 ## Not done yet
 
@@ -526,13 +721,7 @@ certificate, and TLS to the managed databases.
   `infra/terraform` would run it as a second workspace. It is not built.
   It needs a registrable domain of its own, not `staging.<domain>`: the
   login cookie reaches every subdomain of the production domain (ADR 0026).
-- **Monitoring's first real check.** The dashboard and the five alerts are
-  built, but have not yet seen production data. The post-release checklist
-  above runs after the first deploy from `main` that carries them.
-- **Re-measuring the series budget.** A week after that release, read the
-  real series count off Grafana Cloud's *Usage* page and update the estimate
-  above and the README.
-- **Login rate limiting in production.** #600 is merged into `dev`, but
-  production deploys only from `main`, after the showcase, so it is not live
-  yet.
+- **Re-measuring the series budget.** Around 2026-11-11, a week after
+  monitoring went live with #632, read the real series count off Grafana
+  Cloud's *Usage* page and update the estimate above and the README.
 - **Load test numbers:** #20, against this deployment.

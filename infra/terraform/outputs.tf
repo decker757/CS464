@@ -4,7 +4,18 @@
 locals {
   postgres          = digitalocean_database_cluster.postgres
   postgres_location = "${local.postgres.private_host}:${local.postgres.port}/${digitalocean_database_db.cs464.name}"
+  # The apps connect through their pool. A pool's address has the pool's
+  # name where the database's would go: DigitalOcean's API documents a pool
+  # on `defaultdb` as `...:25061/backend-pool`. What a transaction-mode pool
+  # needs of the client is in each service's core/database.py, not here.
   database_urls = {
+    for service, pool in digitalocean_database_connection_pool.service :
+    service => "postgresql+asyncpg://${service}_svc:${random_password.database[service].result}@${pool.private_host}:${pool.port}/${pool.name}?ssl=require"
+  }
+  # The migrate steps connect straight to Postgres: a migration is one long
+  # transaction that takes table locks, and should not hold one of a pool's
+  # few server connections while it does.
+  direct_database_urls = {
     for service, password in random_password.database :
     service => "postgresql+asyncpg://${service}_svc:${password.result}@${local.postgres_location}?ssl=require"
   }
@@ -64,6 +75,26 @@ output "ledger_database_url" {
 
 output "audit_database_url" {
   value     = local.database_urls["audit"]
+  sensitive = true
+}
+
+output "auth_direct_database_url" {
+  value     = local.direct_database_urls["auth"]
+  sensitive = true
+}
+
+output "market_direct_database_url" {
+  value     = local.direct_database_urls["market"]
+  sensitive = true
+}
+
+output "ledger_direct_database_url" {
+  value     = local.direct_database_urls["ledger"]
+  sensitive = true
+}
+
+output "audit_direct_database_url" {
+  value     = local.direct_database_urls["audit"]
   sensitive = true
 }
 

@@ -196,3 +196,15 @@ the ledger exists.
 > gate's call comes after this one and has the same four limits, so a trade
 > can wait on both in turn. "The same explicit five-second timeouts" under
 > Consequences means that.
+
+> **Amended 2026-11-06 by
+> [ADR 0030](0030-the-ledger-keeps-a-local-copy.md).** The trade path no
+> longer calls `GET /auth/me`. It reads the ledger's local copy of every
+> suspended id, refreshed about every second through ADR 0021's key, and
+> refuses `503 auth_unavailable` once the copy is older than five seconds.
+> The reversal note above said the fix is "not a cache, which would make the
+> TTL a correctness parameter"; ADR 0030 answers that its TTL is a refusal
+> parameter, since a stale copy stops trades rather than letting them
+> through. A suspension now takes effect within about a second, not within
+> the half round trip, and reason 3 under "The trader's token" no longer
+> holds: a key mismatch stops trading.
