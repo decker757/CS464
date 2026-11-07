@@ -353,7 +353,8 @@ async def _commit_fill(
     "A fill the running check refuses inside a cascade is `500
     cascade_fill_refused`")."""
     fill_version = book.state_version
-    # Read once for the whole batch; `get_one` for the trade path's reason.
+    # Read once for the whole batch. `get_one`: the book's foreign key keeps
+    # the row there, so a miss is a broken database and raises, never None.
     pool_account = await session.get_one(Account, book.pool_account_id)
     # Before the order is added, so the cascade never reads the order itself.
     cascade = await write_cascade(
@@ -535,7 +536,7 @@ async def place(
         raise MarketClosed
     # The deciding close check, on Postgres's clock after the lock, as the
     # trade's step 6 makes it.
-    await books.refuse_if_closed_under_lock(session, terms)
+    books.refuse_if_closed_under_lock(terms, db_now=await books.clock_after_lock(session))
 
     outcomes = await list_outcomes(session, market_id)
     book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)

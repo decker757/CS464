@@ -233,25 +233,25 @@ async def clock_after_lock(session: AsyncSession) -> datetime:
 
     `clock_timestamp()`, never `now()`: that is the transaction's start, read
     before the caller queued for the lock, so call this after `lock_book`.
-    Its own statement for now; PR #641 folds it into the trade's context
-    statement. Twin of market_service's `_database_now`.
+    The trade reads its clock in `trading.read_trade_context`; only
+    `orders.place` still calls this, and Task 5.3 of #641 removes it. Twin of
+    market_service's `_database_now`.
     """
     return (await session.execute(select(func.clock_timestamp()))).scalar_one()
 
 
-async def refuse_if_closed_under_lock(
-    session: AsyncSession, terms: MarketTradingTerms
-) -> None:
+def refuse_if_closed_under_lock(terms: MarketTradingTerms, *, db_now: datetime) -> None:
     """Raise `MarketClosed` if the market has no close time, or it has
-    passed on Postgres's clock now. #640.
+    passed by `db_now`. #640.
 
     The deciding close check for a trade and a placement: the copy's was the
-    early refusal, and the caller may have queued past `close_time`. Call it
-    after `lock_book`, as `clock_after_lock` requires.
+    early refusal, and the caller may have queued past `close_time`. `db_now`
+    is Postgres's `clock_timestamp()` read after `lock_book` returned, never
+    a clock read before it.
     """
     if terms.close_time is None:
         raise MarketClosed
-    if terms.close_time <= await clock_after_lock(session):
+    if terms.close_time <= db_now:
         raise MarketClosed
 
 

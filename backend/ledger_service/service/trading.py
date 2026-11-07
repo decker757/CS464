@@ -40,23 +40,27 @@ trade on a warm market calls no other service.**
    lock, for the same commit-boundary reason.
 5. The book row, `SELECT ... FROM market_books ... FOR UPDATE` — the wider
    lock, taken before `posting.post_all` takes the account locks inside it
-   ("Lock order: book row before account rows", ADR 0015).
-6. The idempotency key, looked up again, now under the lock. "A caller
+   ("Lock order: book row before account rows", ADR 0015). Then one
+   statement, `read_trade_context`, issued after the lock returns and never
+   folded into it, reads everything steps 6 to 9 decide from: under READ
+   COMMITTED a `FOR UPDATE` re-fetches only the rows it locked after a wait,
+   and answers everything else in its statement from the pre-lock snapshot.
+6. The idempotency key, asked about again, now under the lock. "A caller
    holding pending writes must establish under its own lock that the
    idempotency key is absent": this is that establishment, and it runs
    before this function writes anything of its own, so a hit here still
    costs nothing to return. Then the latch ([3.4] #12): a
    `ledger.market_results` row for the market is `409 market_closed`,
-   whatever the gate said, before anything below is read. Then the gate's
+   whatever the gate said, before anything below is decided. Then the gate's
    close time against Postgres's `clock_timestamp()`, read after the lock: a
    market whose close time passed while this trade queued is `409
    market_closed` too. The copy's check was the early refusal; this decides.
-7. `q`, `b` and the outcomes, read fresh — cheap, because the book row's lock
-   makes this session's own prior read of `state_version` already correct,
-   but read again anyway so the statement log shows a read after the lock
-   rather than one that predates it. A book that cannot be priced is
-   `MarketBookIncomplete`, through `book_prices.refuse_unpriceable` — the
-   guard the preview and the snapshot use.
+7. `q`, `b` and the outcomes, read fresh after the lock, so the statement
+   log shows a read after the lock rather than one that predates it. A book
+   that cannot be priced is `MarketBookIncomplete`, through
+   `book_prices.refuse_unpriceable` — the guard the preview and the snapshot
+   use. One with no outcome rows at all is refused by the context statement
+   itself, before step 6, since it returns no row to carry the rest on.
 8. Staleness. A trade that names no limit is refused `QuoteStale` here
    unless its quoted `state_version` equals the book's current one, either
    direction ("The trade's staleness check is strict `state_version`
@@ -64,8 +68,9 @@ trade on a warm market calls no other service.**
    that names a limit skips that comparison, and the limit decides instead,
    right after `trade_cost_of` in step 9 (#640).
 9. The outcome, the holding check on a sell (the caller's own position less
-   what their live sell orders in that outcome reserve, ADR 0024, read here
-   and taking no lock of its own — the book lock holds both still), then
+   what their live sell orders in that outcome reserve, ADR 0024, both from
+   the context statement, which takes no lock of its own — the book lock
+   holds both still), then
    `core/pricing.py::trade_cost_of`: the outstanding check as a backstop, the
    price, D-040's bound on both the cost and the resulting `q`, and
    `quantize_cost` — which refuses a zero result itself (D-041). The preview
@@ -115,7 +120,7 @@ from decimal import Decimal
 
 import httpx
 import redis.asyncio as redis
-from sqlalchemy import select
+from sqlalchemy import Select, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import (
@@ -143,6 +148,7 @@ from model.entities import (
     AccountKind,
     MarketBook,
     MarketOutcome,
+    MarketResult,
     Order,
     OrderStatus,
     Position,
@@ -224,6 +230,23 @@ class TradeResult:
     book_state_version: int
 
 
+@dataclass(frozen=True)
+class TradeContext:
+    """What a trade decides from under the book lock, as `read_trade_context`
+    reads it in one statement. `reserved_shares` is zero for a user with no
+    live sell orders in the outcome; `db_now` is Postgres's clock after the
+    lock."""
+
+    outcomes: list[MarketOutcome]
+    pool_account: Account
+    position: Position | None
+    key_taken: bool
+    has_result: bool
+    has_open_orders: bool
+    reserved_shares: Decimal
+    db_now: datetime
+
+
 def _matches(
     transaction: Transaction,
     *,
@@ -275,6 +298,27 @@ async def _replay_if_present(
     if not _matches(existing, outcome_id=outcome_id, side=side, quantity=quantity):
         raise IdempotencyKeyReused
     return result_of(existing)
+
+
+def _open_orders_in(market_id: uuid.UUID) -> Select[tuple[Order]]:
+    """The market's open orders: what `list_open_orders` reads, and what the
+    context statement asks whether there are any of."""
+    return select(Order).where(Order.market_id == market_id, Order.status == OrderStatus.OPEN)
+
+
+def _refuse_if_short(
+    position: Position | None, *, reserved: Decimal, quantity: Decimal
+) -> None:
+    """Raise `InsufficientSharesHeld` if a sell of `quantity` is more than
+    the position less `reserved` ("Reserved shares cannot be sold twice",
+    ADR 0024)."""
+    held = position.quantity if position is not None else ZERO
+    if quantity > held - reserved:
+        raise InsufficientSharesHeld(
+            held=held.quantize(QUANTUM),
+            reserved=reserved.quantize(QUANTUM),
+            requested=quantity.quantize(QUANTUM),
+        )
 
 
 def _add_to_position(
@@ -457,6 +501,72 @@ def result_of(transaction: Transaction) -> TradeResult:
     )
 
 
+async def read_trade_context(
+    session: AsyncSession,
+    book: MarketBook,
+    *,
+    user_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+    key: str,
+) -> TradeContext:
+    """Everything a trade decides from under the book lock, in one SELECT:
+    the outcomes in `position` order, each row carrying the pool account,
+    this user's position in `outcome_id`, and the scalars of the dataclass.
+
+    Call it after `books.lock_book` returns, and never fold it into that
+    statement: under READ COMMITTED a `FOR UPDATE` re-fetches only the rows it
+    locked after a wait, and answers every other table and subquery from its
+    pre-lock snapshot (ADR 0015). No lock of its own: the book lock holds
+    every row it reads still. Raises `MarketBookIncomplete` for a book with no
+    outcome rows, which leaves the statement no row to carry the rest on.
+    """
+    market_id = book.market_id
+    key_taken = select(Transaction.id).where(Transaction.idempotency_key == key).exists()
+    has_result = (
+        select(MarketResult.market_id).where(MarketResult.market_id == market_id).exists()
+    )
+    reserved_shares = reservations.reserved_shares_query_of(
+        user_id, market_id=market_id, outcome_id=outcome_id
+    ).scalar_subquery()
+    this_users_position = and_(
+        Position.user_id == user_id,
+        Position.market_id == market_id,
+        Position.outcome_id == outcome_id,
+    )
+    stmt = (
+        select(
+            MarketOutcome,
+            Account,
+            Position,
+            key_taken.label("key_taken"),
+            has_result.label("has_result"),
+            _open_orders_in(market_id).exists().label("has_open_orders"),
+            reserved_shares.label("reserved_shares"),
+            func.clock_timestamp().label("db_now"),
+        )
+        .select_from(MarketOutcome)
+        .join(Account, Account.id == book.pool_account_id)
+        .outerjoin(Position, this_users_position)
+        .where(MarketOutcome.market_id == market_id)
+        .order_by(MarketOutcome.position)
+    )
+    rows = (await session.execute(stmt)).all()
+    if not rows:
+        # Always raises: no outcomes is fewer than the two a book is priced with.
+        book_prices.refuse_unpriceable(0, book.liquidity_b)
+    first = rows[0]
+    return TradeContext(
+        outcomes=[row.MarketOutcome for row in rows],
+        pool_account=first.Account,
+        position=first.Position,
+        key_taken=first.key_taken,
+        has_result=first.has_result,
+        has_open_orders=first.has_open_orders,
+        reserved_shares=first.reserved_shares,
+        db_now=first.db_now,
+    )
+
+
 async def list_outcomes(
     session: AsyncSession, market_id: uuid.UUID
 ) -> Sequence[MarketOutcome]:
@@ -503,20 +613,15 @@ async def refuse_if_short_of_shares(
     """Raise `InsufficientSharesHeld` if a sell of `quantity` is more than the
     position less what the seller's live sell orders in that outcome reserve.
 
-    Call it holding the book lock, which holds both figures still. The trade
-    and the placement both sell through it: "Reserved shares cannot be sold
-    twice" (ADR 0024).
+    Call it holding the book lock, which holds both figures still. The
+    placement sells through it; the trade applies the same rule,
+    `_refuse_if_short`, to the reservation its context statement read
+    ("Reserved shares cannot be sold twice", ADR 0024).
     """
-    held = position.quantity if position is not None else ZERO
     reserved = await reservations.reserved_shares_of(
         session, user_id, market_id=market_id, outcome_id=outcome_id
     )
-    if quantity > held - reserved:
-        raise InsufficientSharesHeld(
-            held=held.quantize(QUANTUM),
-            reserved=reserved.quantize(QUANTUM),
-            requested=quantity.quantize(QUANTUM),
-        )
+    _refuse_if_short(position, reserved=reserved, quantity=quantity)
 
 
 def write_trade(
@@ -559,8 +664,7 @@ async def list_open_orders(session: AsyncSession, market_id: uuid.UUID) -> list[
     check rank them themselves. Call it holding the book lock, which every
     writer of an order row takes first, so the read takes no lock of its own.
     The latch has just said the market has no result, so open is live."""
-    stmt = select(Order).where(Order.market_id == market_id, Order.status == OrderStatus.OPEN)
-    return list((await session.execute(stmt)).scalars())
+    return list((await session.execute(_open_orders_in(market_id))).scalars())
 
 
 def resting_order_of(order: Order, outcome_ids: Sequence[uuid.UUID]) -> RestingOrder:
@@ -825,12 +929,23 @@ async def execute(
     # `posting.post_all` takes inside it.
     book = await books.lock_book(session, market_id)
 
-    # 6. The re-check. Nothing below this line has written anything yet, so a
-    # hit here still costs nothing to return.
-    under_lock = await _replay_if_present(
-        session, key, outcome_id=outcome_id, side=side, quantity=quantity
+    # Everything steps 6 to 9 decide from, in one statement issued after the
+    # lock returned, never inside it (ADR 0015's snapshot rule). The outcomes
+    # are entities rather than `book_prices.read_or_open`'s projection: the
+    # trade writes `q` through them, and that read's empty fallback would call
+    # `books.ensure_open` under this lock.
+    context = await read_trade_context(
+        session, book, user_id=user_id, outcome_id=outcome_id, key=key
     )
-    if under_lock is not None:
+
+    # 6. The re-check. Nothing below this line has written anything yet, so a
+    # hit here still costs nothing to return. The transaction itself is read
+    # only on a hit.
+    if context.key_taken:
+        under_lock = await _replay_if_present(
+            session, key, outcome_id=outcome_id, side=side, quantity=quantity
+        )
+        assert under_lock is not None  # transactions are append-only
         return under_lock
 
     # The latch: a market that has ended refuses here, under the book lock, a
@@ -838,18 +953,15 @@ async def execute(
     # re-check, so a charged trade's retry still replays; before the staleness
     # check, so a settled market is never `quote_stale`. DECISIONS.md, "The
     # trade latch sits after the key re-check under the book lock".
-    if await books.find_result(session, market_id) is not None:
+    if context.has_result:
         raise MarketClosed
     # The deciding close check, on Postgres's clock after the lock: the copy's
     # was the early refusal, and this trade may have queued past `close_time`.
-    await books.refuse_if_closed_under_lock(session, terms)
+    books.refuse_if_closed_under_lock(terms, db_now=context.db_now)
 
-    # 7. Read fresh, after the lock. Local rather than
-    # `book_prices.read_or_open`: the trade writes `q` through these entities,
-    # which that projection does not return, and its empty-read fallback
-    # would call `books.ensure_open` under this lock. The guard after it is
-    # the shared one, so the trade refuses exactly the books the preview does.
-    outcomes = await list_outcomes(session, market_id)
+    # 7. The guard is the shared one, so the trade refuses exactly the books
+    # the preview does.
+    outcomes = context.outcomes
     book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)
     q = [outcome.q for outcome in outcomes]
     b = book.liquidity_b
@@ -866,20 +978,10 @@ async def execute(
 
     # The holding check, after the book lock and before the outstanding check
     # and any pricing. This user's position in this outcome less what their
-    # sell orders reserve, not the market's shares outstanding, and read
-    # without a lock of its own: the book lock holds it still.
-    position = await find_position(
-        session, user_id=user_id, market_id=market_id, outcome_id=outcome_id
-    )
+    # sell orders reserve, not the market's shares outstanding.
+    position = context.position
     if side is Side.SELL:
-        await refuse_if_short_of_shares(
-            session,
-            position,
-            user_id=user_id,
-            market_id=market_id,
-            outcome_id=outcome_id,
-            quantity=quantity,
-        )
+        _refuse_if_short(position, reserved=context.reserved_shares, quantity=quantity)
 
     # 9. The price, through `trade_cost_of` like the preview, so the two code
     # paths cannot disagree about what this trade costs. Its outstanding
@@ -913,10 +1015,7 @@ async def execute(
         now=now,
     )
     trade_version = book.state_version
-
-    # Read once for the whole batch. `get_one`: the book's foreign key keeps
-    # the row there, so a miss is a broken database and raises, never None.
-    pool_account = await session.get_one(Account, book.pool_account_id)
+    pool_account = context.pool_account
 
     # 10b. The cascade, after the trade's own writes, on the price they left.
     fills = await write_cascade(
