@@ -11447,3 +11447,75 @@ first trade in the second after publication arrives with a book and no copy
 entry, and floored it was `503` one time in four (#656's first CI run).
 The refresher logs the first failure of a streak at ERROR, repeats at
 WARNING with the count, and the recovery at INFO.
+
+---
+
+### D-NEW — asyncpg's statement cache is off in every engine
+
+**Date:** 2026-11-07 · **Ticket:** #640 · **Status:** active
+
+**Decision.** Each service's `core/database.py` passes
+`connect_args={"statement_cache_size": 0}`, always, locally and in CI as in
+production. SQLAlchemy's own prepared statement cache stays at its default.
+The pooled addresses carry no cache setting.
+
+**Why.** Production reaches Postgres through DigitalOcean's transaction-mode
+pools (ADR 0026's amendment). SQLAlchemy prepares every statement through
+asyncpg, and asyncpg names a statement whenever its own cache is on. A named
+statement lives on one server connection, and a transaction-mode pool hands
+the next transaction to whichever connection is free. There the statement is
+missing, or another process made one with the same name, because each
+process counts names from 1. With the cache off, asyncpg sends unnamed
+statements, and a pooler cannot mix those up.
+
+Measured on 2026-11-07 against PgBouncer 1.26.1 in transaction mode, with
+SQLAlchemy 2.0.52 and asyncpg 0.31.0. A transaction of 20 primary-key
+SELECTs and 5 UPDATEs, 500 timed after 50 warm-up, one process:
+
+| Set-up | Median | p95 | Failed |
+|---|---|---|---|
+| Direct to Postgres, both caches on | 5.4 ms | 7.2 ms | 0 |
+| Pooler without prepared-statement tracking, asyncpg's cache off (this) | 6.8 ms | 8.5–10.9 ms | 0 |
+| Pooler that tracks prepared statements, both caches on | 6.3–7.0 ms | 8.5 ms¹ | 0 |
+| Pooler without tracking, the URL's `prepared_statement_cache_size=0` | 18.5 ms | 24–29 ms | 57–433 of 500 with two processes |
+
+The times are wall clock through Docker on a laptop: compare them, do not
+quote them as production's. With asyncpg's cache off, Postgres still parses
+the statement on every execute: 102 Parse messages for 101 executions. But
+the Parse goes in the same round trip as the Bind, and costs about 0.014 ms.
+
+¹ The other of its two runs had a p95 of 25.4 ms, with a median of 7.0 ms.
+Nobody looked into why, and one run on a laptop is not evidence either way,
+so the table gives the 8.5 ms run.
+
+**Rejected.**
+- *`?prepared_statement_cache_size=0` on the URL*, which #640's design
+  proposed. It turns off SQLAlchemy's cache, which was never the problem.
+  asyncpg still names its statements, so it failed under two processes. And
+  every statement took a second round trip to prepare, which made the
+  transaction about three times slower. asyncpg's own setting cannot go on
+  the URL either: SQLAlchemy hands it over as the string `"0"`, and the
+  connect fails with `TypeError`.
+- *A setting, off by default, that production could turn back on* if
+  DigitalOcean's pooler tracks prepared statements. Its docs do not say that
+  it does. Turned on wrongly, requests fail rather than slow down, and the
+  setting would be a production configuration no test runs. What it would
+  save is the microseconds of a re-parse.
+- *Session-mode pools*, which keep prepared statements. A session holds its
+  server connection until the client disconnects, so the pools would again
+  have to cover every SQLAlchemy connection on every server, which is the
+  limit the pooler exists to lift.
+
+**Notes.** The guard is `deploy/production/test/stack-test.sh`. It runs the
+apps through a transaction-mode PgBouncer with no prepared-statement tracking
+and round-robin over two or more server connections, so a named statement
+fails at once, on a client's next transaction. With this line removed from the
+four engines, the stack test fails. `ci-deploy.yml` runs it for a change to
+any `core/database.py`.
+
+The migrate engine (`shared/migrating.py`) keeps asyncpg's default cache. It
+connects directly (`<SVC>_DIRECT_DATABASE_URL`), never through a pool, so
+nothing here applies to it. The stack test checks that the pooler carried
+nothing while the migrate steps ran. Do not justify the direct address by
+`search_path`, which the migrate engine sends when it connects: PgBouncer
+1.26.1 accepts it.
