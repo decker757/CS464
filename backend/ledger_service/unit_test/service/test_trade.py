@@ -14,6 +14,7 @@ tolerance would pass a buy that floored, or a total that went through a float.
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -905,6 +906,67 @@ async def test_the_staleness_check_reads_the_version_under_the_lock(
     assert not writes(lowered[:lock_at]), (
         "this path wrote before it took the book lock:\n"
         f"{writes(lowered[:lock_at])}"
+    )
+
+
+# The most statements a warm trade with no open orders sends from its book
+# lock to the end of its commit, the lock itself included. #641's budget:
+# lock 1, context 1, account locks 2, key lookup 1, floors and stamp 1,
+# writes 7.
+_LOCKED_SECTION_BUDGET = 13
+
+_LEDGER_TABLE = re.compile(r"\bledger\.(\w+)")
+
+
+def _label_of(statement: str) -> str:
+    """One statement as the 2026-11-05 measurement printed it: its verb, the
+    tables it names in the order it names them, and whether it locks."""
+    lowered = statement.lower()
+    verb = lowered.split(maxsplit=1)[0].upper()
+    tables = dict.fromkeys(_LEDGER_TABLE.findall(lowered))
+    label = f"{verb} {', '.join(tables)}".rstrip()
+    if "for update" in lowered:
+        label += " FOR UPDATE"
+    return label
+
+
+@pytest.mark.parametrize("side", ["buy", "sell"])
+async def test_a_warm_trade_stays_within_its_statement_budget(
+    session: AsyncSession, side: str
+) -> None:
+    """#641: on a warm market with no open orders, a trade by a funded user
+    who already holds a position sends at most 13 statements from the book's
+    `FOR UPDATE` to its commit, the lock included, so the book row is held
+    for that many round trips and no more. The design's section B counts
+    them; read the orders again unconditionally, or split the context or the
+    floors back into separate reads, and this fails with the list."""
+    upstream = Upstream()
+    user_id = uuid.uuid4()
+    await warm(session, upstream)
+    await fund(session, user_id)
+    await buy(session, upstream, user_id=user_id, client_key="first")
+
+    with capture_sql() as statements:
+        await buy(
+            session,
+            upstream,
+            user_id=user_id,
+            side=side,
+            quantity=SMALL_QUANTITY,
+            state_version=1,
+            client_key="second",
+        )
+
+    lock_at = next(
+        i
+        for i, s in enumerate(statements)
+        if "for update" in s.lower() and "market_books" in s.lower()
+    )
+    locked_section = [_label_of(s) for s in statements[lock_at:]]
+    assert len(locked_section) <= _LOCKED_SECTION_BUDGET, (
+        f"a warm {side} held the book lock for {len(locked_section)} "
+        f"statements, over its budget of {_LOCKED_SECTION_BUDGET}:\n"
+        + "\n".join(f"{i:>2}. {label}" for i, label in enumerate(locked_section, 1))
     )
 
 

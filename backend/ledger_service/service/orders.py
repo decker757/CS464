@@ -78,12 +78,11 @@ from service.local_copy import LocalCopy, ensure_trading, refuse_if_suspended
 from service.trading import (
     PricedTrade,
     fill_key,
-    find_position,
     list_open_orders,
-    list_outcomes,
     log_refused_fill,
     price_event_of,
     publish_order_updates,
+    read_trade_context,
     refuse_if_short_of_shares,
     reservation_drop_of,
     resting_order_of,
@@ -338,6 +337,7 @@ async def _commit_fill(
     *,
     book: MarketBook,
     account: Account,
+    pool_account: Account,
     trade: PricedTrade,
     outcomes: Sequence[MarketOutcome],
     outcome_position: int,
@@ -353,8 +353,6 @@ async def _commit_fill(
     "A fill the running check refuses inside a cascade is `500
     cascade_fill_refused`")."""
     fill_version = book.state_version
-    # Read once for the whole batch; `get_one` for the trade path's reason.
-    pool_account = await session.get_one(Account, book.pool_account_id)
     # Before the order is added, so the cascade never reads the order itself.
     cascade = await write_cascade(
         session, book, outcomes=outcomes, pool_account=pool_account, now=now
@@ -526,18 +524,28 @@ async def place(
     )
     user_account = await grants.ensure_granted(session, user_id)
 
-    # The book row, then the re-check and the latch, as on the trade path.
+    # The book row, then the re-check, still first. A placement's record is its
+    # order row, not a transaction, so it reads that row itself rather than
+    # asking the context, whose `key_taken` names the transactions a trade's
+    # key writes.
     book = await books.lock_book(session, market_id)
     under_lock = await _replay_if_present(session, key, **request)
     if under_lock is not None:
         return under_lock
-    if await books.find_result(session, market_id) is not None:
+    # Everything below decides from one statement issued after the lock
+    # returned, never inside it, as on the trade path (ADR 0015). A book with
+    # no outcome rows is refused by it, `MarketBookIncomplete`, before the
+    # latch and the close check, as the trade's is.
+    context = await read_trade_context(
+        session, book, user_id=user_id, outcome_id=outcome_id, key=key
+    )
+    # The latch, then the deciding close check on Postgres's clock after the
+    # lock, as the trade's step 6 makes them.
+    if context.has_result:
         raise MarketClosed
-    # The deciding close check, on Postgres's clock after the lock, as the
-    # trade's step 6 makes it.
-    await books.refuse_if_closed_under_lock(session, terms)
+    books.refuse_if_closed_under_lock(terms, db_now=context.db_now)
 
-    outcomes = await list_outcomes(session, market_id)
+    outcomes = context.outcomes
     book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)
     if len(outcomes) != _BINARY_OUTCOMES:
         raise MarketNotBinary
@@ -555,17 +563,10 @@ async def place(
         side=side,
         limit_price=limit_price,
     )
-    position = await find_position(
-        session, user_id=user_id, market_id=market_id, outcome_id=outcome_id
-    )
+    position = context.position
     if side is Side.SELL:
-        await refuse_if_short_of_shares(
-            session,
-            position,
-            user_id=user_id,
-            market_id=market_id,
-            outcome_id=outcome_id,
-            quantity=quantity,
+        refuse_if_short_of_shares(
+            position, reserved=context.reserved_shares, quantity=quantity
         )
 
     # The new order has no `seq` until it is inserted, and the fill on
@@ -606,6 +607,7 @@ async def place(
         order,
         book=book,
         account=user_account,
+        pool_account=context.pool_account,
         trade=trade,
         outcomes=outcomes,
         outcome_position=outcome_position,

@@ -3590,6 +3590,13 @@ holds them still and the order read takes no lock of its own. The reversal
 trigger extends to them: a writer of order rows that does not take the book lock
 first.
 
+*Noted 2026-11-07 by #641: the cascade skip leans on this rule too. A trade
+runs `write_cascade` only when the context statement, read after its book lock,
+says the market has an open order, which is safe only because no order can open
+without that lock. `test_cascade_concurrency.py::test_a_trade_queued_behind_a_placement_fills_the_order_it_rested`
+pins it. See "The locked section of a trade is budgeted at 13 statements, and
+no deciding read goes in the lock statement".*
+
 ---
 
 ### D-NEW — A sell larger than the caller's holding is `insufficient_shares_held`, distinct from `insufficient_shares_outstanding`
@@ -4346,6 +4353,14 @@ time does not: once a replica ten minutes ahead has written a grant, every
 later grant lands after PLATFORM's newest entry, a little past that future
 time, until the real clock catches up. The same happens to a market's trades
 through its pool account. Keep the replicas on NTP.
+
+*Noted 2026-11-07 by #641: the "one indexed probe ... per locked account, two
+on a trade" above now runs inside `post_all`'s floors statement, as a
+correlated `max(created_at)` the planner turns into the same backwards probe.
+A trade sends one statement for both probes rather than two. The decision
+stands. See "`post_all` reads the floors and the first stamp in one statement
+under the account locks, and movement *i* still lands at the first stamp plus
+*i* µs".*
 
 ---
 
@@ -5160,6 +5175,12 @@ at the same time.
 *Corrected 2026-10-09 by [3.4] #12: the cost in the second Rejected bullet.
 See "`post_all` stamps from one probe per locked account, and movement *i*
 lands at the first stamp plus *i* µs" below. The decision and the chain stand.*
+
+*Noted 2026-11-07 by #641: the entry the note above points to is superseded by
+"`post_all` reads the floors and the first stamp in one statement under the
+account locks, and movement *i* still lands at the first stamp plus *i* µs".
+The union query the second Rejected bullet named is now built: one statement,
+holding one probe per account. The decision and the chain still stand.*
 
 ---
 
@@ -6318,6 +6339,16 @@ of `posting.py` signs this off before it is built.
 a yes", and sign-off 3 is this running check in `_refuse_overdrafts`. The
 running check is built in the limit-order stack's PR 4a.
 
+*Noted 2026-11-07 by #641: the balances and reservations before the batch are
+now read in `post_all`'s one floors statement, which has a row for every
+locked account. "An account the batch only credits is still not read" stays
+true because both sums sit inside `CASE WHEN account.id IN (the debited USER
+accounts)`, and the `case when` assertion in
+`test_post_all.py::test_the_floors_and_the_stamp_are_read_in_one_statement_under_the_account_locks`
+pins it. See "`post_all` reads the floors and the first stamp in one statement
+under the account locks, and movement *i* still lands at the first stamp plus
+*i* µs".*
+
 ---
 
 ### D-NEW — `post_all` locks the union of the batch's accounts once, ascending, after the caller's book lock
@@ -6361,7 +6392,7 @@ commit, through `posting.post_all`" refuses.
 
 ### D-NEW — `post_all` stamps from one probe per locked account, and movement *i* lands at the first stamp plus *i* µs
 
-**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** superseded by "`post_all` reads the floors and the first stamp in one statement under the account locks, and movement *i* still lands at the first stamp plus *i* µs"
 
 **Decision.** Holding every lock, `post_all` calls `_stamp_after_newest` once
 over the full set of locked accounts, which is one indexed probe per account.
@@ -6391,6 +6422,12 @@ locks". That bullet weighs "a thousand probes" against "one union query".
 Option A is itself one probe per account, about 1,002 for 1,000 winners. So
 the real gap is between a probe per movement, about 2,000, and a probe per
 account, about 1,000. The single union query is option B, which is not built.
+
+*Superseded 2026-11-07 by #641: option B is built, and the reversal trigger
+fired through #641's lock-section budget rather than the five-second test. See
+"`post_all` reads the floors and the first stamp in one statement under the
+account locks, and movement *i* still lands at the first stamp plus *i* µs".
+The stamp rule and the chain are unchanged.*
 
 ---
 
@@ -11519,3 +11556,215 @@ nothing here applies to it. The stack test checks that the pooler carried
 nothing while the migrate steps ran. Do not justify the direct address by
 `search_path`, which the migrate engine sends when it connects: PgBouncer
 1.26.1 accepts it.
+
+### D-NEW — The locked section of a trade is budgeted at 13 statements, and no deciding read goes in the lock statement
+
+**Date:** 2026-11-07 · **Ticket:** #641 · **Status:** active
+
+**Decision.** From the `FOR UPDATE` on `market_books` to the commit, a trade
+on a warm market with no open orders sends at most 13 statements, the lock
+included. The lock statement is the book row alone, `FOR UPDATE` with
+`populate_existing` (#543). Every read that decides something is a statement
+of its own, issued after the lock statement has returned.
+
+The 13, the same on a buy and a sell:
+
+1. `SELECT market_books FOR UPDATE`, the book lock.
+2. The context statement, `trading.read_trade_context`.
+3. `SELECT accounts FOR UPDATE`, the first account.
+4. `SELECT accounts FOR UPDATE`, the second. One per account, ascending
+   (ADR 0009).
+5. `post_all`'s key lookup on `transactions`.
+6. The floors-and-stamp statement, `posting._floors_and_stamp`.
+7. `UPDATE market_books`.
+8. `UPDATE market_outcomes`.
+9. `UPDATE positions`.
+10. `SAVEPOINT`.
+11. `INSERT transactions`.
+12. `INSERT entries`.
+13. `RELEASE SAVEPOINT`.
+
+The COMMIT after it does not go through the cursor, so it is not counted.
+
+Two merged statements do most of the work:
+
+- **The context statement**, after the book lock. It selects the outcomes in
+  `position` order, each row carrying the pool account, this user's position
+  in the traded outcome (an outer join), `EXISTS` for the trade key, for a
+  `market_results` row and for open orders, the shares this user's live sell
+  orders reserve, and `clock_timestamp()` as `db_now`. It replaces the key
+  re-check, the latch, the clock, the outcomes, the position and the pool
+  account: six reads on a buy, and seven on a sell with the reserved shares.
+  A book with no outcome rows returns no row and is `MarketBookIncomplete`.
+- **The floors-and-stamp statement**, after the account locks. One row per
+  locked account: the balance and the reservation of each USER account the
+  batch debits, and every locked account's newest `created_at`. It replaces
+  the balance, the reservation and the two stamp probes on a buy, and the two
+  stamp probes on a sell, which debits no USER account. See "`post_all` reads
+  the floors and the first stamp in one statement under the account locks,
+  and movement *i* still lands at the first stamp plus *i* µs".
+
+`write_cascade` runs only when the context says the market has an open order.
+On a market with none, the orders are not read.
+
+`orders.place` sends the same two statements. Its own key re-check stays a
+read of its order row, before the context, because a placement's record is an
+order and not a transaction. The context's `key_taken` is computed there and
+not used. That costs one unique-index probe inside a statement sent anyway,
+and it was accepted in review: answering a placement's retry from `key_taken`
+would make the EXISTS ask about order keys too, which changes what a key
+means.
+
+**Why.** Every statement under the book lock is a round trip that every other
+trade on the market waits for. Under #20's production load a round trip took
+20 to 75 ms. On `dev` the locked section was 22 statements on a buy and 21 on
+a sell. The context statement took it to 17 and 15, the floors statement to 14
+on both, and skipping the orders read to 13. Several of the reads it removed
+were duplicates: the key, the orders table and the entries table were each
+read more than once.
+
+**The snapshot rule.** Under READ COMMITTED a statement's snapshot is taken
+when the statement starts. A `SELECT ... FOR UPDATE` that waits for its lock
+re-fetches only the rows it locked, at their newest version. Every other table
+in that statement, and every scalar subquery, still answers from the snapshot
+taken before the wait. So a deciding read folded into the lock statement reads
+stale data exactly when it matters: put the latch's `EXISTS` there, and a trade
+that queued behind a settlement reads "no result" from before the wait and
+trades on a settled market. That is ADR 0015's class of bug. A read issued
+after the lock returns starts a new snapshot, which sees everything the last
+holder committed. So the lock statement stays the book row alone, and the
+context statement comes after it.
+
+**The clock.** `db_now` is Postgres's `clock_timestamp()`, not the container's
+clock, because this check decides and writes under a row lock (D-025's
+exception, ADR 0030). It is one more column in the context statement, so the
+deciding close check costs no round trip of its own.
+
+**Skipping the cascade is safe** because every writer of an order row holds
+the book lock first (the 2026-10-17 amendment to "The holdings check is read
+under the book lock, and the position takes no lock of its own"):
+`orders.place`, the cancel ("A cancel takes the book lock and no account
+lock") and the cascade itself, the three `unit_test/test_order_writers.py`
+lists. Settlement and the void write no order row: their `market_results`
+row is what makes an order stop being live, and the latch reads it. The
+context's `EXISTS` is read after the trade's book lock returned, so no order
+can open between that read and the commit. A market with any open order runs
+the cascade exactly as before (ADR 0024).
+
+**The guard.** `test_trade.py::test_a_warm_trade_stays_within_its_statement_budget`,
+for a buy and a sell, counts every statement from the book's `FOR UPDATE` to
+the end of what it captures and fails above 13, printing each statement's verb,
+tables and lock. It pins a promise, so it stays even when it looks like a
+count (root `CLAUDE.md`, "Tests earn their place"). The snapshot rule's own
+guards are `test_trade_context.py::test_the_context_is_one_statement_issued_after_the_lock`,
+its placement twin `test_place_order.py::test_the_placement_reads_its_context_in_one_statement_after_the_lock`
+and `test_post_all.py::test_the_floors_and_the_stamp_are_read_in_one_statement_under_the_account_locks`.
+
+**Rejected.**
+- *Locking the outcome rows in the lock statement*, which #641 first scoped.
+  It needs an inner join from the book to its outcomes, so a damaged book with
+  no outcome rows would never be locked or refused. Reading the outcomes in the
+  next statement is just as fresh, because that statement starts after the lock
+  returns.
+- *Opening `post_all`'s SAVEPOINT only when the session holds no pending
+  writes* (the design's stretch, −2, to 11). Its premise was that with pending
+  writes the `IntegrityError` branch always ends in `PendingWritesOnReplay`, so
+  the savepoint protects nothing. That is false: an `IntegrityError` that is not
+  a key race is re-raised, and
+  `test_post_all.py::test_a_failure_mid_batch_commits_nothing` pins that the
+  caller's pending write is still in its session after one. Without the
+  savepoint the failed INSERT aborts the whole transaction, so that assertion
+  cannot hold. Changing it is a behaviour change, and #641 is a refactor.
+
+**Notes.** The budget covers less than it might seem to:
+- **The placement has no budget test.** It sends the same two merged
+  statements, but nothing counts its locked section, and it still reads the
+  open orders on every placement for its crossing check.
+- **A placement that fills on arrival reads the open orders twice**: once in
+  `place` for the crossing check, and again in `write_cascade` from
+  `_commit_fill`. A fill on arrival is not the warm path, so this is a
+  deferred follow-up, not a decision. The cheapest fix later is to skip the cascade when `place`'s own
+  `open_orders` is empty.
+- **Nothing before the lock is budgeted.** The replay lookup, `books.find`,
+  `accounts.ensure` and the grant lookup hold no lock, and the gate's one
+  call out still runs with no transaction open (D-043).
+- **A cascade is not budgeted either.** With open orders the orders read comes
+  back, and each fill adds its own reads and writes (ADR 0024).
+
+A known edge, accepted in both reviews: a book with no outcome rows is refused
+`MarketBookIncomplete` by the context statement, before the latch and the close
+check. On such a book a trade or a placement on a market that has a result, or
+has closed, answers `500 market_book_incomplete` where it answered `409
+market_closed`. The placement's key re-check still comes first, and a retry
+of a trade that has committed is answered by the unlocked lookup before the
+lock. Only the test helper `strip_outcomes` can make such a book.
+
+A follow-up, not a decision: the close-race tests cannot tell `db_now` from a
+`datetime.now()` read after the lock, because in tests the app and Postgres
+share one host clock. A cheap fix is to monkeypatch the module's
+`datetime.now` to `close_time` minus an hour in those two tests, so only the
+database clock can refuse.
+
+---
+
+### D-NEW — `post_all` reads the floors and the first stamp in one statement under the account locks, and movement *i* still lands at the first stamp plus *i* µs
+
+**Date:** 2026-11-07 · **Ticket:** #641 · **Status:** active
+
+**Decision.** Holding every account lock, `post_all` sends one statement,
+`posting._floors_and_stamp` (built by `_floors_and_stamp_query_of`). It returns
+one row per locked account: its id, its balance and its reservation if the batch
+debits it, and the newest `created_at` among its entries. The first stamp is
+`max(now, newest created_at + 1 µs)` over every locked account, PLATFORM and
+the pools included, worked out from those rows. Movement *i*, counted from 0 in
+input order, is stamped at the first stamp plus *i* µs, and every leg of a
+movement carries its stamp, as before.
+
+The balance and the reservation sit inside `CASE WHEN account.id IN (the
+debited USER accounts)`, so Postgres sums them only for the accounts the
+overdraft check needs.
+
+**Supersedes** "`post_all` stamps from one probe per locked account, and
+movement *i* lands at the first stamp plus *i* µs". The stamp rule and the chain
+are unchanged; only the way they are read changed.
+
+**Why.** This is the old entry's "Option B, one statement over the union". Its
+reversal trigger named PR 5's five-second settlement test, which never missed.
+The trigger fired another way: #641 budgets a trade's locked section, and on a
+trade the balance, the reservation and the two stamp probes were four round
+trips under the book lock. One statement is one. The old entry's objection, a
+second way to compute the same stamp beside `_stamp_after_newest`, no longer
+applies, because that helper is gone.
+
+It is still one probe per account. `max(created_at)` correlated to one account
+is planned as one backwards probe of `ix_ledger_entries_account_feed`, the same
+probe `ORDER BY created_at DESC LIMIT 1` was. A settlement's thousand winners
+cost a thousand probes inside one statement, rather than a thousand statements.
+
+**Why the CASE.** Without it the statement sums every locked account's entries.
+PLATFORM's and the pools' feeds are the longest in the ledger, and grow with
+every grant and every trade, and the old code never read their balances. The
+reviewer's `EXPLAIN`, with PLATFORM among the locked accounts, read 34
+buffers with the CASE and 772 without it; the four statements it replaced
+read 31.
+
+**Rejected.**
+- *No CASE*: the cost above, paid on every trade and growing with the ledger.
+- *Gating the sums on `kind = 'user'`*: it would sum a USER account the batch
+  only credits, which "An account the batch only credits is still not read"
+  rules out.
+- *Folding the read into `accounts.lock`*: the snapshot rule in "The locked
+  section of a trade is budgeted at 13 statements, and no deciding read goes in
+  the lock statement".
+
+**Notes.**
+- The CASE is pinned by the `case when` assertion in
+  `test_post_all.py::test_the_floors_and_the_stamp_are_read_in_one_statement_under_the_account_locks`.
+  Remove it and every other test stays green.
+- The floors are built in the order the batch first debits its accounts, so
+  with several short accounts the same one is refused first. Rows come back in
+  no order, which does not matter: the stamp is a maximum over all of them.
+- `test_post_all.py::test_statements_grow_by_two_per_movement` keeps its
+  ceiling of two statements per movement. This shape grows by one, the lock, so
+  that test would no longer catch the probes going back to one statement per
+  account. The structural test above is what holds the one statement.

@@ -20,6 +20,7 @@ from model.entities import MarketResult, ResultKind
 from service import reservations
 from unit_test.market_fixtures import market_with_outcomes
 from unit_test.order_fixtures import add_order
+from unit_test.placement_fixtures import reserved_shares_of
 
 LIQUIDITY_B = Decimal("100.0000")
 
@@ -172,7 +173,7 @@ async def test_reserved_shares_are_the_users_live_sells_of_that_outcome(
     if other == "settled_market":
         await _settle(session, market_id, outcome_ids[0])
 
-    reserved = await reservations.reserved_shares_of(
+    reserved = await reserved_shares_of(
         session, user_id, market_id=market_id, outcome_id=outcome_ids[0]
     )
 

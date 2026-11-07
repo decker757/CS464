@@ -16,7 +16,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -228,30 +228,18 @@ async def lock_book(session: AsyncSession, market_id: uuid.UUID) -> MarketBook:
     return result.scalar_one()
 
 
-async def clock_after_lock(session: AsyncSession) -> datetime:
-    """Postgres's clock now, for a decision made under the book lock. #640.
-
-    `clock_timestamp()`, never `now()`: that is the transaction's start, read
-    before the caller queued for the lock, so call this after `lock_book`.
-    Its own statement for now; PR #641 folds it into the trade's context
-    statement. Twin of market_service's `_database_now`.
-    """
-    return (await session.execute(select(func.clock_timestamp()))).scalar_one()
-
-
-async def refuse_if_closed_under_lock(
-    session: AsyncSession, terms: MarketTradingTerms
-) -> None:
+def refuse_if_closed_under_lock(terms: MarketTradingTerms, *, db_now: datetime) -> None:
     """Raise `MarketClosed` if the market has no close time, or it has
-    passed on Postgres's clock now. #640.
+    passed by `db_now`. #640.
 
     The deciding close check for a trade and a placement: the copy's was the
-    early refusal, and the caller may have queued past `close_time`. Call it
-    after `lock_book`, as `clock_after_lock` requires.
+    early refusal, and the caller may have queued past `close_time`. `db_now`
+    is Postgres's `clock_timestamp()` read after `lock_book` returned, never
+    a clock read before it.
     """
     if terms.close_time is None:
         raise MarketClosed
-    if terms.close_time <= await clock_after_lock(session):
+    if terms.close_time <= db_now:
         raise MarketClosed
 
 

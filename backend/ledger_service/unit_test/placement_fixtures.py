@@ -107,6 +107,21 @@ async def reserved_credits_of(session: AsyncSession, user_id: uuid.UUID) -> Deci
     return await reservations.reserved_of(session, user_id)
 
 
+async def reserved_shares_of(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    market_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+) -> Decimal:
+    """What this user's live sell orders of one outcome reserve, read on its
+    own: the figure the context statement reads inside itself."""
+    stmt = reservations.reserved_shares_query_of(
+        user_id, market_id=market_id, outcome_id=outcome_id
+    )
+    return (await session.execute(stmt)).scalar_one()
+
+
 async def record_result(session: AsyncSession, upstream: Upstream) -> None:
     """Write the market's `market_results` row, as a settlement does. Committed.
 
