@@ -15,6 +15,7 @@ import BackLink from '../components/ui/BackLink'
 import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
 import SectionCard from '../components/ui/SectionCard'
+import { useAuth } from '../context/AuthContext'
 import { useBalance } from '../context/BalanceContext'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { useMarketClock } from '../hooks/useMarketClock'
@@ -58,6 +59,7 @@ function Banner({ className, label, children }: { className: string; label?: str
 export default function MarketDetailPage() {
   const { id } = useParams<{ id: string }>()
   const { refetch: refetchBalance } = useBalance()
+  const { user } = useAuth()
   // Tagged with the market id it was loaded for, so moving to another market
   // shows that one loading rather than the last one's market or error.
   const [loaded, setLoaded] = useState<{ id: string; market: PublicMarketDetail | null; failed: boolean } | null>(null)
@@ -332,8 +334,10 @@ export default function MarketDetailPage() {
 
           <Card className="mb-6 px-6 py-5">
             {tradeable ? (
-              <TradingPanel
+              // ProtectedRoute renders this page only for a logged-in user.
+              user && <TradingPanel
                 marketId={market.id}
+                traderId={user.id}
                 outcomes={market.outcomes}
                 outcomeId={tradedOutcomeId}
                 limitOrdersAllowed={!!binaryMarket}
