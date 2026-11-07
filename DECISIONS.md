@@ -11281,6 +11281,18 @@ not fit at the production sizes until the database plan or the pool sizes
 change, and `docs/deployment.md` says so. That is the trade made here: the
 app servers scale out, and the one database scales up.
 
+*Amended 2026-11-07 by #640: the rejected pooler is now in place.* Three
+app servers needed it. Each service role has a DigitalOcean connection pool
+in transaction mode, and the apps connect to it rather than to Postgres. The
+pools cap the server connections at 28, however many servers run. The two
+settings stay, but they now size each service's share of its pool's clients,
+and the ledger's are 10 and 5. The objection above was right, and is now
+answered. Every engine turns asyncpg's statement cache off, and the stack
+test runs the apps through a transaction-mode PgBouncer, so the pooler is
+tested before production. See "asyncpg's statement cache is off in every
+engine". `docs/deployment.md`, "Connection budget", and ADR 0026's
+amendment.
+
 ---
 
 ### D-NEW — The production site is seeded by its own command, with a generated password per account

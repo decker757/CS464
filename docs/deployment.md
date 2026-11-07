@@ -10,7 +10,8 @@ flowchart LR
   browser([Browser]) -->|https| lb[Load balancer<br/>TLS, health checks]
   lb -->|http| g1[App server 1<br/>gateway + 5 services]
   lb -->|http| g2[App server 2<br/>gateway + 5 services]
-  g1 & g2 -->|private network| pg[(Managed Postgres)]
+  g1 & g2 -->|private network| pool[Connection pools<br/>one per service]
+  pool --> pg[(Managed Postgres)]
   g1 & g2 -->|private network| vk[(Managed Valkey)]
   gh[GitHub Actions] -->|images| ghcr[(GHCR)]
   gh -->|ssh: migrate, then roll| g1 & g2
@@ -80,6 +81,12 @@ admin of this repository.
 
    `infra/terraform/terraform.tfstate` now holds every production secret. It
    is gitignored. Keep it, and do not share it.
+
+   On a database that has never been deployed to, the four connection pools
+   may fail here: each logs in as its service's role, and the first deploy's
+   `ensure-database.sh` is what creates those roles. This has not been tried,
+   and if it happens there is no tested way through yet. See "Connection
+   budget" below, "A new environment".
 6. **Give GitHub the secrets:**
 
    ```bash
@@ -188,6 +195,14 @@ already newer than the code it is given. Fix forward instead, keeping the
 migration, or go back on each server by hand, which does not migrate. A
 server keeps the release before, so: `ssh deploy@<server>`, then
 `/opt/cs464/releases/<commit>/roll.sh`, one server at a time.
+A release from before #640 (the connection pools) keeps asyncpg's statement
+cache, which fails through a transaction-mode pool, so it needs the direct
+addresses however you go back to it. Before a revert on `main`, copy each
+role's direct address over its pooled one in GitHub, with the one-line
+command in "Connection budget", "If a service cannot log in through its
+pool". Before `roll.sh` by hand, do the same in `/opt/cs464/app.env` on
+each server: give each `<SVC>_DATABASE_URL` the value of the
+`<SVC>_DIRECT_DATABASE_URL` line in the same file.
 Its images may have been removed, and the server is logged out of GHCR after
 every deploy. So either make the `cs464-*` packages public once (each
 package's settings on GitHub; the repository already is), or log in first:
@@ -499,16 +514,159 @@ What the first run found (2026-11-04, after #632):
   failed as written. Both were fixed in #634.
 - Steps 2 and 5 wait for the load test's trades (#20).
 
+## Connection budget
+
+The managed Postgres has one connection limit for everything that connects
+to it: about 47 on the 2 GB plan (25 for each GB, less 3 DigitalOcean keeps
+for itself). Every app server runs auth, market, ledger and audit, so if each
+connected straight to Postgres, two servers would use 40 and a third would
+not fit.
+
+So the apps do not connect to Postgres. Each service role has its own
+DigitalOcean connection pool (PgBouncer), in `infra/terraform/databases.tf`:
+
+| Pool | Logs in as | Mode | Server connections |
+| --- | --- | --- | --- |
+| `cs464-auth` | `auth_svc` | transaction | 6 |
+| `cs464-market` | `market_svc` | transaction | 6 |
+| `cs464-ledger` | `ledger_svc` | transaction | 14 |
+| `cs464-audit` | `audit_svc` | transaction | 2 |
+
+The pools hold 28 connections to Postgres, however many servers run. The
+other 19 or so stay free for what connects directly: the three migrate steps
+(one at a time), `ensure-database.sh`, and an operator with `psql`. A request
+that finds its pool busy waits its turn inside the pool, instead of failing
+with "too many connections".
+
+The services' own SQLAlchemy pools (`DATABASE_POOL_SIZE` and
+`DATABASE_MAX_OVERFLOW` in `deploy/production/compose.yml`) now count
+connections to the pooler, which are cheap: each pool takes up to 5,000. Per
+server: auth 3+1, market 3+2, ledger 10+5, audit 1+1, so 26. Three servers
+make 78, all sharing the same 28.
+
+**Two addresses per role.** `app.env` carries both, and `release.sh` writes
+them from the GitHub secrets that `infra/push-secrets.sh` sets:
+
+- `<SVC>_DATABASE_URL`, which the apps use, is the pool:
+  `postgresql+asyncpg://<svc>_svc:<PASSWORD>@<pool private host>:<pool port>/cs464-<svc>?ssl=require`.
+  The part after the port names the pool, not the database. That is how
+  DigitalOcean addresses a pool: its API documents one on `defaultdb` as
+  `...:25061/backend-pool`. The pool knows which database it serves.
+- `<SVC>_DIRECT_DATABASE_URL`, which the migrate steps use, is Postgres
+  itself, the address every service used before the pools. A migration is
+  one long transaction that takes table locks, and should not hold one of a
+  pool's few server connections while it does. The migrate engine also
+  keeps asyncpg's statement cache, which the apps turn off (below). The
+  stack test checks that the migrate steps never reach the pooler. Audit has
+  no migrate step.
+  Its direct address is there for an operator, and so that every role has
+  both.
+
+**What transaction mode rules out.** A pooled connection belongs to a client
+only for one transaction, so nothing may leave state on a connection for the
+next transaction. Checked in `backend/` on 2026-11-07:
+
+- The leaderboard refresh's advisory lock is `pg_advisory_xact_lock`, which
+  ends with its transaction, and it is the only advisory lock.
+- No service uses LISTEN or NOTIFY: live prices go over Redis (ADR 0010).
+- No service makes a temporary table or runs a session-level `SET`. The
+  one `SET LOCAL` is in a test.
+- A named prepared statement lives on one server connection, and the next
+  transaction may get another. So every service's `core/database.py` turns
+  asyncpg's statement cache off (`connect_args={"statement_cache_size": 0}`),
+  and asyncpg sends only unnamed statements. SQLAlchemy's own cache stays
+  on. DECISIONS.md, "asyncpg's statement cache is off in every engine", has
+  the measurements.
+- `pool_pre_ping` stays on in every service's `core/database.py`, and
+  nothing there rewrites the address.
+
+**Which users a pool may log in as (checked 2026-11-07).** #640's design
+asked first whether DigitalOcean would pool a role created by SQL, like
+`ledger_svc`, or only a user made through its API. In the console, the
+Create Connection Pool dialog's user list shows `audit_svc`, `auth_svc`,
+`doadmin`, `ledger_svc` and `market_svc`, so SQL-created roles are accepted.
+Its default is "Use inbound user", under the label "User privileges override
+(Optional)". It also says each pool "shares its assigned backend processes
+with up to 5000 client connections". What the dialog cannot show is whether
+the pool logs in with the password `ensure-database.sh` sets. The first
+apply and deploy are the test of that. If it cannot, the fallback in #640's
+design is a PgBouncer container on each server instead.
+
+**Turning the pools on (once, in two deploys).** Every release on a server
+reads the one shared `app.env`, and `release.sh` rewrites it on every server
+before it rolls any of them. So whatever address a deploy writes, the release
+before is also run with it: when a roll fails and `roll.sh` restarts the old
+release, and when a release is sent back. Code from before #640 keeps
+asyncpg's statement cache, and through a transaction-mode pool it fails with
+`prepared statement "__asyncpg_stmt_N__" does not exist`. `/health` stays
+green while it does. So the apps move to the pools only once the release
+before them is code that turns the cache off:
+
+1. Before the release that brings the pools reaches `main`, run
+   `infra/tf plan`. It should add the four
+   `digitalocean_database_connection_pool.service[...]`, change the four
+   `*_database_url` outputs and add four `*_direct_database_url` ones, and
+   destroy nothing.
+2. `infra/tf apply`. The pools now exist and nothing uses them yet.
+3. Set only the four direct addresses in GitHub, and leave
+   `<SVC>_DATABASE_URL` as it is, on the direct addresses:
+
+   ```bash
+   infra/tf output -raw auth_direct_database_url | gh secret set AUTH_DIRECT_DATABASE_URL --env production
+   infra/tf output -raw market_direct_database_url | gh secret set MARKET_DIRECT_DATABASE_URL --env production
+   infra/tf output -raw ledger_direct_database_url | gh secret set LEDGER_DIRECT_DATABASE_URL --env production
+   infra/tf output -raw audit_direct_database_url | gh secret set AUDIT_DIRECT_DATABASE_URL --env production
+   ```
+
+   Do not run `infra/push-secrets.sh` yet: it would also move
+   `<SVC>_DATABASE_URL` to the pools.
+4. Merge to `main`, which deploys. The new code runs on the direct
+   addresses, with the cache off. Deploying it before step 3 fails at once
+   and touches nothing, because `release.sh` requires the direct addresses.
+   Check each service's `/ready` (the `exec gateway wget` command in
+   "Health and readiness").
+5. `infra/push-secrets.sh`, then run the Deploy workflow again by hand.
+   This deploy moves the apps to the pools. The release before it is now step
+   4's, which turns the cache off, so a failed roll or a send-back is safe.
+   `/health` checks nothing, so a green deploy does not prove the pools
+   work. Check each service's `/ready` again, and make a trade.
+
+Until step 5's deploy has succeeded, let no deploy of older code run with
+the pooled addresses in GitHub. Its apps would keep the cache on through the
+pools, and its migrate steps would go through the pools too.
+
+**If a service cannot log in through its pool,** put the apps back on the
+direct addresses. This needs no code change. For each role, copy the direct
+address over the pooled one, then run the Deploy workflow again:
+
+```bash
+infra/tf output -raw ledger_direct_database_url | gh secret set LEDGER_DATABASE_URL --env production
+```
+
+The next `infra/push-secrets.sh` puts the pooled addresses back.
+
+**A new environment: not solved yet.** The pools need the service roles,
+and the roles are made by the first deploy. If `infra/tf apply` cannot create
+the pools on a database that has never been deployed to, this page has no
+tested way through. Without the pools there are no `*_database_url` outputs,
+so `infra/push-secrets.sh` stops at its first `AUTH_DATABASE_URL`, and
+nothing after it is set. The way through would be a first apply that leaves
+the pools out, or every remaining secret set by hand. Nobody has tried
+either. Production already has the roles, so this matters only for a
+rebuild from nothing.
+
 ## Scaling
 
 - **More app servers:** raise `app_server_count` in
   `infra/terraform/variables.tf`, `infra/tf apply`, `infra/push-secrets.sh`,
   then deploy. The load balancer picks the new server up by its tag.
-- **The limit is Postgres's connections.** Two servers use 40 of the 2 GB
-  plan's 47 or so, plus three for the migrate steps. A third server needs the
-  pool sizes in `deploy/production/compose.yml` lowered, or a bigger
-  `database_size`. DECISIONS.md, "Each service's connection pool is a
-  setting, sized to the database's ceiling".
+- **Postgres's connections no longer limit the number of servers.** Every
+  server shares the four connection pools, which hold 28 of the 2 GB plan's
+  47 or so, however many servers run ("Connection budget" above). What a
+  third server adds is clients waiting on the same 28. To give the database
+  more work at once, raise a pool's `size` in `infra/terraform/databases.tf`.
+  The pools together must leave room for the direct connections. Past about
+  40 in all, take a bigger `database_size`.
 - **Bigger servers:** change `app_server_size`, then resize one server at a
   time, or both go down together: `infra/tf apply
   -target='digitalocean_droplet.app[0]'`, wait for it to be healthy behind
@@ -550,7 +708,12 @@ need only Docker.
   nothing, and that one failed server sends every other server back.
 
 What only a real deploy proves: the DigitalOcean resources themselves, the
-certificate, and TLS to the managed databases.
+certificate, TLS to the managed databases, and DigitalOcean's own pools. The
+stack test stands in for those pools with a PgBouncer in transaction mode,
+at least as strict as DigitalOcean's: no prepared-statement tracking, and each
+client's next transaction on another server connection. The apps reach
+Postgres through it, the migrate steps reach Postgres directly, and the test
+checks both.
 
 ## Not done yet
 
