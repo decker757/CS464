@@ -7,8 +7,9 @@ import { readStoredTrades, removeStoredTrade, storeTrade, type StoredTrade } fro
 /** A trade's key, kept until the ledger answers it definitely.
  *  `mayHaveCommitted` once an attempt under it got no answer or a 5xx.
  *  `isInFlight` while an attempt under it from this page has not ended.
- *  `sentAt` is when the latest attempt went out, or ended without an
- *  answer, in epoch milliseconds: what the minute below is counted from. */
+ *  `sentAt` is when the latest
+ *  attempt went out, or ended without an answer, in epoch milliseconds: what
+ *  the minute below is counted from. */
 interface KeyAwaitingAnswer {
   key: string
   trade: SentTrade
@@ -44,6 +45,27 @@ function sentTradeOf(found: TradeResult, outcomeLabel: string): SentTrade {
   return { outcomeId: found.outcome_id, outcomeLabel, side: found.side, quantity: found.quantity }
 }
 
+// Held, in whichever tab sends it, for as long as an attempt under a key is
+// out (Web Locks, which every tab of the site shares). Absent in an old
+// browser, or in part, where only this page's own attempts are known to be
+// out.
+function attemptLockOf(key: string): string {
+  return `trade-attempt:${key}`
+}
+
+function hasWebLocks(): boolean {
+  if (typeof navigator === 'undefined' || !('locks' in navigator)) return false
+  const { locks } = navigator as { locks?: Partial<LockManager> }
+  return typeof locks?.request === 'function' && typeof locks.query === 'function'
+}
+
+/** Whether an attempt under `key` is out in any tab, this one included. */
+async function isAttemptOutAnywhere(key: string): Promise<boolean> {
+  if (!hasWebLocks()) return false
+  const { held = [], pending = [] } = await navigator.locks.query()
+  return [...held, ...pending].some(lock => lock.name === attemptLockOf(key))
+}
+
 /**
  * Every trade sent and not yet answered definitely, each with its key. A key
  * is dropped only once the server has given a definite answer: success, or a
@@ -58,10 +80,11 @@ function sentTradeOf(found: TradeResult, outcomeLabel: string): SentTrade {
  * different trade never goes out under another's key, which the ledger would
  * refuse as idempotency_key_reused (#580).
  *
- * A key is also kept in the tab's storage while its trade is unanswered, so it
- * outlives a reload or a visit elsewhere (#585). When the panel loads with one
- * stored, it asks the ledger, says what it found, and forgets the key once
- * the answer is definite. Until then a retry still reuses the key.
+ * A key is also kept in the browser's storage while its trade is unanswered,
+ * so it outlives a reload or a visit elsewhere, and every tab reuses it
+ * (#585). When a market page loads with one stored, it asks the ledger, says
+ * what it found, and forgets the key once the answer is definite. Until then
+ * a retry in any tab still reuses the key.
  */
 export function useTradeKeys({ marketId, traderId, onFoundCommitted }: UseTradeKeysOptions) {
   const keysAwaitingAnswerRef = useRef<KeyAwaitingAnswer[]>([])
@@ -69,13 +92,37 @@ export function useTradeKeys({ marketId, traderId, onFoundCommitted }: UseTradeK
 
   const awaitingEntryOf = (key: string) => keysAwaitingAnswerRef.current.find(entry => entry.key === key)
 
+  const dropEntry = (key: string) => {
+    keysAwaitingAnswerRef.current = keysAwaitingAnswerRef.current.filter(entry => entry.key !== key)
+  }
+
   const setCheck = (check: TradeCheck) => {
     setChecks(current => [...current.filter(other => other.key !== check.key), check])
   }
 
-  // The entry for the key a trade already went out under, if it is still
-  // awaiting a definite answer, or a new one for it.
+  const store = (entry: KeyAwaitingAnswer) => {
+    storeTrade(traderId, marketId, { key: entry.key, trade: entry.trade, sentAt: entry.sentAt })
+  }
+
+  /** This page's entry for a key read from storage, made if it has none: a
+   *  key another tab sent may have committed, as far as this page knows. */
+  const adopt = (stored: StoredTrade): KeyAwaitingAnswer => {
+    const known = awaitingEntryOf(stored.key)
+    if (known) return known
+    const entry = { key: stored.key, trade: stored.trade, mayHaveCommitted: true, isInFlight: false, sentAt: stored.sentAt }
+    keysAwaitingAnswerRef.current.push(entry)
+    return entry
+  }
+
+  // The key a trade already went out under, in this tab or another, if it is
+  // still awaiting a definite answer, or a new one for it. A key this page
+  // still holds is reused even after another tab got its answer: this page
+  // may have told the trader that sending it again is safe, and the ledger
+  // replays it, so the repeat says one trade was made. The click after that
+  // is a new trade.
   const keyFor = (trade: SentTrade): KeyAwaitingAnswer => {
+    const shared = readStoredTrades(traderId, marketId)?.find(other => isSameTrade(other.trade, trade))
+    if (shared) return adopt(shared)
     const awaiting = keysAwaitingAnswerRef.current.find(entry => isSameTrade(entry.trade, trade))
     if (awaiting) return awaiting
     const entry = { key: crypto.randomUUID(), trade, mayHaveCommitted: false, isInFlight: false, sentAt: Date.now() }
@@ -84,30 +131,33 @@ export function useTradeKeys({ marketId, traderId, onFoundCommitted }: UseTradeK
   }
 
   const forgetKey = (key: string) => {
-    keysAwaitingAnswerRef.current = keysAwaitingAnswerRef.current.filter(entry => entry.key !== key)
+    dropEntry(key)
     removeStoredTrade(traderId, marketId, key)
     setChecks(current => current.filter(check => check.key !== key))
   }
 
-  /** An attempt under `entry`'s key is going out now. Kept beyond this page
-   *  from the moment it is sent, not from when it fails: a reload while it is
-   *  in flight gets no answer either, and it may still commit. */
-  const markSent = (entry: KeyAwaitingAnswer) => {
+  /** Sends an attempt under `entry`'s key. Kept beyond this page from the
+   *  moment it is sent, not from when it fails: a reload while it is in
+   *  flight gets no answer either, and it may still commit. The attempt's
+   *  lock tells every tab it is out until it ends. */
+  const sendUnder = async <T>(entry: KeyAwaitingAnswer, send: () => Promise<T>): Promise<T> => {
     entry.isInFlight = true
     entry.sentAt = Date.now()
-    storeTrade(traderId, marketId, { key: entry.key, trade: entry.trade, sentAt: entry.sentAt })
+    store(entry)
+    if (!hasWebLocks()) return send()
+    return navigator.locks.request(attemptLockOf(entry.key), send)
   }
 
   /** An attempt under `entry`'s key got no answer or a 5xx, so it may still
-   *  commit, and the minute starts again from now. Unless a check found it
-   *  committed while this attempt was out: the key is then gone for good,
-   *  and this attempt could only have replayed it. */
+   *  commit, and the minute starts again from now. Not stored again when a
+   *  check found the trade committed while this attempt was out: that check
+   *  has forgotten the key, and this attempt could only have replayed it. */
   const markMayHaveCommitted = (entry: KeyAwaitingAnswer) => {
     entry.mayHaveCommitted = true
     entry.isInFlight = false
     entry.sentAt = Date.now()
     if (!awaitingEntryOf(entry.key)) return
-    storeTrade(traderId, marketId, { key: entry.key, trade: entry.trade, sentAt: entry.sentAt })
+    store(entry)
   }
 
   /** The ledger refused this attempt and wrote nothing, but the panel keeps
@@ -132,15 +182,23 @@ export function useTradeKeys({ marketId, traderId, onFoundCommitted }: UseTradeK
     let isCancelled = false
     const retryTimers: ReturnType<typeof setTimeout>[] = []
 
-    const settle = (stored: StoredTrade, check: TradeCheck) => {
+    const settle = (key: string, check: TradeCheck) => {
       setCheck(check)
       if (check.answer === 'checking' || check.answer === 'unknown') return
-      keysAwaitingAnswerRef.current = keysAwaitingAnswerRef.current.filter(entry => entry.key !== stored.key)
-      removeStoredTrade(traderId, marketId, stored.key)
+      dropEntry(key)
+      removeStoredTrade(traderId, marketId, key)
     }
 
-    const ask = async (stored: StoredTrade) => {
-      const { key, trade } = stored
+    /** When the minute runs out for `entry`, or null while an attempt under
+     *  it is out in any tab. Counted from its latest attempt in any tab: one
+     *  sent elsewhere while this was being asked may itself be queued. */
+    const finalAfter = async (entry: KeyAwaitingAnswer): Promise<number | null> => {
+      if (entry.isInFlight || await isAttemptOutAnywhere(entry.key)) return null
+      const sharedSentAt = readStoredTrades(traderId, marketId)?.find(stored => stored.key === entry.key)?.sentAt ?? 0
+      return Math.max(entry.sentAt, sharedSentAt) + NOT_FOUND_IS_FINAL_AFTER_MS
+    }
+
+    const ask = async (key: string, trade: SentTrade) => {
       let found: TradeResult | null = null
       let canBeAsked = true
       try {
@@ -153,38 +211,33 @@ export function useTradeKeys({ marketId, traderId, onFoundCommitted }: UseTradeK
       if (isCancelled || !entry) return
 
       if (!canBeAsked) {
-        settle(stored, { key, trade, answer: 'unknown' })
+        settle(key, { key, trade, answer: 'unknown' })
       } else if (found && isSameTrade(sentTradeOf(found, trade.outcomeLabel), trade)) {
-        settle(stored, { key, trade, answer: 'went-through', total: found.total })
+        settle(key, { key, trade, answer: 'went-through', total: found.total })
         reportFoundCommitted()
       } else if (found) {
         // Another trade under this key, so this one was refused
         // idempotency_key_reused (ledger-service.md, the trade lookup).
-        settle(stored, { key, trade, answer: 'did-not-go-through' })
+        settle(key, { key, trade, answer: 'did-not-go-through' })
       } else {
-        // Not while an attempt from this page is still out, and only a minute
-        // after the latest one went out or ended: a retry sent while this was
-        // being asked may itself be queued on the ledger.
-        const waitLeft = entry.isInFlight
-          ? NOT_FOUND_IS_FINAL_AFTER_MS
-          : entry.sentAt + NOT_FOUND_IS_FINAL_AFTER_MS - Date.now()
+        const finalAt = await finalAfter(entry)
+        if (isCancelled || !awaitingEntryOf(key)) return
+        const waitLeft = finalAt === null ? NOT_FOUND_IS_FINAL_AFTER_MS : finalAt - Date.now()
         if (waitLeft <= 0) {
-          settle(stored, { key, trade, answer: 'did-not-go-through' })
+          settle(key, { key, trade, answer: 'did-not-go-through' })
         } else {
-          settle(stored, { key, trade, answer: 'checking' })
-          retryTimers.push(setTimeout(() => void ask(stored), waitLeft))
+          settle(key, { key, trade, answer: 'checking' })
+          retryTimers.push(setTimeout(() => void ask(key, trade), waitLeft))
         }
       }
     }
 
     // What the checks said is about the market and trader they were made for.
     setChecks([])
-    for (const stored of readStoredTrades(traderId, marketId)) {
-      if (!awaitingEntryOf(stored.key)) {
-        keysAwaitingAnswerRef.current.push({ key: stored.key, trade: stored.trade, mayHaveCommitted: true, isInFlight: false, sentAt: stored.sentAt })
-      }
+    for (const stored of readStoredTrades(traderId, marketId) ?? []) {
+      adopt(stored)
       setCheck({ key: stored.key, trade: stored.trade, answer: 'checking' })
-      void ask(stored)
+      void ask(stored.key, stored.trade)
     }
 
     return () => {
@@ -193,5 +246,5 @@ export function useTradeKeys({ marketId, traderId, onFoundCommitted }: UseTradeK
     }
   }, [marketId, traderId])
 
-  return { keyFor, forgetKey, markSent, markMayHaveCommitted, markRefused, checks, dismissAnsweredChecks }
+  return { keyFor, forgetKey, sendUnder, markMayHaveCommitted, markRefused, checks, dismissAnsweredChecks }
 }
