@@ -42,6 +42,7 @@ what each share cost: [ADR 0025](../adr/0025-voiding-a-flawed-market.md).
 | GET | `/ledger/markets/{market_id}/price-history` | Every price the market has had, one point per trade |
 | GET | `/ledger/markets/{market_id}/trades` | The market's trades, newest first (admin) |
 | POST | `/ledger/markets/{market_id}/trades` | Buy or sell shares |
+| GET | `/ledger/markets/{market_id}/trades/by-key` | Whether my trade committed under an idempotency key |
 | POST | `/ledger/markets/{market_id}/settlement` | Pay out an approved market (admin) |
 | POST | `/ledger/markets/{market_id}/void` | Void a flawed market and refund every holder (admin; ADR 0025) |
 | POST | `/ledger/markets/{market_id}/orders` | Place a limit order (ADR 0024) |
@@ -1459,6 +1460,82 @@ snapshot, the balance, the history and the portfolio decide nothing, and keep
 answering until the access token expires (ADR 0003's window, which ADR 0022
 narrows for trades alone).
 
+## GET /ledger/markets/{market_id}/trades/by-key
+
+#584. Whether one of the caller's own trades on this market committed under
+an idempotency key. It's for a client that sent a trade and got no answer:
+no reply, a timeout or a 5xx. Sending the trade again with the same key
+would also answer, by replaying it, but only for the same outcome, side and
+quantity, and only while the client still wants that trade. This asks
+without trading.
+
+```
+GET /ledger/markets/{market_id}/trades/by-key?idempotency_key=<the key the trade was sent with>
+Authorization: Bearer <token>   (or the access_token cookie)
+```
+
+Any valid access token, any role.
+
+**`idempotency_key` is a query parameter, not a path segment.** The trade
+route accepts any key of 1 to 175 characters, `/` included, and a `/` can't
+sit inside a path segment. As a query parameter, every key the trade route
+accepts can be looked up.
+
+**The answer is `200` with the trade**, field for field the body the trade
+route answered with, or would answer a retry with:
+
+```jsonc
+{
+  "transaction_id": "...",
+  "user_id": "...",
+  "market_id": "...",
+  "outcome_id": "...",
+  "side": "buy",
+  "quantity": "10.0000",
+  "total": "-5.1250",
+  "state_version": 1,
+  "book_state_version": 1
+}
+```
+
+**Or `404 trade_not_found`**: nothing of the caller's has committed under that
+key on this market **as of this read**. A trade refused with a `4xx`, other than
+`409 idempotency_key_reused`, or with a `503`, committed nothing under its
+key: those refusals all come before the trade's commit. A `500`, or no reply
+at all, may have committed, and that is what this route is for.
+
+**A `404` is final only once the trade's own request has certainly ended.** A
+trade still waiting for the book's lock has written nothing yet, and nothing
+bounds that wait. So a reply lost to a gateway timeout can leave the trade
+still running, and a `404` read meanwhile can be followed by its commit. A
+client that can't tell whether its request ended keeps the key and asks again
+later. It doesn't decide from one `404` that the trade did not go through.
+
+**Check that the trade returned is the one you're asking about.** A `200` is
+whatever committed under that key. If a client ever sent a different trade
+under a key already used, that trade was refused `409 idempotency_key_reused`
+and the lookup returns the earlier one. Compare `outcome_id`, `side` and
+`quantity`, numerically, before saying the trade asked about went through.
+
+**It answers only for the caller.** The key is looked up as the trade route
+stores it, `trade:<user_id>:<market_id>:<idempotency_key>`, with `user_id`
+read from the token (see "The idempotency key is derived" above). Another
+trader's key on the same market, and the caller's own key on another market,
+are both `404`, never somebody else's trade.
+
+**It writes nothing and calls nothing.** It asks neither market_service nor
+the auth service, so an unknown market is `404 trade_not_found` too, and the
+answer doesn't change when the market closes, settles or is voided. A suspended account
+can still ask, like every other read (ADR 0022).
+
+Errors:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 401 | `invalid_token` | Missing, malformed or expired access token. |
+| 404 | `trade_not_found` | None of the caller's trades on this market committed under this key. |
+| 422 | `invalid_request` | No `idempotency_key`, one longer than 175 characters, or a market id that is not a UUID. |
+
 ## Limit orders — ADR 0024 (Accepted): built
 
 [T-6] #26, [T-7] #27, [T-8] #28. **Placing an order, listing your orders, the
@@ -2360,7 +2437,9 @@ for it today.
 #23), `idempotency_key_reused` (409), `market_closed` (409) and
 `price_beyond_limit` (409, new in #640, replacing [T-2] #22's `quote_stale`,
 which a body with no limit still gets until every client sends a limit; see
-"Rolling out") are the trade route's own, documented in its section above. `insufficient_shares_outstanding` (409) is unreachable on the trade
+"Rolling out") are the trade route's own, documented in its section above.
+`trade_not_found` (404, new in #584) is the trade lookup's own, documented in
+its section above. `insufficient_shares_outstanding` (409) is unreachable on the trade
 route: each outcome's shares outstanding equal the sum of its positions, so
 `insufficient_shares_held` always refuses first. It stays in the code as a
 backstop and is out of the trade route's table on purpose; only the preview
