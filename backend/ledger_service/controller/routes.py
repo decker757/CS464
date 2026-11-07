@@ -841,7 +841,7 @@ LookupKey = Annotated[
         },
         422: _invalid_request(
             "`invalid_request`: no `idempotency_key`, or one longer than "
-            "175 characters; a market id that is not a UUID."
+            f"{MAX_CLIENT_KEY_LENGTH} characters; a market id that is not a UUID."
         ),
     },
 )
