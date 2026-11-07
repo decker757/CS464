@@ -155,6 +155,14 @@ function describeRefusedTrade(trade: SentTrade): string {
   return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} was not made: the price moved before it went through.`
 }
 
+/** The alert above the tickets about a trade already sent, or '' for none. A
+ *  refusal still on screen in place, under the button, is not said twice. */
+function describePastTrade(unconfirmedTrade: SentTrade | null, refusedTrade: SentTrade | null, isRefusalShownInPlace: boolean): string {
+  if (unconfirmedTrade) return describeUnconfirmedTrade(unconfirmedTrade)
+  if (refusedTrade && !isRefusalShownInPlace) return describeRefusedTrade(refusedTrade)
+  return ''
+}
+
 /** A trade's key, kept until the ledger answers it definitely.
  *  `mayHaveCommitted` once an attempt under it got no answer or a 5xx. */
 interface KeyAwaitingAnswer {
@@ -254,15 +262,9 @@ export default function TradingPanel({
   const quantityInputRef = useRef<HTMLInputElement>(null)
 
   const visibleSubmitError = submitErrorFor === inputKey ? submitError : ''
-  // A refused trade the market ticket still shows says so in place, under the
-  // button. Otherwise — the trader picked another outcome or side, or the
-  // Limit ticket, while it was in flight, or its re-quote failed — it says so
-  // above the tickets instead, naming it. inputKey leaves out the order type,
-  // so the ticket is checked here.
+  // inputKey leaves out the order type, so the ticket is checked here.
   const isRefusalShownInPlace = orderType === 'market' && visibleSubmitError !== ''
-  let pastTradeAlert = ''
-  if (unconfirmedTrade) pastTradeAlert = describeUnconfirmedTrade(unconfirmedTrade)
-  else if (refusedTrade && !isRefusalShownInPlace) pastTradeAlert = describeRefusedTrade(refusedTrade)
+  const pastTradeAlert = describePastTrade(unconfirmedTrade, refusedTrade, isRefusalShownInPlace)
   // Shown until the trader types the next quantity, and only that: tying it to
   // the outcome too hid a buy's confirmation from a trader who picked another
   // outcome while it was in flight (#566). It names its own outcome, so it
@@ -347,8 +349,7 @@ export default function TradingPanel({
         // automatically. refetchNow is the same fetch the live preview
         // uses, so if it fails too, previewError already shows why — clear
         // submitError rather than leaving "Getting a fresh quote…" frozen
-        // on screen regardless of how the re-quote turns out. The alert
-        // above the tickets then says the trade was not made (#589).
+        // on screen regardless of how the re-quote turns out.
         setRefusedTrade(trade)
         setSubmitError(describeTradeError(err))
         const freshQuote = await refetchNow()
