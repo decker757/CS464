@@ -9,6 +9,8 @@
 #   - every server gets the release's files in the release's own directory,
 #     its own app.env shared by every release, and a registry login
 #   - only the first server rebuilds the leaderboard
+#   - every app.env carries the direct database addresses beside the pooled
+#     ones, and a deploy without them touches no server
 #   - every server is sent Alloy's config, is labelled for the dashboard, and
 #     has Alloy switched on only when Grafana Cloud is configured, whole and
 #     with https addresses, or not at all
@@ -122,7 +124,7 @@ new_servers() {
 extra_env=()
 
 deploy() {
-  env ${extra_env[@]+"${extra_env[@]}"} \
+  env \
     FAKE_ROOT="$root" PATH="$root/bin:$PATH" DEPLOY_SSH="$root/bin/ssh" \
     APP_DIR=. SKIP_PUBLIC_CHECK=1 APP_HOSTS="${servers[*]}" \
     PRODUCTION_DOMAIN=cs464.test IMAGE_REGISTRY=ghcr.io/example \
@@ -131,6 +133,9 @@ deploy() {
     JWT_SECRET=jwt LEDGER_SERVICE_KEY=key AUTH_DATABASE_URL=a MARKET_DATABASE_URL=m \
     LEDGER_DATABASE_URL=l AUDIT_DATABASE_URL=u AUTH_DB_PASSWORD=1 MARKET_DB_PASSWORD=2 \
     LEDGER_DB_PASSWORD=3 AUDIT_DB_PASSWORD=4 \
+    AUTH_DIRECT_DATABASE_URL=da MARKET_DIRECT_DATABASE_URL=dm \
+    LEDGER_DIRECT_DATABASE_URL=dl AUDIT_DIRECT_DATABASE_URL=du \
+    ${extra_env[@]+"${extra_env[@]}"} \
     "$release" "$1" > "$root/deploy.log" 2>&1
 }
 
@@ -175,6 +180,13 @@ expect "the database is migrated once, from the first server, with the admin URL
   test "$(calls server-a migrate-calls)" = "new with-admin-url"
 expect "and not from the second" never_called server-b migrate-calls
 expect "the admin URL is in no server's app.env" admin_url_in_no_app_env
+# #640: the apps reach Postgres through the pooler, and the migrate steps
+# directly, so app.env carries both addresses for every role.
+for pair in AUTH=da MARKET=dm LEDGER=dl AUDIT=du; do
+  expect "app.env carries ${pair%%=*}'s direct address" \
+    grep -qx "${pair%%=*}_DIRECT_DATABASE_URL=${pair#*=}" "$(app_env_of server-b)"
+done
+expect "beside its pooled one" grep -qx LEDGER_DATABASE_URL=l "$(app_env_of server-b)"
 
 # --- Grafana Cloud, optional ---------------------------------------------------
 
@@ -224,6 +236,17 @@ extra_env=("${grafana_env[@]}" "GRAFANA_OTLP_URL=https://o.invalid /otlp")
 expect "the deploy fails" deploy_fails spaced
 expect "before any server is sent the release" never_called server-a releases/spaced
 expect "and names the bad setting" log_says "GRAFANA_OTLP_URL must be https://"
+extra_env=()
+
+# --- The direct addresses, required --------------------------------------------
+
+# Later settings win in `env`, so this empties one of the good addresses.
+echo "a deploy before the direct addresses were pushed"
+reset_servers
+extra_env=(LEDGER_DIRECT_DATABASE_URL=)
+expect "the deploy fails" deploy_fails nodirect
+expect "before any server is sent the release" never_called server-a releases/nodirect
+expect "and names the missing setting" log_says "LEDGER_DIRECT_DATABASE_URL is required"
 extra_env=()
 
 # --- A migration that fails ---------------------------------------------------
