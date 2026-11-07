@@ -47,10 +47,12 @@ logger = logging.getLogger(__name__)
 # so `test_local_copy.py` pins it against market_service's source.
 _OPEN = "open"
 
-# A miss refetches the published list only if the copy is older than this. A
-# per-id negative cache absorbs only repeats of one id; this caps refetches per
-# replica for random ids too, at the cost of at most one fail-closed 404 for a
-# market published in the last quarter second.
+# A miss on an id with no book refetches the published list only if the copy
+# is older than this. A per-id negative cache absorbs only repeats of one id;
+# this caps refetches per replica for random ids too, at the cost of at most
+# one fail-closed 404 for a market published in the last quarter second and
+# not yet touched. A market with a book is not floored; see
+# `_terms_after_refreshing_past_the_miss`.
 _MISS_REFRESH_FLOOR_SECONDS = 0.25
 
 _SUSPENDED_PATH = "/internal/users/suspended"
@@ -195,11 +197,19 @@ def _terms_in(copy: LocalCopy, market_id: uuid.UUID) -> MarketTradingTerms | Non
 
 
 def _is_refresh_due(copy: LocalCopy, *, now: float) -> bool:
-    """Whether a miss may refetch: a refresh is installed and the markets were
-    loaded at least `_MISS_REFRESH_FLOOR_SECONDS` before `now`."""
+    """Whether a miss on an id with no book may refetch: a refresh is
+    installed and the markets were loaded at least
+    `_MISS_REFRESH_FLOOR_SECONDS` before `now`."""
     if copy.refresh_markets is None or copy.markets is None:
         return False
     return now - copy.markets.loaded_at >= _MISS_REFRESH_FLOOR_SECONDS
+
+
+def _is_stamped_since(copy: LocalCopy, *, observed_at: float) -> bool:
+    """Whether the copy's markets were sent for at or after `observed_at`, so
+    a market absent from them was absent from market_service's answer to a
+    request made after `observed_at`."""
+    return copy.markets is not None and copy.markets.loaded_at >= observed_at
 
 
 async def _terms_after_refresh(
@@ -222,6 +232,46 @@ async def _terms_after_refresh(
     if not copy.is_markets_fresh(now=copy.clock()):
         raise MarketTermsUnavailable
     return _terms_in(copy, market_id)
+
+
+async def _terms_after_refreshing_past_the_miss(
+    session: AsyncSession, copy: LocalCopy, market_id: uuid.UUID
+) -> MarketTradingTerms | None:
+    """The terms of a market that holds a book but is absent from the copy,
+    once the copy is stamped at or after this call began; None if it is
+    still absent then.
+
+    **Call this right after the book was read.** A book means the market was
+    published: `books.ensure_open` opened it with the terms market_service
+    itself served, so the publication committed before the book did, and
+    the book before this call. A refresh stamped after this call began was
+    sent after the publication, so a market absent from it is absent from
+    market_service's own answer. Until the copy carries such a stamp, the
+    floor does not apply: a caller can join a run sent earlier
+    (`coalesced`), which proves nothing, so it refreshes again. Runs are
+    serialised, so the second is stamped late enough: two is the bound, and
+    a copy still older after that is answered as absent, never trusted.
+    Raises what `_terms_after_refresh` raises, and `MarketTermsUnavailable`
+    for a copy that landed during the book read and is past its max age.
+    """
+    if copy.refresh_markets is None:
+        return None
+    observed_at = copy.clock()
+    # A refresh can land while the book is being read. One that holds the
+    # market saves a fetch, but the book read was an await nobody checked
+    # the copy's age across, so the bound (ADR 0030) is checked here first.
+    terms = _terms_in(copy, market_id)
+    if terms is not None:
+        if not copy.is_markets_fresh(now=copy.clock()):
+            raise MarketTermsUnavailable
+        return terms
+    for _ in range(2):
+        if _is_stamped_since(copy, observed_at=observed_at):
+            return None
+        terms = await _terms_after_refresh(session, copy, market_id)
+        if terms is not None:
+            return terms
+    return None
 
 
 def _is_trading(terms: MarketTradingTerms, *, now: datetime) -> bool:
@@ -432,11 +482,13 @@ async def ensure_trading(
     Raises `MarketTermsUnavailable` for a copy never loaded or past its max
     age. A market absent from it gets one `copy.refresh_markets()`, unless
     the copy is younger than `_MISS_REFRESH_FLOOR_SECONDS`, and the age is
-    checked again after it. Still absent, it is `MarketTermsUnavailable` if
-    it holds a book (market_service is wrong, ADR 0017) and `MarketNotFound`
-    if not. Then `MarketClosed` for any stored status but open, a null close
-    time, or one at or before `now`. The caller re-checks `close_time` under
-    the book lock.
+    checked again after it. Still absent with no book, it is
+    `MarketNotFound`. With a book it was published, so the floor is waived
+    and it is refreshed until the copy is stamped after the book was read,
+    at most twice more; still absent then, it is `MarketTermsUnavailable`
+    (market_service is wrong, ADR 0017). Then `MarketClosed` for any stored
+    status but open, a null close time, or one at or before `now`. The
+    caller re-checks `close_time` under the book lock.
 
     **Call this with nothing pending and no row lock held**: a miss that
     refreshes rolls the session back first (D-043). The session is read only
@@ -451,10 +503,12 @@ async def ensure_trading(
         terms = await _terms_after_refresh(session, copy, market_id)
     if terms is None:
         # Unlocked: ADR 0015 locks reads that decide a write, and this one
-        # decides only an error code.
-        if await books.find(session, market_id) is not None:
+        # decides a refresh and an error code.
+        if await books.find(session, market_id) is None:
+            raise MarketNotFound
+        terms = await _terms_after_refreshing_past_the_miss(session, copy, market_id)
+        if terms is None:
             raise MarketTermsUnavailable
-        raise MarketNotFound
 
     if not _is_trading(terms, now=now):
         raise MarketClosed

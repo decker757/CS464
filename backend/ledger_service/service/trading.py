@@ -26,8 +26,10 @@ trade on a warm market calls no other service.**
    copy of market_service's published markets: `409 market_closed` for a
    stored status other than open or a close time passed, `503
    market_terms_unavailable` for a copy past its max age (ADR 0017, ADR
-   0030). A market the copy lacks costs one refresh, which rolls the session
-   back first, and the close time it returns is checked again in step 6.
+   0030). A market the copy lacks costs one refresh, or up to two more when
+   it holds a book, until the copy is stamped after the book was read; each
+   rolls the session back first. The close time it returns is checked again
+   in step 6.
 3. `service/books.py::ensure_open`, which is a no-op past a market's first
    ever touch. On a cold market it fetches terms and funds the pool, and it
    ends in `posting.post`, so it commits — which is why it runs before the
