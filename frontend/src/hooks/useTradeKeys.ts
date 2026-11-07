@@ -1,15 +1,15 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { errorCode } from '../api/errors'
 import { getTradeByKey, type TradeResult } from '../api/ledgerApi'
-import { isSameTrade, type SentTrade } from '../utils/sentTrade'
-import { readStoredTrades, removeStoredTrade, storeTrade, type StoredTrade } from '../utils/unconfirmedTrades'
+import { useBalance } from '../context/BalanceContext'
+import { isSameTrade, type SentTrade, type TradeCheck } from '../utils/sentTrade'
+import { readStoredTrades, removeStoredTrade, storeTrade, sweepExpiredTrades, type StoredTrade } from '../utils/unconfirmedTrades'
 
 /** A trade's key, kept until the ledger answers it definitely.
  *  `mayHaveCommitted` once an attempt under it got no answer or a 5xx.
  *  `isInFlight` while an attempt under it from this page has not ended.
- *  `sentAt` is when the latest
- *  attempt went out, or ended without an answer, in epoch milliseconds: what
- *  the minute below is counted from. */
+ *  `sentAt` is when the latest attempt went out, or ended without an answer,
+ *  in epoch milliseconds: what the minute below is counted from. */
 interface KeyAwaitingAnswer {
   key: string
   trade: SentTrade
@@ -18,24 +18,19 @@ interface KeyAwaitingAnswer {
   sentAt: number
 }
 
-/** What the ledger said about a trade left unconfirmed before this page
- *  loaded (#585). `unknown` when it could not be asked: the key is kept. */
-export type TradeCheck =
-  | { key: string; trade: SentTrade; answer: 'checking' | 'did-not-go-through' | 'unknown' }
-  | { key: string; trade: SentTrade; answer: 'went-through'; total: string }
-
 // How long after a trade's latest attempt was sent, or ended without an
 // answer, a "not found" is believed. A trade still queued on the ledger has
 // written nothing yet, and nothing on the servers bounds that wait, so an
 // earlier "not found" can be followed by its commit (ledger-service.md, the
-// trade lookup). Before then, the panel asks again.
+// trade lookup; #669 proposed bounding it and was closed). Before then, the
+// panel asks again.
 const NOT_FOUND_IS_FINAL_AFTER_MS = 60_000
 
 interface UseTradeKeysOptions {
   marketId: string
   traderId: string
   // A trade left unconfirmed before this load turned out to have committed,
-  // so the balance and holdings may be stale.
+  // so the holdings may be stale. The hook re-reads the balance itself.
   onFoundCommitted: () => void
 }
 
@@ -87,6 +82,7 @@ async function isAttemptOutAnywhere(key: string): Promise<boolean> {
  * a retry in any tab still reuses the key.
  */
 export function useTradeKeys({ marketId, traderId, onFoundCommitted }: UseTradeKeysOptions) {
+  const { refetch: refetchBalance } = useBalance()
   const keysAwaitingAnswerRef = useRef<KeyAwaitingAnswer[]>([])
   const [checks, setChecks] = useState<TradeCheck[]>([])
 
@@ -176,7 +172,10 @@ export function useTradeKeys({ marketId, traderId, onFoundCommitted }: UseTradeK
     setChecks(current => current.filter(check => check.answer === 'checking'))
   }
 
-  const reportFoundCommitted = useEffectEvent(onFoundCommitted)
+  const reportFoundCommitted = useEffectEvent(() => {
+    void refetchBalance()
+    onFoundCommitted()
+  })
 
   useEffect(() => {
     let isCancelled = false
@@ -234,6 +233,7 @@ export function useTradeKeys({ marketId, traderId, onFoundCommitted }: UseTradeK
 
     // What the checks said is about the market and trader they were made for.
     setChecks([])
+    sweepExpiredTrades()
     for (const stored of readStoredTrades(traderId, marketId) ?? []) {
       adopt(stored)
       setCheck({ key: stored.key, trade: stored.trade, answer: 'checking' })

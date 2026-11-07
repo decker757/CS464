@@ -172,13 +172,6 @@ export default function MarketDetailPage() {
     setTradesMade(count => count + 1)
   }, [refetchHeld])
 
-  // A trade sent before the market closed turned out to have committed; the
-  // panel refreshes the balance itself, and this page has no panel then.
-  const handleFoundCommitted = () => {
-    void refetchBalance()
-    handleTraded()
-  }
-
   // A placement or a cancel moves credits, or what they reserve. A sell's
   // reservation is read off the portfolio row (#410), so every sell placement
   // and cancel changes the holdings the sell clamp reads, not only one that
@@ -360,7 +353,7 @@ export default function MarketDetailPage() {
                   <ClosedMarketTradeChecks
                     marketId={market.id}
                     traderId={user.id}
-                    onFoundCommitted={handleFoundCommitted}
+                    onFoundCommitted={handleTraded}
                   />
                 )}
                 <p className="text-sm text-muted">{closedMessage(market.status)}</p>

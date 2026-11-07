@@ -9,7 +9,7 @@ import { useTradeQuote } from '../../hooks/useTradeQuote'
 import { describeUnconfirmedTrade } from '../../utils/describeTradeCheck'
 import { compareCredits, formatCreditsPrecise, isZeroCredits, subtractCredits, unsignedCredits } from '../../utils/formatCredits'
 import { priceLimitFor } from '../../utils/priceLimit'
-import { isSameTrade, type SentTrade } from '../../utils/sentTrade'
+import { isSameTrade, nameOfTrade, type SentTrade } from '../../utils/sentTrade'
 import { describeSharesToSell } from '../../utils/orderInput'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
@@ -142,7 +142,7 @@ interface RefusedTrade {
  *  Nothing about what to do next — the re-quote may have failed, and the
  *  preview's own error says why. */
 function describeRefusedTrade({ trade, limitMiss }: RefusedTrade): string {
-  const refusal = `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} was not made: the price moved before it went through.`
+  const refusal = `Your ${nameOfTrade(trade)} was not made: the price moved before it went through.`
   if (!limitMiss) return refusal
   return `${refusal} It now comes to ${formatCreditsPrecise(limitMiss.currentTotal)} credits, past your limit of ${formatCreditsPrecise(limitMiss.limit)}.`
 }
@@ -179,7 +179,7 @@ interface CompletedTrade {
 function describeCompletedTrade(trade: CompletedTrade): string {
   const credits = formatCreditsPrecise(unsignedCredits(trade.total))
   if (trade.sentMoreThanOnce) {
-    return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} went through once, for ${credits} credits. It was sent more than once, but only one trade was made.`
+    return `Your ${nameOfTrade(trade)} went through once, for ${credits} credits. It was sent more than once, but only one trade was made.`
   }
   const verb = trade.side === 'buy' ? 'Bought' : 'Sold'
   return `${verb} ${trade.quantity} ${trade.outcomeLabel} for ${credits} credits.`
@@ -232,10 +232,7 @@ export default function TradingPanel({
   const { keyFor, forgetKey, sendUnder, markMayHaveCommitted, markRefused, checks, dismissAnsweredChecks } = useTradeKeys({
     marketId,
     traderId,
-    onFoundCommitted: () => {
-      void refetchBalance()
-      onTraded()
-    },
+    onFoundCommitted: onTraded,
   })
   // The trade that got no answer or a 5xx, said on screen whatever the panel
   // now shows, until the next trade is sent (#580).
