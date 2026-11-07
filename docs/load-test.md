@@ -135,6 +135,8 @@ trip gained or lost stays, a few credits at most.
 | 2026-11-04 | a laptop, the scaled stack, 5 markets | 20, 20 s | 702 (35 a second) | 196 ms | 263 ms | 0% | — | 3 |
 | 2026-11-04 | production, two 1-vCPU app servers behind the load balancer, 1 market | 50, 5 min | 126 (0.4 a second) | 5.45 s | 6.59 s | 0% | 4,427 | 692 |
 | 2026-11-04 | production, two 1-vCPU app servers behind the load balancer, 5 markets | 50, 5 min | 738 (2.5 a second) | 4.52 s | 5.93 s | 0.8% | 5,091 | 633 |
+| 2026-11-07 | production after #640's release (price limits, the ledger's local copy, 13 statements under the lock, DigitalOcean's pooler), two 1-vCPU app servers, 1 market | 50, 5 min | 3,568 (12 a second) | 4.72 s | 5.71 s | 0% | — (38 limit refusals, all retried) | 0 |
+| 2026-11-07 | the same, 5 markets | 50, 5 min | 6,394 (21 a second) | 2.60 s | 3.59 s | 0% | — (no limit refusals) | 0 |
 
 "A second" is over the trading time alone. k6's own `/s` figure divides by a
 time that includes setup.
@@ -154,6 +156,30 @@ time that includes setup.
 - **Spread across five markets, the same 20 traders committed twice the
   trades, and almost none gave up.** So a second server adds capacity across
   many markets, and none for one busy market.
+- **After #640's release, the same script committed 28 times the trades on
+  one market and 9 times on five, with no errors and no retries.** Price
+  limits ended the retry storm: a trade that would have been refused as stale
+  now executes at the current price inside its limit, and only 38 of 3,606
+  attempts on one market fell outside the 5% limit. The p95 moved less than
+  the throughput: 5.45 s to 4.72 s on one market, 4.52 s to 2.60 s on five.
+- **On one market the book lock is now the ceiling, and the numbers say so.**
+  3,568 trades in 300 s is 12 a second, so each trade held the lock about
+  84 ms, and 50 traders queued on it wait about 4.2 s at the tail, which is
+  the p95. The lock-free snapshot read had a p95 of 2.81 s on one market and
+  1.77 s on five, so the servers' CPU is also saturated, which is what makes
+  each of the 13 statements under the lock take as long as it does. ADR 0031
+  names 12 to 20 trades a second on one market as the trigger for a
+  per-market engine; it fired.
+- **Behind the pooler, the lock queue holds the ledger's connections.** During
+  the one-market run, `ledger on app-1: database` showed DOWN on the dashboard:
+  the ledger's pool has 14 server connections for both servers, every
+  transaction queued on the book lock keeps one, and the readiness check's
+  `SELECT 1` waited behind them. The five-market run never did this. The
+  ledger's pool should be sized above its client pools' total (two servers at
+  10 + 5 each), inside the connection budget in `docs/deployment.md`.
+- **Next measurements:** the one, two and three server runs ([5.4] #640,
+  Task 6.3), which say how far the five-market figure moves with CPU, and
+  the capacity section (#645).
 - **Production is much slower than a laptop.** With 50 traders for five
   minutes, the same script committed 126 trades on one market and 738 on five,
   against 1,137 in one minute on a laptop. Both app servers sat at 100% CPU,

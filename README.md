@@ -229,6 +229,48 @@ deploy does, rollback, scaling and the cost breakdown.
 deploy/production/test/stack-test.sh   # the production stack on this machine; needs only Docker
 ```
 
+## Load testing and scaling
+
+[5.4] #20 and #640. The production stack is built to scale sideways: every
+service is stateless, so the load balancer can send any request to any
+server; one managed Postgres holds the data, behind DigitalOcean's
+connection pooler so a third server fits inside the database's connection
+limit (#660); live prices travel over Redis rather than between servers
+(ADR 0010). `loadtest/run.sh` drives it with k6: 50 traders, each logging
+in, quoting and trading on real markets through the public API for five
+minutes. Every run is recorded in
+[`docs/load-test.md`](docs/load-test.md).
+
+| Production, 50 traders, 5 min | 4 November | 7 November, after #640 |
+|---|---|---|
+| One market: trades committed, p95, errors | 126, 5.45 s, 0% | 3,568, 4.72 s, 0% |
+| Five markets: trades committed, p95, errors | 738, 4.52 s, 0.8% | 6,394, 2.60 s, 0% |
+
+What changed between the columns, all measured first and acted on second:
+
+- **Price limits instead of exact quotes** ([ADR 0029](docs/adr/0029-price-limits-replace-exact-quotes.md)).
+  A trade names the most it will pay and executes within that at the current
+  price. Before, about 35 attempts were refused as stale for every trade that
+  committed; after, none.
+- **The ledger calls nobody on a trade** ([ADR 0030](docs/adr/0030-the-ledger-keeps-a-local-copy.md)).
+  It keeps a one-second copy of who may trade and what may be traded, and a
+  copy older than five seconds refuses rather than trusts. The two HTTP calls
+  per trade were about half the CPU per trade.
+- **The locked section of a trade is 13 statements, from 22** (#641), guarded
+  by a test that fails above the budget.
+- **Two unbounded reads bounded:** the balance sum reads only an index (#642),
+  and the browse list's week-ago price is stored, not replayed (#643).
+
+What the numbers say. Across markets, throughput grows with servers, and the
+pooler is what lets the next server start. On one market it does not: every
+trade on a market takes the same lock, on purpose, because the money has to
+serialise ([ADR 0015](docs/adr/0015-locking-the-read-that-decides-a-write.md)), and
+3,568 trades in 300 s is 12 a second, about 84 ms per hold, so 50 traders
+queued on one market wait about 4 s at the tail. That is the documented
+ceiling. The step past it, a per-market engine, is written up as a proposed
+ADR under #645, and the one, two and three server runs that put a number on
+the sideways scaling are the next measurement.
+
 ## Monitoring
 
 [5.5] #599. Each production server runs Grafana Alloy, which sends metrics,
