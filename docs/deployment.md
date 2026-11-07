@@ -474,9 +474,12 @@ is under the list.
    cost paragraph, in place of "a little memory". If it is over about
    300 MB, consider a `mem_limit` on `alloy` in
    `deploy/production/compose.yml`.
-5. Tempo shows a trade as one trace across ledger, market and auth, and its
-   spans carry no query string, cookie or Authorization header (the client
-   address and user agent are kept, by decision).
+5. Tempo shows a trade's spans in the ledger. A trade on a market that has
+   already been traded calls no other service (ADR 0030), so to see one
+   trace across services, use a market's first trade, which fetches its
+   terms from market, or a settlement. No span carries a query string,
+   cookie or Authorization header (the client address and user agent are
+   kept, by decision).
 6. Trigger `cs464-service-down` once. **Ask Ernest before you SSH.** On one
    server, in `/opt/cs464/current`, run
    `DRAIN_DIR=/opt/cs464/drain docker compose --env-file /opt/cs464/app.env --env-file release.env stop audit`.

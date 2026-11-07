@@ -52,7 +52,7 @@ from pydantic import AwareDatetime
 
 from controller.dependencies import (
     AccessToken,
-    AuthClient,
+    Copy,
     CurrentActor,
     CurrentAdmin,
     CurrentUser,
@@ -742,10 +742,11 @@ _TRADE_DESCRIPTION = (
         },
         503: {
             "description": (
-                "`market_terms_unavailable`: market_service could not be "
-                "reached right now, or returned unusable terms on a first "
-                "trade. `auth_unavailable`: the auth service could not say "
-                "whether this account may trade."
+                "`market_terms_unavailable`: the ledger's copy of the "
+                "published markets is too old to trust, or market_service "
+                "returned unusable terms on a first trade. `auth_unavailable`: "
+                "the ledger's copy of the suspended accounts is too old to "
+                "trust."
             )
         },
     },
@@ -756,7 +757,7 @@ async def execute_trade(
     user: CurrentUser,
     access_token: AccessToken,
     terms_client: TermsClient,
-    auth_client: AuthClient,
+    copy: Copy,
     session: DbSession,
     redis: RedisClient,
 ) -> TradeOut:
@@ -772,7 +773,7 @@ async def execute_trade(
         idempotency_key=body.idempotency_key,
         access_token=access_token,
         terms_client=terms_client,
-        auth_client=auth_client,
+        local_copy=copy,
         redis_client=redis,
     )
     return TradeOut(
@@ -874,9 +875,11 @@ def _order_out(order: orders.OrderView) -> OrderOut:
         },
         503: {
             "description": (
-                "`market_terms_unavailable`: market_service could not be "
-                "reached. `auth_unavailable`: the auth service could not say "
-                "whether this account may trade. Nothing was written."
+                "`market_terms_unavailable`: the ledger's copy of the "
+                "published markets is too old to trust, or market_service "
+                "could not be reached on a first trade. `auth_unavailable`: "
+                "the ledger's copy of the suspended accounts is too old to "
+                "trust. Nothing was written."
             )
         },
     },
@@ -887,7 +890,7 @@ async def place_order(
     user: CurrentUser,
     access_token: AccessToken,
     terms_client: TermsClient,
-    auth_client: AuthClient,
+    copy: Copy,
     session: DbSession,
     redis: RedisClient,
 ) -> PlacementOut:
@@ -902,7 +905,7 @@ async def place_order(
         idempotency_key=body.idempotency_key,
         access_token=access_token,
         terms_client=terms_client,
-        auth_client=auth_client,
+        local_copy=copy,
         redis_client=redis,
     )
     return PlacementOut(

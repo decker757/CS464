@@ -309,7 +309,7 @@ async def test_a_closed_market_makes_no_status_hop(
     upstream = Upstream(status="closed")
     await warm(session, upstream)
 
-    from service import market_status  # noqa: PLC0415
+    from service import local_copy  # noqa: PLC0415
 
     async def forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError(
@@ -317,14 +317,13 @@ async def test_a_closed_market_makes_no_status_hop(
             "market still has a price to render"
         )
 
-    monkeypatch.setattr(market_status, "ensure_trading", forbidden)
+    monkeypatch.setattr(local_copy, "ensure_trading", forbidden)
 
     await _read(session, upstream)
 
     assert upstream.calls == 0, (
-        "a warm snapshot made an HTTP call to market_service; ADR 0017's hop "
-        "belongs to the trade path, which fires once per trade, not to a read "
-        "that fires on every page open and every reconnect"
+        "a warm snapshot made an HTTP call to market_service; a read that "
+        "fires on every page open and every reconnect must not call out"
     )
 
 

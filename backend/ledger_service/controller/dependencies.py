@@ -3,7 +3,8 @@
 Dependencies rather than middleware: they default to closed, and /docs shows
 which routes need a token. Authority comes from the signed token alone, so a
 suspended user keeps it for one access-token lifetime (ADR 0003), except to
-trade: the trade path asks auth (ADR 0022).
+trade: the trade path checks the ledger's local copy of the suspended ids
+(ADR 0022, ADR 0030).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from core.database import get_session
 from core.errors import NotAnAdministrator, NotAuthenticated
 from core.security import TokenClaims
 from service.audit import Actor, actor_of
+from service.local_copy import LocalCopy
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 
@@ -41,12 +43,12 @@ async def get_terms_client(request: Request) -> httpx.AsyncClient:
 TermsClient = Annotated[httpx.AsyncClient, Depends(get_terms_client)]
 
 
-async def get_auth_client(request: Request) -> httpx.AsyncClient:
-    """The process-wide auth client `main.py`'s lifespan built. ADR 0022."""
-    return request.app.state.auth_client
+async def get_local_copy(request: Request) -> LocalCopy:
+    """The process-wide local copy `main.py`'s lifespan keeps refreshed. ADR 0030."""
+    return request.app.state.local_copy
 
 
-AuthClient = Annotated[httpx.AsyncClient, Depends(get_auth_client)]
+Copy = Annotated[LocalCopy, Depends(get_local_copy)]
 
 
 async def get_claims(request: Request) -> TokenClaims:

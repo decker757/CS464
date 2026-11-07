@@ -5,26 +5,31 @@ written into `ledger.entries`, `ledger.positions`, `market_outcomes.q` and
 `market_books.state_version` in one transaction, and announced after it
 commits.
 
-**The order, fixed by the issue, ADR 0017 and ADR 0022, is the whole design here.**
+**The order, fixed by the issue, ADR 0017 and ADR 0022, is the whole design
+here; ADR 0030 answers both of their checks from the ledger's local copy, so a
+trade on a warm market calls no other service.**
 
 1. The idempotency lookup, unlocked. A hit is compared against the request
    and returned — no status check, no HTTP call, no lock. "The replay lookup
    is unlocked, and that is safe because it can only ever short-circuit": a
    hit names a committed, append-only transaction, and a miss is trusted for
-   nothing except declining to skip the checks below. The account check
-   rolls back the transaction the miss opened, so neither HTTP call holds a
-   pooled connection.
-1b. The account check, `service/account_status.py::refuse_if_suspended` —
-   one call to auth's `GET /auth/me`, forwarding the caller's own token,
-   refusing `403 account_suspended` and failing closed (ADR 0022). After the
-   replay, so a charged trade's retry still answers; before the gate, so a
-   suspended trader hears about themselves; before the first touch and the
-   grant, so a suspended account funds and mints nothing. It releases its
-   connection before calling out, as the gate does.
-2. The gate, `service/market_status.py::ensure_trading` — one call to
-   market_service's public detail endpoint, forwarding the caller's own
-   token, refusing `409 market_closed` on anything but a derived status of
-   `"open"` (ADR 0017).
+   nothing except declining to skip the checks below. The gate may roll back
+   the transaction the miss opened, so nothing loaded here is reused below.
+1b. The account check, `service/local_copy.py::refuse_if_suspended`, in
+   memory against the copy of auth's suspended ids: `403 account_suspended`
+   for a listed trader, `503 auth_unavailable` for a copy past its max age
+   (ADR 0022, ADR 0030). After the replay, so a charged trade's retry still
+   answers; before the gate, so a suspended trader hears about themselves;
+   before the first touch and the grant, so a suspended account funds and
+   mints nothing.
+2. The gate, `service/local_copy.py::ensure_trading`, in memory against the
+   copy of market_service's published markets: `409 market_closed` for a
+   stored status other than open or a close time passed, `503
+   market_terms_unavailable` for a copy past its max age (ADR 0017, ADR
+   0030). A market the copy lacks costs one refresh, or up to two more when
+   it holds a book, until the copy is stamped after the book was read; each
+   rolls the session back first. The close time it returns is checked again
+   in step 6.
 3. `service/books.py::ensure_open`, which is a no-op past a market's first
    ever touch. On a cold market it fetches terms and funds the pool, and it
    ends in `posting.post`, so it commits — which is why it runs before the
@@ -42,7 +47,10 @@ commits.
    before this function writes anything of its own, so a hit here still
    costs nothing to return. Then the latch ([3.4] #12): a
    `ledger.market_results` row for the market is `409 market_closed`,
-   whatever the gate said, before anything below is read.
+   whatever the gate said, before anything below is read. Then the gate's
+   close time against Postgres's `clock_timestamp()`, read after the lock: a
+   market whose close time passed while this trade queued is `409
+   market_closed` too. The copy's check was the early refusal; this decides.
 7. `q`, `b` and the outcomes, read fresh — cheap, because the book row's lock
    makes this session's own prior read of `state_version` already correct,
    but read again anyway so the statement log shows a read after the lock
@@ -143,16 +151,15 @@ from model.entities import (
 )
 from model.schemas import OrderEvent, OrderFill, OutcomePrice, PriceEvent
 from service import (
-    account_status,
     accounts,
     book_prices,
     books,
     bus,
     grants,
-    market_status,
     posting,
     reservations,
 )
+from service.local_copy import LocalCopy, ensure_trading, refuse_if_suspended
 from service.posting import Leg, Movement
 
 logger = logging.getLogger(__name__)
@@ -754,16 +761,17 @@ async def execute(
     access_token: str,
     redis_client: redis.Redis,
     terms_client: httpx.AsyncClient,
-    auth_client: httpx.AsyncClient,
+    local_copy: LocalCopy,
 ) -> TradeResult:
     """Trade `quantity` of `outcome_id` in `market_id`, or replay a trade this
     key already named.
 
-    `access_token` is the caller's own, forwarded unchanged to the account
-    check, the gate and a cold market's first touch — this function mints
-    nothing. `idempotency_key` is the client's own string; the stored key is
-    derived from it, `user_id` and `market_id` (`trade_key`), never stored
-    as sent.
+    `local_copy` answers the account check and the gate; `terms_client` is
+    called only on a cold market's first touch. `access_token` is the
+    caller's own, forwarded unchanged to that first touch — this function
+    mints nothing. `idempotency_key` is the client's own string; the stored
+    key is derived from it, `user_id` and `market_id` (`trade_key`), never
+    stored as sent.
 
     `limit` is a buy's most it will pay or a sell's least it will accept;
     with one, `state_version` is not compared and `PriceBeyondLimit` is the
@@ -789,21 +797,19 @@ async def execute(
     if pre_gate is not None:
         return pre_gate
 
-    # 1b. The account check. Raises `AccountSuspended`, `NotAuthenticated` or
-    # `AuthUnavailable` before anything below runs. One call after the other,
-    # never together, so a suspended trader on a closed market is told about
-    # the suspension (ADR 0022). Rolls back the lookup's transaction first.
-    await account_status.refuse_if_suspended(
-        session, access_token=access_token, auth_client=auth_client
-    )
+    # 1b. The account check, from the copy. Raises `AccountSuspended` or
+    # `AuthUnavailable` before anything below runs. Before the gate, so a
+    # suspended trader on a closed market is told about the suspension
+    # (ADR 0022).
+    refuse_if_suspended(local_copy, user_id)
 
-    # 2. The gate. Refuses `MarketClosed`, `MarketTermsUnavailable` or
-    # `MarketNotFound` before anything below writes a thing. It rolls back
-    # before it calls out (D-043), which discards nothing: a miss loaded
-    # nothing, nothing is pending, no lock is held yet, and a miss is trusted
-    # for nothing below.
-    await market_status.ensure_trading(
-        session, market_id, access_token=access_token, terms_client=terms_client
+    # 2. The gate, from the copy. Refuses `MarketClosed`,
+    # `MarketTermsUnavailable` or `MarketNotFound` before anything below
+    # writes a thing. On a miss it rolls the session back (D-043), which
+    # expires what step 1 loaded: a miss loaded nothing, and nothing read
+    # above this line may be reused below it. Keep every read after it.
+    terms = await ensure_trading(
+        session, local_copy, market_id, now=datetime.now(UTC)
     )
 
     # 3. The book, opened and funded on a market's first touch only. Commits
@@ -834,6 +840,9 @@ async def execute(
     # trade latch sits after the key re-check under the book lock".
     if await books.find_result(session, market_id) is not None:
         raise MarketClosed
+    # The deciding close check, on Postgres's clock after the lock: the copy's
+    # was the early refusal, and this trade may have queued past `close_time`.
+    await books.refuse_if_closed_under_lock(session, terms)
 
     # 7. Read fresh, after the lock. Local rather than
     # `book_prices.read_or_open`: the trade writes `q` through these entities,

@@ -338,6 +338,27 @@ async def test_a_second_touch_makes_no_http_call_at_all(
     assert upstream.calls == 1, "an existing book must not be re-fetched"
 
 
+async def test_the_caller_s_own_token_is_forwarded_and_none_is_minted(
+    session: AsyncSession,
+) -> None:
+    """D-018: the first touch asks market_service with the caller's own
+    token, and none minted here. Since ADR 0030 it is the trade path's only
+    call out, so it is the one that has to carry the caller's credential."""
+    from unit_test.book_fixtures import Upstream  # noqa: PLC0415
+
+    upstream = Upstream()
+    token = _token()
+
+    await _books().ensure_open(
+        session,
+        upstream.market_id,
+        access_token=token,
+        terms_client=terms_client_over(upstream.transport),
+    )
+
+    assert upstream.tokens == [token]
+
+
 async def test_the_book_survives_a_market_service_that_has_since_gone_down(
     session: AsyncSession,
 ) -> None:

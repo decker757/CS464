@@ -49,7 +49,7 @@ what each share cost: [ADR 0025](../adr/0025-voiding-a-flawed-market.md).
 | POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (ADR 0024) |
 | POST | `/ledger/admin/orders/{order_id}/cancel` | Cancel any trader's limit order, with a reason (admin) |
 | GET | `/health` | Liveness probe: the process is up |
-| GET | `/ready` | Readiness probe: the database answers. 503 names the one that does not. Not public: the production gateway returns 404 for it (ADR 0028) |
+| GET | `/ready` | Readiness probe: the database answers, and both halves of the ledger's local copy (`suspended_copy`, `market_copy`) loaded within their max age. 503 names each one that is down; a replica whose copy is down refuses every trade 503. Not public: the production gateway returns 404 for it (ADR 0028) |
 
 **Five routes write, and none takes money.** `POST .../trades` takes no
 account, no amount and no leg, so a trader's own token is a safe credential
@@ -1399,16 +1399,18 @@ bug that has no symptom until a market closes mid-retry.**
    new, for the same trade. A replay returns the stored trade whatever limit
    the retry carries: a trade that cost 12.40, retried with a `max_cost` of
    `12.00`, still answers 12.40. The trade already happened.
-2. Then: is this account still allowed to trade? Asked of the auth
-   service's `GET /auth/me`, once, forwarding this request's own token
-   ([ADR 0022](../adr/0022-the-ledger-and-a-suspended-trader.md)). A
+2. Then: is this account still allowed to trade? Read from the ledger's
+   copy of auth's suspended accounts, refreshed about every second
+   ([ADR 0022](../adr/0022-the-ledger-and-a-suspended-trader.md),
+   [ADR 0030](../adr/0030-the-ledger-keeps-a-local-copy.md)). A
    suspended account is refused `403 account_suspended` here, before the
    market is looked at, so it hears about itself rather than about the
    market.
-3. Only then the gate: is this market still open? Read off
-   `market_service`'s public detail endpoint, once, forwarding this
-   request's own token.
-4. The book row's lock, and a second idempotency check under it, before this
+3. Only then the gate: is this market still open? Read from the ledger's
+   copy of `market_service`'s published markets, refreshed the same way. A
+   trade on a market that already has a book calls no other service.
+4. The book row's lock, a second idempotency check under it, and the
+   market's `close_time` checked again on the database's clock, before this
    request writes anything of its own.
 
 **Why the lookup runs before the gate, not after.** A trade that committed
@@ -1449,8 +1451,8 @@ Errors:
 | 422 | `invalid_request` | A malformed body, an extra field, `side` other than `"buy"` or `"sell"`, or a quantity at five decimal places, `<= 0`, or wider than 18 digits. A missing limit for this side, the other side's limit, a `max_cost` `<= 0`, a `min_proceeds` `< 0`, or a limit at five decimal places or wider than 18 digits. `error.details` names each field; see [Errors](#errors). |
 | 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. The same guard the preview and the snapshot use. A server fault; not worth retrying. |
 | 500 | `cascade_fill_refused` | The overdraft check refused one of the resting orders this trade filled, which ADR 0024 makes impossible. Nothing was written and the ledger logged it. A server fault; not worth retrying. |
-| 503 | `market_terms_unavailable` | `market_service` could not be reached, or — on a market's first trade — answered with terms no book can be opened from. |
-| 503 | `auth_unavailable` | The auth service could not be reached, or did not answer whether this account may trade. Nothing was written. Worth retrying. |
+| 503 | `market_terms_unavailable` | The ledger's copy of trading terms is older than five seconds or has never loaded, because `market_service` has not answered its refresh. Also a market the copy lacks whose refresh failed, or that this service holds a book for and the copy still lacks after a refresh sent since this service read that book, and on a market's first trade, `market_service` not reached or answering with terms no book can be opened from. Nothing was written. Worth retrying. |
+| 503 | `auth_unavailable` | The ledger's copy of suspended accounts is older than five seconds or has never loaded, because the auth service has not answered its refresh. Nothing was written. Worth retrying. |
 
 **A suspended account is refused on this route only.** The preview, the
 snapshot, the balance, the history and the portfolio decide nothing, and keep
@@ -1593,7 +1595,9 @@ account (ADR 0022), then the market gate, then opening the market's book on
 its first touch, then minting your starting credits if you have never been
 granted them, then everything under the book lock. So a limit order can be
 your first action on the platform: the grant is minted before the budget is
-checked.
+checked. The account check and the gate read the same local copy a trade
+does, so a placement gets the same two `503`s when that copy is stale (the
+trade route's `503` rows, ADR 0030).
 
 **What a placement locks.** Under the book lock, a buy that rests entirely
 also locks your account until it commits, so a trade of yours in another

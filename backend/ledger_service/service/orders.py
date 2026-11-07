@@ -4,10 +4,11 @@ ADR 0024, "Resting orders fill against the AMM inside the trade that moved the
 price", decides the shape, and its "A placement checks in the trade's order"
 the sequence: the retry lookup, the placer's account (ADR 0022), the market
 gate, the book's first touch and the grant, then the book lock and everything
-under it. Under the lock it refuses a
-market that has ended, one that is not binary, an unknown outcome, an order
-that would cross the book and a sell larger than the unreserved shares, and
-then either fills on arrival, as far as the price allows, or rests.
+under it. The account check and the gate read the ledger's local copy, as the
+trade's do (ADR 0030). Under the lock it refuses a market that has ended or
+whose close time has passed, one that is not binary, an unknown outcome, an
+order that would cross the book and a sell larger than the unreserved shares,
+and then either fills on arrival, as far as the price allows, or rests.
 
 **Two commit paths, and one account lock between them, never two.** An order
 that fills writes the fill as a trade does and commits through
@@ -62,16 +63,15 @@ from model.entities import (
     TransactionKind,
 )
 from service import (
-    account_status,
     accounts,
     book_prices,
     books,
     bus,
     grants,
-    market_status,
     posting,
     reservations,
 )
+from service.local_copy import LocalCopy, ensure_trading, refuse_if_suspended
 
 # The trade path's own steps, shared with the placement's fill so a fill on
 # arrival writes exactly what an instant trade of its size writes.
@@ -487,7 +487,7 @@ async def place(
     access_token: str,
     redis_client: redis.Redis,
     terms_client: httpx.AsyncClient,
-    auth_client: httpx.AsyncClient,
+    local_copy: LocalCopy,
 ) -> Placement:
     """Place a limit order in `market_id`, or replay the one this key named.
 
@@ -515,15 +515,12 @@ async def place(
     if pre_gate is not None:
         return pre_gate
 
-    # The trade's middle steps, in its order and for its reasons: the account
-    # check and the gate call out, and the book's first touch and the grant
-    # can commit, so all four run before the book lock.
-    await account_status.refuse_if_suspended(
-        session, access_token=access_token, auth_client=auth_client
-    )
-    await market_status.ensure_trading(
-        session, market_id, access_token=access_token, terms_client=terms_client
-    )
+    # The trade's middle steps, in its order and for its reasons: the gate may
+    # roll the session back on a miss, and the book's first touch and the
+    # grant can commit, so all four run before the book lock. Nothing the
+    # retry lookup loaded is reused below the gate; keep every read after it.
+    refuse_if_suspended(local_copy, user_id)
+    terms = await ensure_trading(session, local_copy, market_id, now=datetime.now(UTC))
     await books.ensure_open(
         session, market_id, access_token=access_token, terms_client=terms_client
     )
@@ -536,6 +533,9 @@ async def place(
         return under_lock
     if await books.find_result(session, market_id) is not None:
         raise MarketClosed
+    # The deciding close check, on Postgres's clock after the lock, as the
+    # trade's step 6 makes it.
+    await books.refuse_if_closed_under_lock(session, terms)
 
     outcomes = await list_outcomes(session, market_id)
     book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)

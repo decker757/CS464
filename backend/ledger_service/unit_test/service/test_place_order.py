@@ -15,8 +15,10 @@ contract's example, `b = 100` at `q = [20, 0]`, where a buy of outcome 0 at
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -61,17 +63,19 @@ from unit_test.placement_fixtures import (
 )
 from unit_test.portfolio_fixtures import read_portfolio
 from unit_test.sell_fixtures import hold
-from unit_test.service.test_account_status import _Auth
 from unit_test.trade_fixtures import (
+    TIMEOUT,
     Recorder,
     assert_ledger_balances,
     balance_of_user,
     book_row,
     buy,
     capture_sql_with_parameters,
+    fresh_copy,
     fund,
     position_of,
     q_of,
+    queued_past_close,
     session_factory,
     transaction_count,
 )
@@ -743,7 +747,7 @@ async def test_a_suspended_placers_attempt_on_a_cold_market_opens_no_book_and_mi
             user_id=user_id,
             limit_price=RESTING_LIMIT,
             quantity=RESTING_QUANTITY,
-            auth_transport=_Auth.suspended().transport,
+            local_copy=fresh_copy(upstream, suspended={user_id}),
         )
 
     async with session_factory()() as other:
@@ -781,7 +785,7 @@ async def test_a_retry_answers_first_with_the_same_placement_and_writes_nothing(
         limit_price=EXAMPLE_LIMIT,
         quantity=Decimal("100"),
         client_key="retry-me",
-        auth_transport=_Auth.suspended().transport,
+        local_copy=fresh_copy(upstream, suspended={user_id}),
     )
 
     assert retry == original
@@ -1182,12 +1186,13 @@ async def test_my_open_orders_are_the_live_ones_newest_first(
     assert listed[1].quantity == RESTING_QUANTITY
 
 
-async def test_the_gate_is_asked_with_the_placers_own_token(
+async def test_the_first_touch_is_asked_with_the_placers_own_token(
     session: AsyncSession,
 ) -> None:
-    """The gate is asked with the placer's token, forwarded unchanged and
-    nothing minted here, as on the trade path (ADR 0017)."""
-    upstream = await _example_market(session)
+    """A placement's one call out, a cold market's first touch, carries the
+    placer's token, forwarded unchanged and nothing minted here, as on the
+    trade path (D-018)."""
+    upstream = limit_upstream()
     user_id = await _funded(session)
     token = mint_token(user_id)
 
@@ -1201,3 +1206,35 @@ async def test_the_gate_is_asked_with_the_placers_own_token(
     )
 
     assert upstream.tokens == [token]
+
+
+async def test_a_placement_whose_close_time_passed_under_the_lock_is_refused_by_the_database_clock(
+    session: AsyncSession,
+) -> None:
+    """The trade's under-lock close check, on the placement: one that passed
+    the copy's check and queued on the book row past `close_time` is
+    `market_closed`, and no order is written. Remove the close check after
+    the latch in `orders.place` and this order rests."""
+    upstream = await _example_market(session)
+    user_id = await _funded(session)
+    # Wide enough that a slow runner still passes the copy's check before
+    # the close; one that does not refuses early and fails red, never green.
+    close_time = datetime.now(UTC) + timedelta(seconds=2)
+    upstream.body["close_time"] = close_time.isoformat()
+    copy = fresh_copy(upstream)
+
+    async def placement(own: AsyncSession):
+        return await place(
+            own,
+            upstream,
+            user_id=user_id,
+            limit_price=RESTING_LIMIT,
+            quantity=RESTING_QUANTITY,
+            local_copy=copy,
+        )
+
+    async with asyncio.timeout(TIMEOUT):
+        outcome = await queued_past_close(upstream.market_id, close_time, placement)
+
+    assert isinstance(outcome, MarketClosed), outcome
+    assert await order_count(session) == 0

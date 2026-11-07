@@ -41,6 +41,7 @@ from unit_test.trade_fixtures import (
     entities,
     errors,
     fund,
+    open_copy,
     pool_balance,
     session_factory,
     trading,
@@ -49,7 +50,6 @@ from unit_test.trade_fixtures import (
 from unit_test.void_fixtures import (
     VoidUpstream,
     figures,
-    gate_open_view,
     open_book,
     refunds_by_holder,
     trade,
@@ -138,7 +138,7 @@ async def test_a_trade_queued_behind_a_void_is_refused_and_writes_nothing(
                 quantity=SMALL_QUANTITY,
                 state_version=version,
                 client_key="racing-the-void",
-                transport=upstream.gate_open,
+                local_copy=open_copy(upstream),
             )
         except errors().MarketClosed:
             return "market_closed"
@@ -194,11 +194,12 @@ async def test_a_placement_queued_behind_a_void_is_refused_market_closed(
         try:
             await place(
                 placing,
-                gate_open_view(upstream),
+                upstream,
                 user_id=owner,
                 outcome=1,
                 limit_price=Decimal("0.1000"),
                 quantity=Decimal("5.0000"),
+                local_copy=open_copy(upstream),
             )
         except errors().MarketClosed:
             return "market_closed"
@@ -248,11 +249,12 @@ async def test_a_placement_that_took_the_lock_first_is_in_the_replay_and_release
         await start.wait()
         return await place(
             placing,
-            gate_open_view(upstream),
+            upstream,
             user_id=owner,
             outcome=1,
             limit_price=Decimal("0.4500"),
             quantity=Decimal("100.0000"),
+            local_copy=open_copy(upstream),
         )
 
     async def run_void():

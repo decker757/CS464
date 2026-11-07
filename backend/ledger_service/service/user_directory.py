@@ -57,7 +57,7 @@ def _user_of(row: object) -> DirectoryUser:
 
 def _users_of(response: httpx.Response) -> list[DirectoryUser]:
     """The users in a `200`. Raises `AuthUnavailable` for a body that is not
-    JSON or has no `users` list, as `account_status` fails closed on an answer
+    JSON or has no `users` list, as the local copy fails closed on an answer
     it cannot read."""
     try:
         body = response.json()

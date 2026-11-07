@@ -50,8 +50,8 @@ flowchart LR
     browser --> audit
     browser -->|"WebSocket /ws/prices"| realtime
 
-    ledger -->|"GET /auth/me<br/>POST /internal/users/lookup"| auth
-    ledger -->|"GET /public/markets/{id}<br/>POST /markets/{id}/settle"| market
+    ledger -->|"GET /internal/users/suspended<br/>POST /internal/users/lookup"| auth
+    ledger -->|"GET /internal/markets/published<br/>GET /public/markets/{id}<br/>POST /markets/{id}/settle"| market
 
     auth -->|owns| sAuth
     market -->|owns| sMarket
@@ -85,11 +85,12 @@ other way. What the drawing cannot say for itself:
   `:8002` and the dashed arrows are not calls to it (ADR 0006). `audit_svc`
   also holds INSERT, so its own suite can seed rows; nobody anywhere holds
   UPDATE, DELETE or TRUNCATE.
-- **The three arrows out of the ledger carry two different credentials.**
-  `/auth/me`, `/public/markets/{id}` and `/markets/{id}/settle` forward the
-  caller's own access token unchanged; `/internal/users/lookup` presents
+- **The two arrows from the ledger to auth and market carry five routes and
+  two different credentials.** `/public/markets/{id}` and
+  `/markets/{id}/settle` forward the caller's own access token unchanged;
+  the three `/internal/` routes present
   `LEDGER_SERVICE_KEY`, which is the only service credential in the system and
-  has one caller and one route (ADR 0021).
+  has one caller and three routes (ADR 0021, ADR 0030).
 - **Nothing depends on `audit` or `realtime`**, and compose says so: neither is
   in any other service's `depends_on`. A trade survives both being down.
 - Every image is built from `backend/` so it carries `backend/shared/` beside
@@ -97,13 +98,18 @@ other way. What the drawing cannot say for itself:
 
 ## A trade, end to end
 
-The one path that crosses three services. The two upstream checks happen before
-any lock is taken, and the price frame happens after the commit.
+The trade itself calls no other service: the account check and the market gate
+read the ledger's local copy, which two background refreshers keep within about
+a second of auth and market_service. Both checks happen before any lock is
+taken, a close on `close_time` is checked again under it, and the price frame
+happens after the commit.
 
 **Drawn from:** [ADR 0017](adr/0017-the-ledger-and-a-stopped-market.md) (the
 replay-before-gate and gate-before-lock order),
 [ADR 0022](adr/0022-the-ledger-and-a-suspended-trader.md) (the account check,
 and its place in that order),
+[ADR 0030](adr/0030-the-ledger-keeps-a-local-copy.md) (both checks read a local
+copy, and a stale copy refuses),
 [ADR 0015](adr/0015-locking-the-read-that-decides-a-write.md) (the book lock
 first, the key re-checked under it),
 [ADR 0009](adr/0009-the-ledger-write-path.md) (one commit, legs that sum to
@@ -124,7 +130,15 @@ sequenceDiagram
     participant R as Redis
     participant RT as realtime
 
-    B->>L: POST /ledger/markets/{id}/trades<br/>outcome, side, quantity, state_version, Idempotency-Key
+    loop about every second, in the background on each replica
+        L->>A: GET /internal/users/suspended, LEDGER_SERVICE_KEY
+        A-->>L: every suspended id
+        L->>M: GET /internal/markets/published, LEDGER_SERVICE_KEY
+        M-->>L: every published market's stored status and close_time
+    end
+    Note over L,M: Each answer replaces the copy whole. ADR 0030
+
+    B->>L: POST /ledger/markets/{id}/trades<br/>outcome, side, quantity, limit, Idempotency-Key
     L->>DB: look the derived key up, no lock
 
     alt this key already names a committed transaction
@@ -132,14 +146,11 @@ sequenceDiagram
         L-->>B: 200, the stored result
         Note over L: A replay takes no lock, writes nothing and asks nobody,<br/>so a trade that was charged and whose response was lost<br/>still answers with what it did. ADR 0017
     else first time for this key
-        L->>A: GET /auth/me, the trader's own token
-        A-->>L: 200, or 403 account_suspended
-        L->>M: GET /public/markets/{id}, the same token
-        M-->>L: the derived status, the clock's close and an admin's in one field
-        Note over L,M: Both before the book lock, one after the other, and both fail closed:<br/>403 account_suspended, 409 market_closed, 503 if either is unreachable.<br/>No lock here holds a row in another service still. ADR 0022, ADR 0017
+        L->>L: the copy: is the trader suspended, is the market trading
+        Note over L: In memory, before the book lock, and both fail closed:<br/>403 account_suspended, 409 market_closed,<br/>503 if either copy is older than five seconds. ADR 0022, ADR 0017, ADR 0030
         L->>DB: open and fund the book — once per market<br/>mint the starting grant — once per trader, ever
         L->>DB: SELECT FOR UPDATE on market_books, the wider lock first
-        L->>DB: re-check the key under the lock, then the latch, q, b, state_version, the holding
+        L->>DB: re-check the key under the lock, close_time against clock_timestamp(),<br/>then the latch, q, b, state_version, the holding
         L->>L: trade_cost_of(q, b) in core/lmsr.py
         L->>DB: write q, the position, the transaction and its entries — pending
         Note over L,DB: COMMIT. posting.post_all is the one statement that commits,<br/>so everything above it is pending until here and rolls back together.<br/>ADR 0009, ADR 0015
@@ -156,7 +167,7 @@ Two things left off to keep it one path. A commit that moved the price may also
 fill resting limit orders inside the same transaction, which adds `order.update`
 frames after the price frame
 ([ADR 0024](adr/0024-resting-orders-fill-inside-the-trade.md)). And the preview
-deliberately does not make either upstream call, because it decides nothing —
+deliberately does not consult the copy, because it decides nothing —
 so a preview can quote a market whose trade then returns `409 market_closed`
 (ADR 0017).
 
