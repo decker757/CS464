@@ -2,8 +2,10 @@
 
 The copy fails closed: never loaded, or older than its max age, both checks
 refuse with the dependency's own unavailable code. A market absent from a
-fresh copy gets one refresh before it is refused, as not found or, if it
-holds a book, as unavailable (ADR 0017's last row). The fetches parse the two
+fresh copy gets one refresh before it is refused as not found; one that
+holds a book was published, so it is refreshed past the floor until the copy
+is stamped after its book was read, and only then refused as unavailable
+(ADR 0017's last row). The fetches parse the two
 `/internal/` answers and refuse anything else, so the refresher keeps the old
 copy. `_OPEN` and the close-time predicate are restated from market_service
 and pinned against its source.
@@ -361,6 +363,256 @@ async def test_misses_within_the_floor_share_one_refresh_and_a_later_one_refresh
         with pytest.raises(_errors().MarketNotFound):
             await _ensure(copy, uuid.uuid4(), session)
         assert stub.calls == fetches, f"{seconds_later}s after the first miss"
+
+
+async def test_a_market_with_a_book_refreshes_inside_the_floor_and_is_found(
+    session: AsyncSession,
+) -> None:
+    """The trade panel snapshots a market before it trades, and the snapshot
+    opens the book, so a trade in the second after publication reaches the
+    gate with a book and no copy entry. A book means the market was
+    published, so its absence is the copy running behind, not a random id:
+    it refreshes whatever the floor says. Catches: the floor answering a
+    just-published market `503`, which failed six e2e specs on #656's first
+    CI run."""
+    upstream = Upstream()
+    await warm(session, upstream)
+    clock = _clock_at()
+    inside_the_floor = _MONOTONIC_NOW - _local_copy()._MISS_REFRESH_FLOOR_SECONDS / 2
+    copy = _copy(markets={}, loaded_at=inside_the_floor, clock=clock)
+    stub = _RefreshStub(copy, {upstream.market_id: _terms()}, clock=clock)
+    copy.refresh_markets = stub
+
+    assert await _ensure(copy, upstream.market_id, session) == _terms()
+
+    assert stub.calls == 1
+
+
+class _SharedStaleRunThenFresh:
+    """`refresh_markets` whose first call is a run the caller joined: one
+    sent before the miss (stamped `stale_by` seconds before the clock), and
+    without the market. The second call is the caller's own, stamped now,
+    and holds `then_adds`."""
+
+    def __init__(
+        self,
+        copy,
+        then_adds: Mapping[uuid.UUID, object],
+        *,
+        clock: ManualClock,
+        stale_by: float,
+    ) -> None:
+        self.copy = copy
+        self.then_adds = then_adds
+        self.clock = clock
+        self.stale_by = stale_by
+        self.calls = 0
+
+    async def __call__(self) -> None:
+        self.calls += 1
+        if self.calls == 1:
+            loaded_at, terms = self.clock.now - self.stale_by, {}
+        else:
+            loaded_at, terms = self.clock.now, dict(self.then_adds)
+        self.copy.markets = _local_copy().PublishedMarkets(
+            terms=terms, loaded_at=loaded_at, as_of=datetime(2026, 11, 5, tzinfo=UTC)
+        )
+
+
+@pytest.mark.parametrize(
+    "copy_age", [0.125, 1.0], ids=["inside-the-floor", "past-the-floor"]
+)
+@pytest.mark.parametrize("published_since", [True, False], ids=["found", "really-gone"])
+async def test_a_market_with_a_book_is_decided_by_a_copy_stamped_after_its_book_was_read(
+    session: AsyncSession, published_since: bool, copy_age: float
+) -> None:
+    """A miss that arrives while a refresh runs shares that run (`coalesced`),
+    which was sent before the miss and so may predate the market's
+    publication. For a market with a book that run proves nothing, so the
+    miss refreshes once more; runs are serialised, so the second is stamped
+    after the book was read and that is the last. Past the floor the joined
+    run is the floor's own refresh and the loop needs one pass; inside the
+    floor the loop's first refresh is the joined one and it needs both.
+    Catches: a joined stale run taken as the answer (a `503` on a published
+    market); a one-pass loop; a loop that goes on when the market really is
+    gone."""
+    upstream = Upstream()
+    await warm(session, upstream)
+    clock = _clock_at()
+    copy = _copy(markets={}, loaded_at=_MONOTONIC_NOW - copy_age, clock=clock)
+    stub = _SharedStaleRunThenFresh(
+        copy,
+        {upstream.market_id: _terms()} if published_since else {},
+        clock=clock,
+        # Newer than the copy, older than the miss.
+        stale_by=copy_age / 2,
+    )
+    copy.refresh_markets = stub
+
+    if published_since:
+        assert await _ensure(copy, upstream.market_id, session) == _terms()
+    else:
+        with pytest.raises(_errors().MarketTermsUnavailable):
+            await _ensure(copy, upstream.market_id, session)
+
+    assert stub.calls == 2
+
+
+async def test_a_miss_that_joins_a_run_in_flight_refreshes_again_through_the_single_flight(
+    session: AsyncSession,
+) -> None:
+    """The bound's argument lives in `coalesced`: a miss can join only the
+    run in flight when it arrives, and every later run is sent after that
+    one finished. Here the real single flight holds a run sent before the
+    miss, without the market, open across it. Catches: a joined run taken
+    as the answer; a miss that starts a second run beside the one in
+    flight."""
+    upstream = Upstream()
+    await warm(session, upstream)
+    clock = _clock_at()
+    # Inside the floor, so the loop's own first refresh is the one that joins.
+    copy = _copy(markets={}, loaded_at=_MONOTONIC_NOW - 0.125, clock=clock)
+    release = asyncio.Event()
+    started = asyncio.Event()
+    fetches = 0
+
+    async def fetch() -> None:
+        nonlocal fetches
+        fetches += 1
+        loaded_at = clock.now
+        terms: dict[uuid.UUID, object] = {}
+        if fetches == 1:
+            started.set()
+            await release.wait()
+        else:
+            terms = {upstream.market_id: _terms()}
+        copy.markets = _local_copy().PublishedMarkets(
+            terms=terms, loaded_at=loaded_at, as_of=datetime(2026, 11, 5, tzinfo=UTC)
+        )
+
+    shared = _local_copy().coalesced(fetch)
+    miss_called = asyncio.Event()
+
+    async def refresh_markets() -> None:
+        if started.is_set():
+            miss_called.set()
+        await shared()
+
+    copy.refresh_markets = refresh_markets
+    clock.now = _MONOTONIC_NOW - 0.05
+    in_flight = asyncio.create_task(copy.refresh_markets())
+    await reached(started, "the in-flight run never started", [in_flight])
+    clock.now = _MONOTONIC_NOW
+    miss = asyncio.create_task(_ensure(copy, upstream.market_id, session))
+    await reached(miss_called, "the miss never asked for a refresh", [miss])
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert fetches == 1, "the miss started a run beside the one in flight"
+    release.set()
+    await in_flight
+
+    assert await miss == _terms()
+    assert fetches == 2
+
+
+class _SessionWhoseFirstReadLandsARefresh:
+    """The real session, except that while its first statement runs a
+    background refresh lands: the copy then holds `adds`, stamped
+    `stamped_at` on the copy's clock, and the clock moves on by
+    `then_takes`, the rest of the read. That is the refresher landing
+    between the gate's first look at the copy and the end of its book
+    read, stamped before that read returned, as a real one is."""
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        copy,
+        adds: Mapping[uuid.UUID, object],
+        *,
+        clock: ManualClock,
+        stamped_at: float,
+        then_takes: float,
+    ) -> None:
+        self.session = session
+        self.copy = copy
+        self.adds = adds
+        self.clock = clock
+        self.stamped_at = stamped_at
+        self.then_takes = then_takes
+        self.landed = False
+
+    def __getattr__(self, name: str):
+        return getattr(self.session, name)
+
+    async def execute(self, *args, **kwargs):
+        if not self.landed:
+            self.landed = True
+            self.copy.markets = _local_copy().PublishedMarkets(
+                terms={**self.copy.markets.terms, **self.adds},
+                loaded_at=self.stamped_at,
+                as_of=datetime(2026, 11, 5, tzinfo=UTC),
+            )
+            self.clock.now += self.then_takes
+        return await self.session.execute(*args, **kwargs)
+
+
+async def test_a_refresh_that_lands_during_the_book_read_is_used_without_another(
+    session: AsyncSession,
+) -> None:
+    """The refresher runs beside every request. One that lands while the
+    miss path reads the book already holds the market, and was stamped
+    before the read returned, so the stamp alone would send the path back
+    to market_service for an answer it already has. Catches: the copy not
+    read again after the book read, which costs a fetch per such trade."""
+    upstream = Upstream()
+    await warm(session, upstream)
+    clock = _clock_at()
+    # Inside the floor, so nothing refreshes before the book is read.
+    copy = _copy(markets={}, loaded_at=_MONOTONIC_NOW - 0.125, clock=clock)
+    stub = _RefreshStub(copy, {}, clock=clock)
+    copy.refresh_markets = stub
+    landing = _SessionWhoseFirstReadLandsARefresh(
+        session,
+        copy,
+        {upstream.market_id: _terms()},
+        clock=clock,
+        stamped_at=_MONOTONIC_NOW - 0.01,
+        then_takes=0.01,
+    )
+
+    assert await _ensure(copy, upstream.market_id, cast(AsyncSession, landing)) == _terms()
+
+    assert stub.calls == 0
+
+
+async def test_a_refresh_that_landed_during_the_book_read_is_still_checked_for_age(
+    session: AsyncSession,
+) -> None:
+    """The book read is an await, and a copy that landed during it has had
+    no age check since. A landing that is fresh as it lands, and a book
+    read that then waits on the pool for longer than the max age: refused,
+    as every other path refuses a copy that old, with no fetch. Catches: a
+    re-read hit trusted without the bound (ADR 0030)."""
+    upstream = Upstream()
+    await warm(session, upstream)
+    clock = _clock_at()
+    # Inside the floor, so nothing refreshes before the book is read.
+    copy = _copy(markets={}, loaded_at=_MONOTONIC_NOW - 0.125, clock=clock)
+    stub = _RefreshStub(copy, {}, clock=clock)
+    copy.refresh_markets = stub
+    landing = _SessionWhoseFirstReadLandsARefresh(
+        session,
+        copy,
+        {upstream.market_id: _terms()},
+        clock=clock,
+        stamped_at=_MONOTONIC_NOW - 0.1,
+        then_takes=_MAX_AGE,
+    )
+
+    with pytest.raises(_errors().MarketTermsUnavailable):
+        await _ensure(copy, upstream.market_id, cast(AsyncSession, landing))
+
+    assert stub.calls == 0
 
 
 # =========================================================================
