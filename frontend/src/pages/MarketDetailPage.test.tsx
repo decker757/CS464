@@ -9,6 +9,7 @@ import { holdUntilReleased } from '../test/holdUntilReleased'
 import { server } from '../test/server'
 import { WithProviders } from '../test/renderWithProviders'
 import { formatDateTime } from '../utils/formatDateTime'
+import { storeTrade } from '../utils/unconfirmedTrades'
 import MarketDetailPage from './MarketDetailPage'
 
 const MARKET_BASE = 'http://localhost:8001'
@@ -115,6 +116,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  localStorage.clear()
 })
 
 function renderPage(marketId = 'mkt-abc', { refetchBalance }: { refetchBalance?: () => Promise<void> } = {}) {
@@ -482,6 +484,27 @@ describe('MarketDetailPage', () => {
     renderPage()
     expect(await screen.findByText(/trading is closed/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /buy/i })).not.toBeInTheDocument()
+  })
+
+  it('says whether a trade sent before the market closed went through, though there is no panel to say it', async () => {
+    // #585: the reply was lost just before the close, and the trader came
+    // back after it.
+    storeTrade(trader.id, 'mkt-abc', {
+      key: 'lost-reply',
+      trade: { outcomeId: 'o1', outcomeLabel: 'Yes', side: 'buy', quantity: '10' },
+      sentAt: Date.now() - 120_000,
+    })
+    server.use(
+      http.get(`${MARKET_BASE}/public/markets/:id`, () => HttpResponse.json({ ...baseMarket, status: 'closed' })),
+      http.get(`${LEDGER_BASE}/ledger/markets/:id/trades/by-key`, () => HttpResponse.json({
+        transaction_id: 'tx-1', user_id: trader.id, market_id: 'mkt-abc', outcome_id: 'o1',
+        side: 'buy', quantity: '10.0000', total: '-5.1250', state_version: 1, book_state_version: 1,
+      })),
+    )
+    renderPage()
+
+    expect(await screen.findByText('Your buy of 10 Yes went through, for 5.1250 credits.')).toBeInTheDocument()
+    expect(screen.getByText(/trading is closed/i)).toBeInTheDocument()
   })
 
   it('shows pending banner for pending_resolution markets', async () => {
