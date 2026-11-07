@@ -918,8 +918,9 @@ async def test_statements_grow_by_two_per_movement(session: AsyncSession) -> Non
     smaller = await _statements_for_a_batch_of(session, 100)
     larger = await _statements_for_a_batch_of(session, 200)
 
-    # A ceiling, not an equality: option B, one stamp statement over the
-    # union, must land with no assertion changed. DECISIONS.md, "`post_all`
-    # stamps from one probe per locked account, and movement *i* lands at the
-    # first stamp plus *i* µs". A probe per movement is 3 and goes red.
+    # A ceiling, not an equality: the stamp became one statement over the
+    # union with no assertion changed. DECISIONS.md, "`post_all` reads the
+    # floors and the first stamp in one statement under the account locks, and
+    # movement *i* still lands at the first stamp plus *i* µs". A probe per
+    # movement is 3 and goes red.
     assert larger - smaller <= 2 * 100

@@ -11,8 +11,11 @@
 - **Implemented in:** auth's `GET /internal/users/suspended` and
   market_service's `GET /internal/markets/published` (PR #650);
   `backend/ledger_service/service/local_copy.py`, `service/books.py`
-  (`clock_after_lock`, `refuse_if_closed_under_lock`), `service/trading.py`,
-  `service/orders.py` and `main.py`, on `640-perf-4-local-copy`.
+  (`refuse_if_closed_under_lock`), `service/trading.py`,
+  `service/orders.py` and `main.py`, on `640-perf-4-local-copy`. (Corrected
+  2026-11-07 by #641: the clock the close is decided on was read by
+  `books.clock_after_lock`, which is gone. It is now `db_now`, from
+  `trading.read_trade_context`, the one statement after the book lock.)
 
 ## Context
 
