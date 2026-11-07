@@ -4,11 +4,11 @@ import { describeInsufficientFunds, describeInsufficientShares, describeTradeErr
 import { postTrade, type TradePreview, type TradeSide } from '../../api/ledgerApi'
 import type { PublicOutcome } from '../../api/marketApi'
 import { useBalance } from '../../context/BalanceContext'
-import { useTradeKeys } from '../../hooks/useTradeKeys'
+import { useTradeKeys, type TradeCheck } from '../../hooks/useTradeKeys'
 import { useTradeQuote } from '../../hooks/useTradeQuote'
 import { compareCredits, formatCreditsPrecise, isZeroCredits, subtractCredits, unsignedCredits } from '../../utils/formatCredits'
 import { priceLimitFor } from '../../utils/priceLimit'
-import type { SentTrade } from '../../utils/sentTrade'
+import { isSameTrade, type SentTrade } from '../../utils/sentTrade'
 import { describeSharesToSell } from '../../utils/orderInput'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
@@ -21,6 +21,9 @@ type OrderType = 'market' | 'limit'
 
 interface TradingPanelProps {
   marketId: string
+  // The logged-in trader. A trade with no answer is kept per trader, so its
+  // key outlives a reload without reaching whoever logs in next (#585).
+  traderId: string
   outcomes: PublicOutcome[]
   // The outcome to trade. It is chosen on the page's price blocks, where its
   // price is shown, so the panel offers no choice of its own (#429).
@@ -126,10 +129,28 @@ function sharesLeftToSell(held: string, reserved: string | undefined): string {
 
 /** What a trader is told about a trade that got no answer or a 5xx: it may
  *  have gone through, and which trade it was, since they may be looking at
- *  another outcome by now (#580). "From this page", because the panel keeps
- *  the key only while it is open: after a reload the same trade is a new one. */
+ *  another outcome by now (#580). Its key is kept in the tab, so the same
+ *  trade sent again is never made twice, a reload included (#585). */
 function describeUnconfirmedTrade(trade: SentTrade): string {
-  return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} could not be confirmed, and may have gone through. Check your portfolio before trading again, or send the same trade again from this page: it will not be made twice.`
+  return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} could not be confirmed, and may have gone through. Check your portfolio before trading again, or send the same trade again: it will not be made twice.`
+}
+
+function tradeCheckColor(check: TradeCheck): string {
+  if (check.answer === 'unknown') return 'text-danger'
+  if (check.answer === 'went-through') return 'text-success-strong'
+  return 'text-muted'
+}
+
+/** What the ledger said about a trade left unconfirmed before this page
+ *  loaded, naming it (#585). */
+function describeTradeCheck(check: TradeCheck): string {
+  const { side, quantity, outcomeLabel } = check.trade
+  if (check.answer === 'went-through') {
+    return `Your ${side} of ${quantity} ${outcomeLabel} went through, for ${formatCreditsPrecise(unsignedCredits(check.total))} credits.`
+  }
+  if (check.answer === 'did-not-go-through') return `Your ${side} of ${quantity} ${outcomeLabel} did not go through.`
+  if (check.answer === 'checking') return `Checking whether your ${side} of ${quantity} ${outcomeLabel} went through…`
+  return describeUnconfirmedTrade(check.trade)
 }
 
 /** A trade refused because its price moved, and, for `price_beyond_limit`,
@@ -217,7 +238,7 @@ function refusalBeforeSending({
 }
 
 export default function TradingPanel({
-  marketId, outcomes, outcomeId, limitOrdersAllowed, heldByOutcome, reservedSharesByOutcome, onTraded, onOrderPlaced,
+  marketId, traderId, outcomes, outcomeId, limitOrdersAllowed, heldByOutcome, reservedSharesByOutcome, onTraded, onOrderPlaced,
 }: TradingPanelProps) {
   const { available, refetch: refetchBalance } = useBalance()
 
@@ -232,7 +253,14 @@ export default function TradingPanel({
   const [submitErrorFor, setSubmitErrorFor] = useState('')
   const [submitError, setSubmitError] = useState('')
   const [lastTrade, setLastTrade] = useState<CompletedTrade | null>(null)
-  const { keyFor, forgetKey } = useTradeKeys()
+  const { keyFor, forgetKey, markSent, markMayHaveCommitted, markRefused, checks, dismissAnsweredChecks } = useTradeKeys({
+    marketId,
+    traderId,
+    onFoundCommitted: () => {
+      void refetchBalance()
+      onTraded()
+    },
+  })
   // The trade that got no answer or a 5xx, said on screen whatever the panel
   // now shows, until the next trade is sent (#580).
   const [unconfirmedTrade, setUnconfirmedTrade] = useState<SentTrade | null>(null)
@@ -243,7 +271,12 @@ export default function TradingPanel({
   const visibleSubmitError = submitErrorFor === inputKey ? submitError : ''
   // inputKey leaves out the order type, so the ticket is checked here.
   const isRefusalShownInPlace = orderType === 'market' && visibleSubmitError !== ''
-  const pastTradeAlert = describePastTrade(unconfirmedTrade, refusedTrade, isRefusalShownInPlace)
+  // A check that has since answered for the same trade says what happened,
+  // and its key is gone, so the alert's "will not be made twice" no longer holds.
+  const isAnsweredByCheck = (trade: SentTrade) =>
+    checks.some(check => (check.answer === 'went-through' || check.answer === 'did-not-go-through') && isSameTrade(check.trade, trade))
+  const stillUnconfirmed = unconfirmedTrade && !isAnsweredByCheck(unconfirmedTrade) ? unconfirmedTrade : null
+  const pastTradeAlert = describePastTrade(stillUnconfirmed, refusedTrade, isRefusalShownInPlace)
   // Shown until the trader types the next quantity, and only that: tying it to
   // the outcome too hid a buy's confirmation from a trader who picked another
   // outcome while it was in flight (#566). It names its own outcome, so it
@@ -287,6 +320,8 @@ export default function TradingPanel({
     setSubmitError('')
     setUnconfirmedTrade(null)
     setRefusedTrade(null)
+    dismissAnsweredChecks()
+    markSent(keyEntry)
     try {
       const result = await postTrade(marketId, {
         outcome_id: outcomeId,
@@ -321,6 +356,7 @@ export default function TradingPanel({
         // uses, so if it fails too, previewError already shows why — clear
         // submitError rather than leaving "Getting a fresh quote…" frozen
         // on screen regardless of how the re-quote turns out.
+        markRefused(keyEntry)
         setRefusedTrade({ trade, limitMiss: priceLimitMissOf(err) })
         setSubmitError(describeTradeError(err))
         const freshQuote = await refetchNow()
@@ -329,7 +365,7 @@ export default function TradingPanel({
         setSubmitError(describeTradeError(err))
         forgetKey(idempotencyKey)
       } else {
-        keyEntry.mayHaveCommitted = true
+        markMayHaveCommitted(keyEntry)
         setUnconfirmedTrade(trade)
       }
     } finally {
@@ -401,6 +437,15 @@ export default function TradingPanel({
       {/* Above both tickets and the "holds none to sell" offer: it is about a
           trade already sent, whatever the panel shows now (#580, #589). */}
       {pastTradeAlert && <p role="alert" className="mb-3 text-xs text-danger">{pastTradeAlert}</p>}
+      {checks.map(check => (
+        <p
+          key={check.key}
+          role={check.answer === 'unknown' ? 'alert' : 'status'}
+          className={`mb-3 text-xs ${tradeCheckColor(check)}`}
+        >
+          {describeTradeCheck(check)}
+        </p>
+      ))}
 
       {orderType === 'limit' ? (
         <LimitOrderFields
