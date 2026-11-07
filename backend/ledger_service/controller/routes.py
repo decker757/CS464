@@ -74,6 +74,7 @@ from model.schemas import (
     LedgerEntryListResponse,
     LedgerEntryOut,
     ListedSnapshotOut,
+    MAX_CLIENT_KEY_LENGTH,
     MarketTradeListResponse,
     OrderIn,
     OrderListOut,
@@ -684,6 +685,20 @@ _TRADE_DESCRIPTION = (
 )
 
 
+def _trade_out(result: trading.TradeResult) -> TradeOut:
+    return TradeOut(
+        transaction_id=result.transaction_id,
+        user_id=result.user_id,
+        market_id=result.market_id,
+        outcome_id=result.outcome_id,
+        side=Side(result.side),
+        quantity=result.quantity,
+        total=result.total,
+        state_version=result.state_version,
+        book_state_version=result.book_state_version,
+    )
+
+
 @router.post(
     "/markets/{market_id}/trades",
     response_model=TradeOut,
@@ -775,17 +790,73 @@ async def execute_trade(
         auth_client=auth_client,
         redis_client=redis,
     )
-    return TradeOut(
-        transaction_id=result.transaction_id,
-        user_id=result.user_id,
-        market_id=result.market_id,
-        outcome_id=result.outcome_id,
-        side=Side(result.side),
-        quantity=result.quantity,
-        total=result.total,
-        state_version=result.state_version,
-        book_state_version=result.book_state_version,
+    return _trade_out(result)
+
+
+_TRADE_BY_KEY_DESCRIPTION = (
+    "#584. Whether one of the caller's own trades on this market committed "
+    "under `idempotency_key`: for a client that sent a trade and got no "
+    "answer, so it can find out without sending it again.\n\n"
+    "`200` with the trade, the same body the trade route answered with, or "
+    "`404 trade_not_found` if nothing committed under that key. The key is "
+    "looked up as the trade route stores it, "
+    "`trade:<user_id>:<market_id>:<idempotency_key>`, with the user read "
+    "from the token, so another trader's key on the same market is "
+    "`404` too, never their trade.\n\n"
+    "Writes nothing, and asks neither market_service nor the auth service: "
+    "an unknown market is `404 trade_not_found` as well."
+)
+
+LookupKey = Annotated[
+    str,
+    Query(
+        min_length=1,
+        max_length=MAX_CLIENT_KEY_LENGTH,
+        description=(
+            "The `idempotency_key` the trade was sent with, exactly as sent. "
+            "A query parameter rather than a path segment, so any key the "
+            "trade route accepts can be looked up, one with a `/` included."
+        ),
+    ),
+]
+
+
+@router.get(
+    "/markets/{market_id}/trades/by-key",
+    response_model=TradeOut,
+    summary="Whether a trade committed under an idempotency key",
+    description=_TRADE_BY_KEY_DESCRIPTION,
+    responses={
+        401: {
+            "description": (
+                "`invalid_token`: missing, malformed or expired access token."
+            )
+        },
+        404: {
+            "description": (
+                "`trade_not_found`: none of the caller's trades on this "
+                "market committed under this key."
+            )
+        },
+        422: _invalid_request(
+            "`invalid_request`: no `idempotency_key`, or one longer than "
+            "175 characters; a market id that is not a UUID."
+        ),
+    },
+)
+async def trade_by_key(
+    market_id: uuid.UUID,
+    idempotency_key: LookupKey,
+    user: CurrentUser,
+    session: DbSession,
+) -> TradeOut:
+    result = await trading.get_by_key(
+        session,
+        user_id=user.user_id,
+        market_id=market_id,
+        client_key=idempotency_key,
     )
+    return _trade_out(result)
 
 
 _PLACE_ORDER_DESCRIPTION = (
