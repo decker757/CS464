@@ -39,13 +39,17 @@ def order_is_live() -> ColumnElement[bool]:
     return and_(Order.status == OrderStatus.OPEN, ~has_result)
 
 
-def reserved_query_of(user_id: uuid.UUID) -> Select[tuple[Decimal]]:
+def reserved_query_of(
+    user_id: uuid.UUID | ColumnElement[uuid.UUID],
+) -> Select[tuple[Decimal]]:
     """The credits this user's live buy orders could still spend: the sum of
     `budget - filled_value` over them, zero when there are none.
 
     A filled order holds nothing, whatever its budget left over. A
     single-column SELECT, like `accounts.balance_query_of`, so the balance
-    read can take it as a subquery of its own statement.
+    read can take it as a subquery of its own statement. `user_id` is an id,
+    or a column of the enclosing statement (`Account.owner_id` in
+    `posting`'s floors read) that the subquery correlates on.
     """
     return select(func.coalesce(func.sum(Order.budget - Order.filled_value), ZERO)).where(
         Order.user_id == user_id,
@@ -55,8 +59,8 @@ def reserved_query_of(user_id: uuid.UUID) -> Select[tuple[Decimal]]:
 
 
 async def reserved_of(session: AsyncSession, user_id: uuid.UUID) -> Decimal:
-    """What this user's live buy orders reserve, read now. Takes no lock: the
-    overdraft check calls it holding the account's."""
+    """What this user's live buy orders reserve, read now. Takes no lock:
+    `orders._refuse_if_budget_does_not_fit` calls it holding the account's."""
     return (await session.execute(reserved_query_of(user_id))).scalar_one()
 
 

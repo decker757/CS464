@@ -1115,7 +1115,7 @@ async def test_a_placement_whose_commit_fails_writes_nothing(
     async def fail(*_args, **_kwargs):
         raise RuntimeError("the commit never happens")
 
-    monkeypatch.setattr(posting, "_stamp_after_newest", fail)
+    monkeypatch.setattr(posting, "_floors_and_stamp", fail)
     with pytest.raises(RuntimeError):
         await place(
             session,
