@@ -8,7 +8,9 @@
 # It builds the six images and pushes them to a throwaway local registry, so
 # the scripts pull exactly as they do from GHCR. It stands in for the managed
 # database with a Postgres whose admin is NOT a superuser, as DigitalOcean's
-# doadmin is not. Then it runs migrate.sh and roll.sh and checks:
+# doadmin is not, and with DigitalOcean's connection pools by a
+# transaction-mode PgBouncer, which the apps reach it through and the migrate
+# steps bypass. Then it runs migrate.sh and roll.sh and checks:
 #
 #   - the frontend is served on the domain, and was built for it
 #   - each service answers on its own subdomain
@@ -17,6 +19,8 @@
 #     line, docker's or psql's
 #   - a trader can register and log in, and the login cookie names the domain
 #   - the ledger, market service and database work together through the gateway
+#   - auth, market and the ledger reached the database through the pooler,
+#     and their migrate steps did not
 #   - the price websocket upgrades through the gateway, for the site's origin only
 #   - draining makes /lb-health answer 503, and undraining brings it back
 #   - a release that cannot be pulled leaves the server untouched
@@ -185,6 +189,35 @@ releases_kept_are() {
   test "$names" = "$1 "
 }
 
+pooled_transactions_of() {
+  # pooled_transactions_of <service>: how many transactions the stand-in
+  # pooler has carried for that service's pool, from its admin console. The
+  # password is the container's own variable, so it is on no command line.
+  # shellcheck disable=SC2016 # expanded by the container's shell, not this one
+  backing exec -T pgbouncer sh -c \
+    'PGPASSWORD=$TEST_POSTGRES_PASSWORD psql -h 127.0.0.1 -p 6432 -U postgres -d pgbouncer --csv -c "SHOW STATS"' |
+    python3 -c '
+import csv, sys
+for row in csv.DictReader(sys.stdin):
+    if row["database"] == sys.argv[1]:
+        print(row["total_xact_count"])
+' "cs464-$1"
+}
+
+went_through_the_pooler() {
+  local count
+  count=$(pooled_transactions_of "$1") || return 1
+  test "${count:-0}" -gt 0
+}
+
+bypassed_the_pooler() {
+  # A pool nobody has used has no row, which counts as none. A probe that
+  # fails is a failure, not a pass.
+  local count
+  count=$(pooled_transactions_of "$1") || return 1
+  test "${count:-0}" -eq 0
+}
+
 image_is_here() {
   docker image inspect "$1" > /dev/null 2>&1
 }
@@ -256,6 +289,11 @@ LEDGER_DB_PASSWORD=$(random_secret)
 AUDIT_DB_PASSWORD=$(random_secret)
 ledger_service_key=$(random_secret)
 
+# As production's: the apps through their pool, named where the database
+# would be, and the migrate steps straight to Postgres.
+pooled_url() { echo "postgresql+asyncpg://$1_svc:$2@pgbouncer:6432/cs464-$1"; }
+direct_url() { echo "postgresql+asyncpg://$1_svc:$2@postgres:5432/cs464"; }
+
 cat > "$work/app.env" <<EOF
 COMPOSE_PROJECT_NAME=$project
 COMPOSE_FILE=compose.yml:backing.yml
@@ -263,10 +301,14 @@ IMAGE_REGISTRY=$registry
 DOMAIN=$domain
 JWT_SECRET=$(random_secret)
 LEDGER_SERVICE_KEY=$ledger_service_key
-AUTH_DATABASE_URL=postgresql+asyncpg://auth_svc:$AUTH_DB_PASSWORD@postgres:5432/cs464
-MARKET_DATABASE_URL=postgresql+asyncpg://market_svc:$MARKET_DB_PASSWORD@postgres:5432/cs464
-LEDGER_DATABASE_URL=postgresql+asyncpg://ledger_svc:$LEDGER_DB_PASSWORD@postgres:5432/cs464
-AUDIT_DATABASE_URL=postgresql+asyncpg://audit_svc:$AUDIT_DB_PASSWORD@postgres:5432/cs464
+AUTH_DATABASE_URL=$(pooled_url auth "$AUTH_DB_PASSWORD")
+MARKET_DATABASE_URL=$(pooled_url market "$MARKET_DB_PASSWORD")
+LEDGER_DATABASE_URL=$(pooled_url ledger "$LEDGER_DB_PASSWORD")
+AUDIT_DATABASE_URL=$(pooled_url audit "$AUDIT_DB_PASSWORD")
+AUTH_DIRECT_DATABASE_URL=$(direct_url auth "$AUTH_DB_PASSWORD")
+MARKET_DIRECT_DATABASE_URL=$(direct_url market "$MARKET_DB_PASSWORD")
+LEDGER_DIRECT_DATABASE_URL=$(direct_url ledger "$LEDGER_DB_PASSWORD")
+AUDIT_DIRECT_DATABASE_URL=$(direct_url audit "$AUDIT_DB_PASSWORD")
 REDIS_URL=redis://redis:6379/0
 LEADERBOARD_REFRESH_ENABLED=true
 TEST_POSTGRES_PASSWORD=$TEST_POSTGRES_PASSWORD
@@ -295,8 +337,8 @@ backing() {
   (cd "$work/releases/one" && docker compose --env-file "$work/app.env" --env-file release.env "$@")
 }
 
-echo "starting the stand-in database and Redis"
-backing up -d --wait postgres redis > /dev/null
+echo "starting the stand-in database, its pooler and Redis"
+backing up -d --wait postgres pgbouncer redis > /dev/null
 backing exec -T postgres psql -q -U postgres -v ON_ERROR_STOP=1 \
   -c "CREATE ROLE doadmin LOGIN CREATEROLE PASSWORD '$admin_password'" \
   -c "CREATE DATABASE cs464 OWNER doadmin" > /dev/null
@@ -311,6 +353,11 @@ echo "migrate.sh, release one"
 "$work/releases/one/migrate.sh"
 echo "migrate.sh, release one, again: it must be safe to repeat"
 "$work/releases/one/migrate.sh"
+# Nothing else has connected yet, so the pooler has carried only what the
+# migrate steps sent it, which must be nothing.
+for service in auth market ledger; do
+  expect "$service's migrate step went straight to the database" bypassed_the_pooler "$service"
+done
 
 # #611. Run ensure-database.sh once more with every command line recorded:
 # docker's, by a docker on the PATH that logs and passes through, and psql's
@@ -453,6 +500,9 @@ expect "the ledger's log line for a request is JSON and carries its ID" ledger_l
 expect "the ledger mints the starting grant on first read" has_starting_grant
 expect "the market service reads its schema" \
   test "$(curl -s -o /dev/null -w '%{http_code}' -H "Host: market.$domain" -H "Authorization: Bearer $token" "$gateway/public/markets")" = 200
+for service in auth market ledger; do
+  expect "$service reached the database through the pooler" went_through_the_pooler "$service"
+done
 
 upgrade_status() {
   # The first status line of a websocket handshake from one origin.
@@ -528,8 +578,10 @@ expect "and serving" status_becomes 127.0.0.1 /lb-health 200
 
 echo "the ledger's database password changes, and Grafana is switched off, as a deploy would"
 LEDGER_DB_PASSWORD=$(random_secret)
-without_lines '^LEDGER_DATABASE_URL=' '^COMPOSE_PROFILES=' '^TRACING_ENDPOINT=' '^GRAFANA_'
-echo "LEDGER_DATABASE_URL=postgresql+asyncpg://ledger_svc:$LEDGER_DB_PASSWORD@postgres:5432/cs464" >> "$work/app.env"
+without_lines '^LEDGER_DATABASE_URL=' '^LEDGER_DIRECT_DATABASE_URL=' '^COMPOSE_PROFILES=' \
+  '^TRACING_ENDPOINT=' '^GRAFANA_'
+echo "LEDGER_DATABASE_URL=$(pooled_url ledger "$LEDGER_DB_PASSWORD")" >> "$work/app.env"
+echo "LEDGER_DIRECT_DATABASE_URL=$(direct_url ledger "$LEDGER_DB_PASSWORD")" >> "$work/app.env"
 "$work/releases/two/migrate.sh"
 
 echo "roll.sh, a release that adds a service and never becomes healthy"
