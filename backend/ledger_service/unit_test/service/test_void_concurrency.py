@@ -169,7 +169,7 @@ async def test_a_placement_queued_behind_a_void_is_refused_market_closed(
     """ADR 0025, "Void against placement": the placement's gate stubbed open,
     so only its latch under the book lock can refuse it. It queues behind the
     void and is `409 market_closed`, with no order written. Red with the
-    placement's latch (`orders.place`'s `books.find_result`) removed."""
+    placement's latch (`orders.place`'s `context.has_result`) removed."""
     from unit_test.placement_fixtures import order_count  # noqa: PLC0415
 
     upstream, _ = await _traded_market(session)

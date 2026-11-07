@@ -225,13 +225,6 @@ async def test_the_context_reads_the_reserved_shares_of_a_live_sell_order(
     assert context.reserved_shares == separate == _RESTING_SHARES
 
 
-def _is_the_open_orders_read(statement: str) -> bool:
-    """`write_cascade`'s own read of the market's open orders, which the
-    context statement does not replace: whole order rows, where the
-    reservation's read is a sum over them."""
-    return statement.lower().lstrip().startswith("select ledger.orders.")
-
-
 async def test_the_context_is_one_statement_issued_after_the_lock(
     session: AsyncSession,
 ) -> None:
@@ -262,9 +255,7 @@ async def test_the_context_is_one_statement_issued_after_the_lock(
         for i, s in enumerate(lowered)
         if i > lock_at and ("for update" in s or writes([s]))
     )
-    between = [
-        s for s in lowered[lock_at + 1 : write_phase_at] if not _is_the_open_orders_read(s)
-    ]
+    between = lowered[lock_at + 1 : write_phase_at]
     assert len(between) == 1, (
         "the trade read more than its one context statement under the book "
         "lock:\n" + "\n---\n".join(between)

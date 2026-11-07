@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from model.entities import Order, Transaction
-from service import trading
+from service import orders, trading
 from unit_test.placement_fixtures import (
     limit_upstream,
     open_at,
@@ -32,9 +32,10 @@ from unit_test.placement_fixtures import (
     reserved_credits_of,
     reserved_shares_of,
 )
-from unit_test.sell_fixtures import assert_q_matches_positions, hold, holding
+from unit_test.sell_fixtures import assert_q_matches_positions, hold, holding, version_of
 from unit_test.settlement_fixtures import (
     Pause,
+    book_lock_waiters,
     finish,
     ON_THE_BOOK,
     queued_or_finished,
@@ -51,6 +52,11 @@ from unit_test.trade_fixtures import (
 
 ZERO_Q = (Decimal("0.0000"), Decimal("0.0000"))
 EACH_TRADE = Decimal("80.0000")
+
+# A resting buy of outcome 1 that one `EACH_TRADE` buy of outcome 0 takes the
+# price below, from `ZERO_Q` at `b = 100`.
+RESTING_LIMIT = Decimal("0.3500")
+RESTING_QUANTITY = Decimal("50.0000")
 
 
 async def _funded(session: AsyncSession) -> uuid.UUID:
@@ -174,3 +180,81 @@ async def test_two_trades_crossing_the_same_orders_keep_every_invariant(
             )
         ).one()
         assert totals == tuple(rollups)
+
+
+async def test_a_trade_queued_behind_a_placement_fills_the_order_it_rested(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0024, "The cascade runs inside the trade that moved the price", and
+    #641: the trade runs its cascade only when its context statement saw an
+    open order, and that statement is issued after the book lock returns.
+
+    A buy order is placed and pauses holding the book lock, after its budget
+    check and before it inserts the order and commits. A trade that crosses
+    the order's limit queues on the book row; the placement is released and
+    rests. The trade then takes the lock, sees the order and fills it.
+
+    Read `has_open_orders` before `books.lock_book` instead: the trade asks
+    before the order exists, skips its cascade, and the order stays unfilled.
+    """
+    upstream = limit_upstream()
+    await open_at(session, upstream, ZERO_Q)
+    placer, trader = await _funded(session), await _funded(session)
+    quoted = await version_of(session, upstream.market_id)
+
+    factory = session_factory()
+    start = asyncio.Barrier(2)
+    placing, trading_session = factory(), factory()
+    pause = Pause(
+        monkeypatch, orders, "_refuse_if_budget_does_not_fit", session=placing, call=1
+    )
+
+    async def run_placement():
+        await placing.connection()
+        await start.wait()
+        return await place(
+            placing,
+            upstream,
+            user_id=placer,
+            outcome=1,
+            limit_price=RESTING_LIMIT,
+            quantity=RESTING_QUANTITY,
+        )
+
+    async def run_trade():
+        await trading_session.connection()
+        await start.wait()
+        await pause.reached.wait()
+        return await buy(
+            trading_session,
+            upstream,
+            user_id=trader,
+            quantity=EACH_TRADE,
+            state_version=quoted,
+            client_key=f"race-{trader}",
+        )
+
+    try:
+        placement = asyncio.create_task(run_placement())
+        trade = asyncio.create_task(run_trade())
+        tasks = [placement, trade]
+        try:
+            await reached(pause.reached, "the placement never reached its budget check", tasks)
+            await book_lock_waiters(1, "the trade never queued on the book lock", tasks)
+        finally:
+            placed, traded = await finish(tasks, pause.release, pause.reached)
+    finally:
+        await placing.close()
+        await trading_session.close()
+
+    assert not isinstance(placed, BaseException), placed
+    assert not isinstance(traded, BaseException), traded
+    assert placed.fills == []
+    filled = (
+        await session.execute(
+            select(Order.filled_quantity).where(Order.id == placed.order.id)
+        )
+    ).scalar_one()
+    assert filled > 0, "the trade that queued behind the placement never filled its order"
+    assert traded.book_state_version > traded.state_version
+    await assert_ledger_balances(session)

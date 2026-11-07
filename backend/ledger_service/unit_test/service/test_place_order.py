@@ -71,6 +71,7 @@ from unit_test.trade_fixtures import (
     balance_of_user,
     book_row,
     buy,
+    capture_sql,
     capture_sql_with_parameters,
     fresh_copy,
     fund,
@@ -79,6 +80,7 @@ from unit_test.trade_fixtures import (
     queued_past_close,
     session_factory,
     transaction_count,
+    writes,
 )
 
 ZERO_Q = (Decimal("0.0000"), Decimal("0.0000"))
@@ -971,6 +973,63 @@ async def test_a_placement_locks_the_placers_account_by_one_path_at_most(
     assert _account_locks(statements, account_id) == account_locks
     if account_locks:
         assert _first_lock_on(statements, "market_books") < _first_lock_on(statements, "accounts")
+
+
+async def test_the_placement_reads_its_context_in_one_statement_after_the_lock(
+    session: AsyncSession,
+) -> None:
+    """ADR 0015 and #641, the placement's twin of the trade's
+    `test_the_context_is_one_statement_issued_after_the_lock`: a resting sell,
+    which reads everything the context carries, sends exactly three statements
+    between the book's `FOR UPDATE` and its first write or lock. They are its
+    own key re-check on `orders`, then the one context statement, then the
+    crossing check's read of the open orders, which a placement always makes.
+
+    Read the latch, the clock, the outcomes, the position or the reservation
+    on its own again, or fold the context into the lock statement, and this
+    fails.
+    """
+    upstream = limit_upstream()
+    await open_at(session, upstream, ZERO_Q)
+    user_id = await _funded(session)
+    await hold(session, upstream, user_id=user_id, quantity=HELD)
+
+    with capture_sql() as statements:
+        await place(
+            session,
+            upstream,
+            user_id=user_id,
+            side="sell",
+            limit_price=Decimal("0.9000"),
+            quantity=Decimal("20.0000"),
+        )
+
+    lowered = [s.lower() for s in statements]
+    lock_at = next(
+        i for i, s in enumerate(lowered) if "for update" in s and "market_books" in s
+    )
+    first_write_or_lock = next(
+        i
+        for i, s in enumerate(lowered)
+        if i > lock_at and ("for update" in s or writes([s]))
+    )
+    between = lowered[lock_at + 1 : first_write_or_lock]
+    labelled = "\n---\n".join(f"[{i}] {s}" for i, s in enumerate(between))
+    assert len(between) == 3, (
+        f"{len(between)} statements under the book lock before the first write "
+        f"or lock, not the re-check, the context and the open orders:\n{labelled}"
+    )
+    recheck, context, open_orders = between
+    assert recheck.lstrip().startswith("select ledger.orders."), labelled
+    assert "idempotency_key" in recheck, labelled
+    for read in ("market_outcomes", "positions", "market_results"):
+        assert read in context, f"the context statement does not read {read}:\n{labelled}"
+    assert "clock_timestamp" in context, labelled
+    # Whole order rows like the re-check, but filtered by market and status.
+    assert open_orders.lstrip().startswith("select ledger.orders."), labelled
+    open_orders_filter = open_orders.split("where", 1)[1]
+    assert "status" in open_orders_filter, labelled
+    assert "idempotency_key" not in open_orders_filter, labelled
 
 
 async def test_a_placement_that_fills_publishes_one_price_frame_and_one_that_rests_none(
