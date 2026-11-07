@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, snapshot, startingGrant, uniqueName } from './support/backend'
-import { logIn, outcomeChoice } from './support/browser'
+import { logIn, loseFirstTradeReply, outcomeChoice } from './support/browser'
 import { creditsLess, creditsPlus, formatPreciseCredits, formatRoundedCredits } from './support/credits'
 import { holdUntilReleased } from '../src/test/holdUntilReleased'
 
@@ -275,15 +275,7 @@ test('a buy whose reply is lost is said to be unconfirmed, and sending it again 
   const market = await publishMarket(admin, `Will ${uniqueName('lost')} happen?`)
   const trader = await registerTrader('tl_trader')
 
-  // The first trade reaches the ledger and commits; the browser never hears
-  // back. The same path also lists a market's trades (GET), which must pass.
-  let replyDropped = false
-  await page.route('**/ledger/markets/*/trades', async route => {
-    if (route.request().method() !== 'POST' || replyDropped) return route.fallback()
-    replyDropped = true
-    await route.fetch()
-    await route.abort()
-  })
+  await loseFirstTradeReply(page)
 
   await logIn(page, trader)
   await page.goto(`/markets/${market.id}`)
@@ -317,13 +309,7 @@ test('after a reload, a buy whose reply was lost is reported as made', async ({ 
   const market = await publishMarket(admin, `Will ${uniqueName('reload')} happen?`)
   const trader = await registerTrader('tr_trader')
 
-  let replyDropped = false
-  await page.route('**/ledger/markets/*/trades', async route => {
-    if (route.request().method() !== 'POST' || replyDropped) return route.fallback()
-    replyDropped = true
-    await route.fetch()
-    await route.abort()
-  })
+  await loseFirstTradeReply(page)
 
   await logIn(page, trader)
   await page.goto(`/markets/${market.id}`)
