@@ -331,6 +331,19 @@ export async function postTrade(marketId: string, data: TradeRequest): Promise<T
   return res.data
 }
 
+/**
+ * The caller's own trade on this market committed under `idempotencyKey`
+ * (#584), as the trade route answered it. `404 trade_not_found` when nothing
+ * has committed under it yet, which is final only once the trade's own
+ * request has certainly ended (ledger-service.md, the trade lookup).
+ */
+export async function getTradeByKey(marketId: string, idempotencyKey: string): Promise<TradeResult> {
+  const res = await api.get<TradeResult>(`${LEDGER_BASE}/ledger/markets/${marketId}/trades/by-key`, {
+    params: { idempotency_key: idempotencyKey },
+  })
+  return res.data
+}
+
 // --- [2.2] #55: market exposure --------------------------------------
 
 export interface OutcomeExposure {
