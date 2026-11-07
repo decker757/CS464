@@ -11395,10 +11395,18 @@ the rules that keep them true.
   `books.refuse_if_closed_under_lock` compares the copied `close_time` with
   Postgres's `clock_timestamp()`, the clock market_service decides its own
   closes on.
-- **A miss refreshes once, at most every 250 ms.** A market absent from the
-  copy refreshes it only if the copy is at least 250 ms old
-  (`_MISS_REFRESH_FLOOR_SECONDS`). Still absent: `404 market_not_found` if
-  the ledger has no book for it, `503 market_terms_unavailable` if it has.
+- **A miss on an unknown id refreshes once, at most every 250 ms.** A market
+  absent from the copy refreshes it only if the copy is at least 250 ms old
+  (`_MISS_REFRESH_FLOOR_SECONDS`). Still absent with no book: `404
+  market_not_found`.
+- **A miss on a market with a book refreshes past the floor.** A book means
+  the market was published (`books.ensure_open` opened it from
+  market_service's terms), so its absence is the copy running behind. It is
+  refreshed until the copy is stamped at or after the book was read, at
+  most twice more, because a miss can join a run sent earlier and runs are
+  serialised; the copy is read again after the book read, since a refresh
+  that landed during it saves the fetch, and its age is checked there.
+  Still absent then: `503 market_terms_unavailable`.
 - **Single flight.** The market refresher and the miss path share one
   coalesced refresh (`local_copy.coalesced`). Callers who arrive while it
   runs share its result, and its error if it fails.
@@ -11420,6 +11428,10 @@ arrives*: it understates the age by the length of the call. *Comparing
 commit after `close_time`.
 
 **Notes.** The floor costs at most one fail-closed `404` for a market
-published in the last quarter second; the next refresh brings it in.
+published in the last quarter second and not yet touched; the next refresh
+brings it in. It must not cost a market with a book anything: the trade
+panel snapshots before it trades, and the snapshot opens the book, so the
+first trade in the second after publication arrives with a book and no copy
+entry, and floored it was `503` one time in four (#656's first CI run).
 The refresher logs the first failure of a streak at ERROR, repeats at
 WARNING with the count, and the recovery at INFO.

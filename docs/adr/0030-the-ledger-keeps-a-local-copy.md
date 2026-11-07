@@ -3,7 +3,9 @@
 - **Status:** Accepted, 2026-11-06. Amends ADR 0017, ADR 0022 and ADR 0021.
 - **Date:** 2026-11-06
 - **Decided by:** Ernest, on 2026-11-05, approving #640's design: the copy,
-  its one-second refresh and its five-second refusal.
+  its one-second refresh and its five-second refusal. Amended on #656,
+  2026-11-07, after its first e2e run: the miss floor does not apply to a
+  market with a book.
 - **Affects:** #640, [5.4] #20, #599, [4.2] #14, [2.3] #7, [T-2] #22,
   [T-6] #26, ADR 0006, ADR 0010, ADR 0011, ADR 0014, ADR 0015, ADR 0028
 - **Implemented in:** auth's `GET /internal/users/suspended` and
@@ -111,23 +113,47 @@ Three things stay exact:
   latch, which a trade reads under the book lock (ADR 0019, ADR 0025).
 - **A replay.** It is answered before either check, as ADR 0017 fixed.
 
-### A market the copy lacks costs one refresh, and is then 404 or 503
+### A market the copy lacks costs a refresh or two, and is then 404 or 503
 
 A market published since the last refresh is not in the copy. A trade on it
-makes one refresh and looks again. If the market is still absent, the ledger
-looks for its own book: no book is `404 market_not_found`, and a book is
-`503 market_terms_unavailable`, because a market holding a book was
-published and nothing deletes one. That is market_service answering wrongly,
-ADR 0017's last row. A failed refresh is `503`, never `404`. The miss path
-rolls the session back before it calls out, so it holds no pooled
-connection (D-043).
+makes one refresh, unless the copy is younger than the floor below, and
+looks again. If the market is still absent, the ledger
+looks for its own book: no book is `404 market_not_found`. A book means the
+market was published and nothing deletes one, so the ledger refreshes again
+until the copy is stamped after it read the book (below), and only a market
+still absent then is `503 market_terms_unavailable`: market_service
+answering wrongly, ADR 0017's last row. A failed refresh is `503`, never
+`404`. The miss path rolls the session back before it calls out, so it
+holds no pooled connection (D-043).
 
-Miss refreshes are floored: a miss refreshes only if the copy is at least
-250 ms old, so a replica makes at most about four miss refreshes a second
-however many unknown ids arrive. The price is a fail-closed `404` for a market
-published in the last quarter second. A per-id negative cache was rejected
-for this: it absorbs repeats of one id and nothing else, so a client sending
-random ids would still cause a fetch per request.
+Miss refreshes on an id with no book are floored: such a miss refreshes only
+if the copy is at least 250 ms old, so a replica makes at most about four
+miss refreshes a second however many unknown ids arrive. The price is a
+fail-closed `404` for a market published in the last quarter second and not
+yet touched. A per-id negative cache was rejected for this: it absorbs
+repeats of one id and nothing else, so a client sending random ids would
+still cause a fetch per request.
+
+A market with a book is not an unknown id: `books.ensure_open` opened the
+book from market_service's own terms, so the publication committed before
+the book did, and the book before the ledger read it. The floor does not
+apply to it, and it is refreshed until the copy is stamped at or after that
+read, which is at most twice more: a miss can join a refresh sent earlier
+(next section), which proves nothing about a market published since, and
+runs are serialised, so the one after is stamped late enough. The copy is
+read again after the book read, because a refresh that landed during it
+saves the fetch, and the book read is the one await nothing else checked
+the copy's age across, so that read checks it. Only then is a market with a
+book `503`. This is the common
+case, not an edge: the trade panel snapshots a market before it trades, and
+the snapshot opens the book, so the first trade in the second after
+publication arrives with a book and no copy entry. With the floor applied to
+it, that trade was `503` one time in four. Nothing an unknown id can do makes
+a book exist, so the cap above still holds for it. The residual cost sits
+with ADR 0017's last row: while market_service wrongly omits a market the
+ledger holds a book for, each trade on it drives up to three refreshes, the
+floored one and two more, one in flight at a time, rather than four a second
+across the replica.
 
 ### Refreshes run one at a time, and never move the copy backwards
 
