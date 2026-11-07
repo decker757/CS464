@@ -1,7 +1,7 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { delay, http, HttpResponse } from 'msw'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { PublicOutcome } from '../../api/marketApi'
 import { BalanceContext } from '../../context/BalanceContext'
 import { server } from '../../test/server'
@@ -134,7 +134,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
-  sessionStorage.clear()
+  localStorage.clear()
 })
 
 describe('TradingPanel', () => {
@@ -1705,6 +1705,160 @@ describe('TradingPanel', () => {
 
       expect(await screen.findByText('Your buy of 10 Yes went through, for 5.1250 credits.')).toBeInTheDocument()
       expect(asked).toEqual([sent[0].idempotency_key])
+    })
+
+    /** Buys 10 Yes in one of two panels rendered side by side, as two tabs
+     *  on the same market share storage. */
+    async function buyTenYesIn(actor: ReturnType<typeof userEvent.setup>, tab: HTMLElement) {
+      const scope = within(tab)
+      // By role: two panels in one document share the field's id, so its label
+      // finds the first tab's.
+      await actor.type(scope.getByRole('spinbutton'), '10')
+      await act(() => vi.advanceTimersByTimeAsync(300))
+      await scope.findByLabelText('trade preview')
+      await actor.click(scope.getByRole('button', { name: /^buy yes$/i }))
+    }
+
+    /** Web Locks as a browser shares them between tabs; jsdom's has no
+     *  query. Removed after the test. It never queues a request, so nothing
+     *  here shows a pending request counted, or two tabs' attempts taking
+     *  turns: only that a held lock keeps a not-found from being final. */
+    function installWebLocks() {
+      const held = new Set<string>()
+      const locks = {
+        async request(name: string, callback: () => Promise<unknown>) {
+          held.add(name)
+          try {
+            return await callback()
+          } finally {
+            held.delete(name)
+          }
+        },
+        async query() {
+          return { held: [...held].map(name => ({ name })), pending: [] }
+        },
+      }
+      const original = Object.getOwnPropertyDescriptor(navigator, 'locks')
+      Object.defineProperty(navigator, 'locks', { value: locks, configurable: true })
+      onTestFinished(() => {
+        if (original) Object.defineProperty(navigator, 'locks', original)
+        else Reflect.deleteProperty(navigator, 'locks')
+      })
+    }
+
+    it('sends a trade under the key another tab kept for it', async () => {
+      // The trader had the market open in two tabs: the reply was lost in
+      // one, and they buy the same thing in the other.
+      mockPreview(previewResponse())
+      const sent = recordTrades(noAnswer)
+      answerLookups('never')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const tabA = renderPanel().container
+      const tabB = renderPanel().container
+      await buyTenYesIn(actor, tabA)
+      await within(tabA).findByText(/could not be confirmed/i)
+
+      await buyTenYesIn(actor, tabB)
+
+      await waitFor(() => expect(sent).toHaveLength(2))
+      expect(sent[1].idempotency_key).toBe(sent[0].idempotency_key)
+    })
+
+    it('keeps its promise in a tab that said a resend is safe, after another tab got the answer, and makes the next repeat new', async () => {
+      // Tab B said "send the same trade again: it will not be made twice".
+      // Tab A then got the answer. B's resend replays the trade under its key
+      // and says one trade was made; the click after that is a new trade.
+      mockPreview(previewResponse())
+      let answer = noAnswer
+      const sent = recordTrades(() => answer())
+      answerLookups('never')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const tabA = renderPanel().container
+      const tabB = renderPanel().container
+      await buyTenYesIn(actor, tabA)
+      await within(tabA).findByText(/could not be confirmed/i)
+      await buyTenYesIn(actor, tabB)
+      await within(tabB).findByText(/could not be confirmed/i)
+
+      answer = created
+      await actor.click(within(tabA).getByRole('button', { name: /^buy yes$/i }))
+      await within(tabA).findByText(/went through once/i)
+      await actor.click(within(tabB).getByRole('button', { name: /^buy yes$/i }))
+      await within(tabB).findByText(/went through once/i)
+      // A confirmed trade clears the field, so the repeat is typed afresh.
+      await buyTenYesIn(actor, tabB)
+
+      await waitFor(() => expect(sent).toHaveLength(5))
+      expect(sent[2].idempotency_key).toBe(sent[0].idempotency_key)
+      expect(sent[3].idempotency_key).toBe(sent[0].idempotency_key)
+      expect(sent[4]).toMatchObject({ outcome_id: 'o-yes', quantity: '10' })
+      expect(sent[4].idempotency_key).not.toBe(sent[0].idempotency_key)
+    })
+
+    it('does not take a not-found as final while another tab\'s attempt under the key is still out', async () => {
+      // A duplicated tab, or one opened later, cannot see the other tab's
+      // request; the attempt's lock is how it knows the trade may still be
+      // queued on the ledger.
+      installWebLocks()
+      mockPreview(previewResponse())
+      let attempts = 0
+      const sent = recordTrades(async () => {
+        attempts += 1
+        if (attempts === 2) await delay('infinite')
+        return HttpResponse.error()
+      })
+      answerLookups('not-found')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const tabA = renderPanel().container
+      await buyTenYesIn(actor, tabA)
+      await within(tabA).findByText(/could not be confirmed/i)
+      await actor.click(within(tabA).getByRole('button', { name: /^buy yes$/i }))
+      await waitFor(() => expect(sent).toHaveLength(2))
+      vi.setSystemTime(Date.now() + 120_000)
+
+      const tabB = renderPanel().container
+
+      expect(await within(tabB).findByText(/checking whether your buy of 10 Yes/i)).toBeInTheDocument()
+      await act(() => vi.advanceTimersByTimeAsync(100))
+      expect(within(tabB).queryByText(/did not go through/i)).not.toBeInTheDocument()
+    })
+
+    it('keeps the key for the page when the browser reads storage but cannot write it', async () => {
+      // A full quota, or a private window that refuses writes: the key then
+      // lasts as long as the panel, as it did before #585.
+      const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new DOMException('quota', 'QuotaExceededError')
+      })
+      onTestFinished(() => setItem.mockRestore())
+      mockPreview(previewResponse())
+      const sent = recordTrades(noAnswer)
+      answerLookups('never')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+
+      await waitFor(() => expect(sent).toHaveLength(2))
+      expect(sent[1].idempotency_key).toBe(sent[0].idempotency_key)
+    })
+
+    it('stops keeping a trade a day after it was sent', async () => {
+      mockPreview(previewResponse())
+      recordTrades(noAnswer)
+      const asked = answerLookups('found')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+
+      reload(unmount, 25 * 60 * 60)
+      await act(() => vi.advanceTimersByTimeAsync(1000))
+
+      expect(asked).toEqual([])
+      // Deleted, not only skipped: the trade's description does not stay behind.
+      expect(localStorage.length).toBe(0)
     })
 
     it('keeps nothing for a reload once a retry of the trade was answered', async () => {
