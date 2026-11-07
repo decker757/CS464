@@ -10,6 +10,17 @@ export interface SentTrade {
   quantity: string
 }
 
+/** What the ledger said about a trade left unconfirmed before this page
+ *  loaded (#585). `unknown` when it could not be asked: the key is kept. */
+export type TradeCheck =
+  | { key: string; trade: SentTrade; answer: 'checking' | 'did-not-go-through' | 'unknown' }
+  | { key: string; trade: SentTrade; answer: 'went-through'; total: string }
+
+/** A trade as the messages name it: "buy of 10 Yes". */
+export function nameOfTrade({ side, quantity, outcomeLabel }: Pick<SentTrade, 'side' | 'quantity' | 'outcomeLabel'>): string {
+  return `${side} of ${quantity} ${outcomeLabel}`
+}
+
 /** Whether the ledger would read `a` and `b` as one trade: same outcome and
  *  side, and the quantity compared numerically, so `10` and `10.0` are one
  *  (ledger-service.md's idempotency section). compareCredits reads an

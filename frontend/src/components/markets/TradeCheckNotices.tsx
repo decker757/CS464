@@ -1,4 +1,4 @@
-import type { TradeCheck } from '../../hooks/useTradeKeys'
+import type { TradeCheck } from '../../utils/sentTrade'
 import { describeTradeCheck } from '../../utils/describeTradeCheck'
 
 interface TradeCheckNoticesProps {
