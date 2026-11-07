@@ -772,6 +772,57 @@ async def test_the_lookup_overdraft_and_stamp_reads_run_under_every_lock(
     assert min(entry_read_positions) > last_lock
 
 
+async def test_the_floors_and_the_stamp_are_read_in_one_statement_under_the_account_locks(
+    session: AsyncSession,
+) -> None:
+    """#641: between the last account lock and the first INSERT, `post_all`
+    sends exactly two statements, the key lookup and one read of the floors
+    and the stamp. A trade's shape, a debited user and the pool it pays, so
+    the balance, the reservation and both stamp probes are all asked for.
+
+    Read the balance, the reservation or a stamp probe on its own again, or
+    fold the read into a lock statement, and this fails (ADR 0015). The
+    SAVEPOINT that opens the write is `post_all`'s kept one, not a read.
+    """
+    platform = await _platform(session)
+    (pool,) = await _new_accounts(session, AccountKind.MARKET_POOL, 1)
+    (user,) = await _new_accounts(session, AccountKind.USER, 1)
+    await _fund(session, platform, user, "10.0000")
+
+    with capture_sql() as statements:
+        await posting.post_all(
+            session,
+            [_transfer(_key(), user, pool, "3.0003", kind=TransactionKind.TRADE_BUY)],
+        )
+
+    lowered = [s.lower() for s in statements]
+    last_lock = max(
+        i for i, s in enumerate(lowered) if _is_lock(s) and "ledger.accounts" in s
+    )
+    first_insert = next(
+        i for i, s in enumerate(lowered) if s.lstrip().startswith("insert")
+    )
+    between = [
+        s for s in lowered[last_lock + 1 : first_insert]
+        if not s.lstrip().startswith("savepoint")
+    ]
+    labelled = "\n---\n".join(f"[{i}] {s}" for i, s in enumerate(between))
+    assert len(between) == 2, (
+        f"{len(between)} statements under the account locks before the "
+        f"first INSERT, not the key lookup and one floors read:\n{labelled}"
+    )
+    lookup, floors = between
+    assert _is_select_from(lookup, "transactions") and "idempotency_key" in lookup, labelled
+    assert not _is_lock(floors), labelled
+    for read in ("ledger.accounts", "ledger.entries", "ledger.orders"):
+        assert read in floors, f"the floors statement does not read {read}:\n{labelled}"
+    # DECISIONS.md, "An account the batch only credits is still not read": the CASE.
+    assert "case when" in floors, (
+        "the floors statement sums every locked account, not only the "
+        f"debited ones:\n{labelled}"
+    )
+
+
 @pytest.mark.parametrize("dirty", [False, True], ids=["clean", "dirty"])
 async def test_a_key_found_only_by_the_insert_race_is_refused(
     session: AsyncSession, dirty: bool
