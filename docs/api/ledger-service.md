@@ -1479,7 +1479,8 @@ Any valid access token, any role.
 **`idempotency_key` is a query parameter, not a path segment.** The trade
 route accepts any key of 1 to 175 characters, `/` included, and a `/` can't
 sit inside a path segment. As a query parameter, every key the trade route
-accepts can be looked up.
+accepts can be looked up. URL-encode it: unencoded, a `+` reads as a space,
+and a `&` or `#` ends the key early, so a different key is looked up.
 
 **The answer is `200` with the trade**, field for field the body the trade
 route answered with, or would answer a retry with:
