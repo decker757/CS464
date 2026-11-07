@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { http, HttpResponse } from 'msw'
+import { delay, http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PublicOutcome } from '../../api/marketApi'
 import { BalanceContext } from '../../context/BalanceContext'
@@ -73,16 +73,20 @@ interface PanelOptions {
   // own file.
   limitOrdersAllowed?: boolean
   onOrderPlaced?: () => void
+  // Whose trades the panel keeps keys for across a reload (#585).
+  traderId?: string
 }
 
 function panel({
   balance = '1000.0000', available = balance, heldByOutcome = HELD_PLENTY, reservedSharesByOutcome = {}, outcomeId = 'o-yes',
   refetch = vi.fn(async () => {}), onTraded = vi.fn(), limitOrdersAllowed = false, onOrderPlaced = vi.fn(),
+  traderId = 'trader-1',
 }: PanelOptions = {}) {
   return (
     <BalanceContext.Provider value={{ balance, available, refetch }}>
       <TradingPanel
         marketId={MARKET_ID}
+        traderId={traderId}
         outcomes={outcomes}
         outcomeId={outcomeId}
         limitOrdersAllowed={limitOrdersAllowed}
@@ -110,6 +114,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  sessionStorage.clear()
 })
 
 describe('TradingPanel', () => {
@@ -1367,5 +1372,393 @@ describe('TradingPanel', () => {
     })
 
     expect(screen.getByLabelText('trade preview')).toHaveTextContent('10.2500 credits')
+  })
+
+  describe('an unconfirmed trade across a reload (#585)', () => {
+    const TRADES = `${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`
+    const BY_KEY = `${TRADES}/by-key`
+    const BOUGHT_10_YES = {
+      transaction_id: 'tx-1', user_id: 'trader-1', market_id: MARKET_ID,
+      outcome_id: 'o-yes', side: 'buy', quantity: '10.0000', total: '-5.1250', state_version: 2, book_state_version: 2,
+    }
+
+    type Lookup = 'found' | 'found-another' | 'not-found' | 'unavailable' | 'never'
+
+    /** Every trade the panel sends, answered by `answer`. */
+    function recordTrades(answer: () => Response | Promise<Response>) {
+      const sent: Record<string, unknown>[] = []
+      server.use(
+        http.post(TRADES, async ({ request }) => {
+          sent.push(await request.json() as Record<string, unknown>)
+          return answer()
+        }),
+      )
+      return sent
+    }
+
+    /** Every key the panel asks the ledger about, answered in turn by
+     *  `answers`, the last one repeating. */
+    function answerLookups(...answers: Lookup[]) {
+      const asked: string[] = []
+      server.use(
+        http.get(BY_KEY, async ({ request }) => {
+          asked.push(new URL(request.url).searchParams.get('idempotency_key') ?? '')
+          const answer = answers[Math.min(asked.length, answers.length) - 1]
+          if (answer === 'never') await delay('infinite')
+          if (answer === 'found') return HttpResponse.json(BOUGHT_10_YES)
+          if (answer === 'found-another') return HttpResponse.json({ ...BOUGHT_10_YES, outcome_id: 'o-no' })
+          if (answer === 'unavailable') return HttpResponse.json({ error: { code: 'internal', message: 'down' } }, { status: 503 })
+          return HttpResponse.json({ error: { code: 'trade_not_found', message: 'No trade was made under this key.' } }, { status: 404 })
+        }),
+      )
+      return asked
+    }
+
+    const noAnswer = () => HttpResponse.error()
+    const created = () => HttpResponse.json(BOUGHT_10_YES, { status: 201 })
+
+    async function buyTenYes(actor: ReturnType<typeof userEvent.setup>) {
+      await typeQuantity(actor, '10')
+      await screen.findByLabelText('trade preview')
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    }
+
+    /** A reload, `secondsLater`: the panel and its memory go, the tab's
+     *  storage stays. */
+    function reload(unmount: () => void, secondsLater: number, options: PanelOptions = {}) {
+      unmount()
+      vi.setSystemTime(Date.now() + secondsLater * 1000)
+      return renderPanel(options)
+    }
+
+    it('after a reload, says a trade with no answer went through, naming it, and a repeat of it is a new trade', async () => {
+      mockPreview(previewResponse())
+      let answer = noAnswer
+      const sent = recordTrades(() => answer())
+      const asked = answerLookups('found')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+
+      const refetch = vi.fn(async () => {})
+      const onTraded = vi.fn()
+      reload(unmount, 120, { refetch, onTraded })
+
+      expect(await screen.findByText('Your buy of 10 Yes went through, for 5.1250 credits.')).toBeInTheDocument()
+      expect(asked).toEqual([sent[0].idempotency_key])
+      expect(screen.queryByText(/could not be confirmed/i)).not.toBeInTheDocument()
+      // The balance and holdings were read before the ledger said so.
+      expect(refetch).toHaveBeenCalled()
+      expect(onTraded).toHaveBeenCalled()
+
+      answer = created
+      await buyTenYes(actor)
+      await waitFor(() => expect(sent).toHaveLength(2))
+      expect(sent[1].idempotency_key).not.toBe(sent[0].idempotency_key)
+    })
+
+    it('after a reload, says a trade with no answer did not go through once a minute has passed since it was sent, and forgets its key', async () => {
+      mockPreview(previewResponse())
+      let answer = noAnswer
+      const sent = recordTrades(() => answer())
+      answerLookups('not-found')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+
+      reload(unmount, 61)
+
+      expect(await screen.findByText('Your buy of 10 Yes did not go through.')).toBeInTheDocument()
+
+      answer = created
+      await buyTenYes(actor)
+      await waitFor(() => expect(sent).toHaveLength(2))
+      expect(sent[1].idempotency_key).not.toBe(sent[0].idempotency_key)
+    })
+
+    it('does not take a not-found inside a minute of sending as final: it keeps checking, and says so when the trade commits late', async () => {
+      // A trade still queued on the ledger has written nothing yet, so the
+      // first answer can be "not found" for a trade that then commits
+      // (ledger-service.md, the trade lookup). Saying "did not go through"
+      // then would invite the trader to buy it twice.
+      mockPreview(previewResponse())
+      const sent = recordTrades(noAnswer)
+      const asked = answerLookups('not-found', 'found')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+
+      reload(unmount, 10)
+
+      expect(await screen.findByText('Checking whether your buy of 10 Yes went through…')).toBeInTheDocument()
+      expect(screen.queryByText(/did not go through/i)).not.toBeInTheDocument()
+
+      await act(() => vi.advanceTimersByTimeAsync(50_000))
+
+      expect(await screen.findByText('Your buy of 10 Yes went through, for 5.1250 credits.')).toBeInTheDocument()
+      expect(asked).toEqual([sent[0].idempotency_key, sent[0].idempotency_key])
+    })
+
+    it('after a reload, says the trade did not go through when the ledger holds another trade under its key', async () => {
+      // A 200 is whatever committed under the key; a different trade sent
+      // under it was refused idempotency_key_reused (ledger-service.md).
+      mockPreview(previewResponse())
+      recordTrades(noAnswer)
+      answerLookups('found-another')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+
+      reload(unmount, 10)
+
+      expect(await screen.findByText('Your buy of 10 Yes did not go through.')).toBeInTheDocument()
+    })
+
+    it('after a reload, sends a retry of the trade under its own key until the ledger has answered', async () => {
+      mockPreview(previewResponse())
+      let answer = noAnswer
+      const sent = recordTrades(() => answer())
+      answerLookups('never')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+
+      reload(unmount, 10)
+      answer = created
+      await buyTenYes(actor)
+
+      await waitFor(() => expect(sent).toHaveLength(2))
+      expect(sent[1].idempotency_key).toBe(sent[0].idempotency_key)
+      expect(await screen.findByText(/went through once, for 5\.1250 credits\. It was sent more than once/i)).toBeInTheDocument()
+    })
+
+    it('after a reload while the trade was still in flight, asks the ledger about it', async () => {
+      // The reload is the lost reply: the panel never heard back, and the
+      // trade may still have committed.
+      mockPreview(previewResponse())
+      const sent = recordTrades(async () => {
+        await delay('infinite')
+        return created()
+      })
+      const asked = answerLookups('found')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await waitFor(() => expect(sent).toHaveLength(1))
+
+      reload(unmount, 120)
+
+      expect(await screen.findByText('Your buy of 10 Yes went through, for 5.1250 credits.')).toBeInTheDocument()
+      expect(asked).toEqual([sent[0].idempotency_key])
+    })
+
+    it('keeps nothing for a reload for a trade refused because its price moved', async () => {
+      mockPreview(previewResponse())
+      recordTrades(() => HttpResponse.json(
+        { error: { code: 'price_beyond_limit', message: 'Moved.', details: { limit: '5.1763', current_total: '5.3000', state_version: 2 } } },
+        { status: 409 },
+      ))
+      const asked = answerLookups('found')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/prices moved/i)
+
+      reload(unmount, 120)
+      await act(() => vi.advanceTimersByTimeAsync(1000))
+
+      expect(asked).toEqual([])
+    })
+
+    it('counts the minute from the latest attempt: a not-found that crosses a retry in flight does not forget the key', async () => {
+      // The trader retries while the panel is asking about the attempt from
+      // before the reload. The ledger has not committed the retry yet, so it
+      // says not found; measured from the first attempt the minute is long
+      // over, and forgetting the key there would send the next click under a
+      // new one while the retry may still commit.
+      mockPreview(previewResponse())
+      const sent = recordTrades(noAnswer)
+      let releaseLookup = () => {}
+      server.use(
+        http.get(BY_KEY, async () => {
+          await new Promise<void>(resolve => { releaseLookup = resolve })
+          return HttpResponse.json({ error: { code: 'trade_not_found', message: 'No trade.' } }, { status: 404 })
+        }),
+      )
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+
+      reload(unmount, 120)
+      await screen.findByText(/checking whether your buy of 10 Yes/i)
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+      releaseLookup()
+      await act(() => vi.advanceTimersByTimeAsync(100))
+
+      expect(screen.queryByText(/did not go through/i)).not.toBeInTheDocument()
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+      await waitFor(() => expect(sent).toHaveLength(3))
+      expect(sent[1].idempotency_key).toBe(sent[0].idempotency_key)
+      expect(sent[2].idempotency_key).toBe(sent[0].idempotency_key)
+    })
+
+    it('does not take a not-found as final while a retry from this page is still out', async () => {
+      // The lookup takes no lock and answers at once; the retry may be queued
+      // behind the book's lock for longer than the minute. Only once it ends
+      // does the minute start.
+      mockPreview(previewResponse())
+      let releaseRetry = () => {}
+      let attempts = 0
+      const sent = recordTrades(async () => {
+        attempts += 1
+        if (attempts === 2) await new Promise<void>(resolve => { releaseRetry = resolve })
+        return HttpResponse.error()
+      })
+      answerLookups('not-found')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+
+      reload(unmount, 10)
+      await screen.findByText(/checking whether your buy of 10 Yes/i)
+      await buyTenYes(actor)
+      await waitFor(() => expect(sent).toHaveLength(2))
+      await act(() => vi.advanceTimersByTimeAsync(61_000))
+      expect(screen.queryByText(/did not go through/i)).not.toBeInTheDocument()
+
+      releaseRetry()
+      expect(await screen.findByText(/could not be confirmed/i)).toBeInTheDocument()
+      // The minute runs from the retry's end, not its start, so the re-ask a
+      // minute after it was sent is still not final.
+      await act(() => vi.advanceTimersByTimeAsync(50_000))
+      expect(screen.queryByText(/did not go through/i)).not.toBeInTheDocument()
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+      await waitFor(() => expect(sent).toHaveLength(3))
+      expect(sent[2].idempotency_key).toBe(sent[0].idempotency_key)
+    })
+
+    it('stops promising a safe resend once a check has answered for that trade', async () => {
+      mockPreview(previewResponse())
+      recordTrades(noAnswer)
+      answerLookups('not-found', 'found')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+
+      reload(unmount, 10)
+      await screen.findByText(/checking whether your buy of 10 Yes/i)
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+      await act(() => vi.advanceTimersByTimeAsync(61_000))
+
+      expect(await screen.findByText('Your buy of 10 Yes went through, for 5.1250 credits.')).toBeInTheDocument()
+      expect(screen.queryByText(/could not be confirmed/i)).not.toBeInTheDocument()
+    })
+
+    it('keeps the key for a reload when a retry is refused for its price but an earlier attempt got no answer', async () => {
+      // The refusal is about the retry. The first attempt, with its own,
+      // looser limit, may still be queued and commit.
+      mockPreview(previewResponse())
+      let answer: () => Response = noAnswer
+      const sent = recordTrades(() => answer())
+      const asked = answerLookups('found')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+      answer = () => HttpResponse.json(
+        { error: { code: 'price_beyond_limit', message: 'Moved.', details: { limit: '5.1763', current_total: '5.3000', state_version: 2 } } },
+        { status: 409 },
+      )
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+      await screen.findByText(/prices moved/i)
+
+      reload(unmount, 120)
+
+      expect(await screen.findByText('Your buy of 10 Yes went through, for 5.1250 credits.')).toBeInTheDocument()
+      expect(asked).toEqual([sent[0].idempotency_key])
+    })
+
+    it('keeps nothing for a reload once a retry of the trade was answered', async () => {
+      mockPreview(previewResponse())
+      let answer = noAnswer
+      recordTrades(() => answer())
+      const asked = answerLookups('found')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+      answer = created
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+      await screen.findByText(/went through once/i)
+
+      reload(unmount, 120)
+      await act(() => vi.advanceTimersByTimeAsync(1000))
+
+      expect(asked).toEqual([])
+      expect(screen.queryByText(/went through|did not go through|checking/i)).not.toBeInTheDocument()
+    })
+
+    it('keeps nothing for a reload for a trade the ledger refused', async () => {
+      mockPreview(previewResponse())
+      recordTrades(() => HttpResponse.json(
+        { error: { code: 'insufficient_funds', message: 'Not enough credits.', details: { balance: '1.0000', required: '5.1250', reserved: '0.0000', available: '1.0000' } } },
+        { status: 409 },
+      ))
+      const asked = answerLookups('found')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/credits/i, { selector: '[role="alert"]' })
+
+      reload(unmount, 120)
+      await act(() => vi.advanceTimersByTimeAsync(1000))
+
+      expect(asked).toEqual([])
+    })
+
+    it('does not ask about another trader\'s unconfirmed trade after they log out and this trader opens the market', async () => {
+      mockPreview(previewResponse())
+      recordTrades(noAnswer)
+      const asked = answerLookups('found')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel({ traderId: 'trader-1' })
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+
+      reload(unmount, 120, { traderId: 'trader-2' })
+      await act(() => vi.advanceTimersByTimeAsync(1000))
+
+      expect(asked).toEqual([])
+      expect(screen.queryByText(/went through/i)).not.toBeInTheDocument()
+    })
+
+    it('says the trade could not be confirmed, and keeps its key, when the ledger cannot be asked', async () => {
+      mockPreview(previewResponse())
+      let answer = noAnswer
+      const sent = recordTrades(() => answer())
+      answerLookups('unavailable')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      const { unmount } = renderPanel()
+      await buyTenYes(actor)
+      await screen.findByText(/could not be confirmed/i)
+
+      reload(unmount, 120)
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/buy of 10 Yes could not be confirmed/i)
+      answer = created
+      await buyTenYes(actor)
+      await waitFor(() => expect(sent).toHaveLength(2))
+      expect(sent[1].idempotency_key).toBe(sent[0].idempotency_key)
+    })
   })
 })
