@@ -684,6 +684,20 @@ _TRADE_DESCRIPTION = (
 )
 
 
+def _trade_out(result: trading.TradeResult) -> TradeOut:
+    return TradeOut(
+        transaction_id=result.transaction_id,
+        user_id=result.user_id,
+        market_id=result.market_id,
+        outcome_id=result.outcome_id,
+        side=Side(result.side),
+        quantity=result.quantity,
+        total=result.total,
+        state_version=result.state_version,
+        book_state_version=result.book_state_version,
+    )
+
+
 @router.post(
     "/markets/{market_id}/trades",
     response_model=TradeOut,
@@ -775,17 +789,7 @@ async def execute_trade(
         auth_client=auth_client,
         redis_client=redis,
     )
-    return TradeOut(
-        transaction_id=result.transaction_id,
-        user_id=result.user_id,
-        market_id=result.market_id,
-        outcome_id=result.outcome_id,
-        side=Side(result.side),
-        quantity=result.quantity,
-        total=result.total,
-        state_version=result.state_version,
-        book_state_version=result.book_state_version,
-    )
+    return _trade_out(result)
 
 
 _PLACE_ORDER_DESCRIPTION = (
