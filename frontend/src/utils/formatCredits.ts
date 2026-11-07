@@ -92,6 +92,19 @@ export function compareCredits(left: string, right: string): number {
 }
 
 /**
+ * A decimal string as a whole number of its own smallest unit, and how many
+ * decimal places that unit is: "-0.0040" is -40n at four places. The reverse
+ * of `creditsFromUnits`. Null when the value is not a plain decimal.
+ */
+export function unitsOfCredits(value: string): { units: bigint; places: number } | null {
+  const parts = PLAIN_SIGNED_DECIMAL.exec(value)
+  if (!parts) return null
+
+  const [, sign, whole, fraction = ''] = parts
+  return { units: BigInt(sign + whole + fraction), places: fraction.length }
+}
+
+/**
  * A whole number of `places`-decimal units as a decimal string: 40n at four
  * places is "0.0040". Exact, with no float, for a figure this file or a
  * caller has just worked out on the digits.
