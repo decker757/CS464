@@ -148,13 +148,6 @@ function describeUnconfirmedTrade(trade: SentTrade): string {
   return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} could not be confirmed, and may have gone through. Check your portfolio before trading again, or send the same trade again from this page: it will not be made twice.`
 }
 
-/** The request field a price limit goes in: `max_cost` on a buy and
- *  `min_proceeds` on a sell (#644), or nothing when there is no limit. */
-function limitFields(side: TradeSide, priceLimit: string | null): { max_cost?: string; min_proceeds?: string } {
-  if (priceLimit === null) return {}
-  return side === 'buy' ? { max_cost: priceLimit } : { min_proceeds: priceLimit }
-}
-
 /** What a trader is told about a trade refused because its price moved, when
  *  the in-place "Prices moved" line is not on screen to say it: it was not
  *  made, and which trade it was (#589). Nothing about what to do next — the
@@ -169,6 +162,13 @@ function describePastTrade(unconfirmedTrade: SentTrade | null, refusedTrade: Sen
   if (unconfirmedTrade) return describeUnconfirmedTrade(unconfirmedTrade)
   if (refusedTrade && !isRefusalShownInPlace) return describeRefusedTrade(refusedTrade)
   return ''
+}
+
+/** The request field a price limit goes in: `max_cost` on a buy and
+ *  `min_proceeds` on a sell (#644), or nothing when there is no limit. */
+function limitFields(side: TradeSide, priceLimit: string | null): { max_cost?: string; min_proceeds?: string } {
+  if (priceLimit === null) return {}
+  return side === 'buy' ? { max_cost: priceLimit } : { min_proceeds: priceLimit }
 }
 
 /** A trade's key, kept until the ledger answers it definitely.
