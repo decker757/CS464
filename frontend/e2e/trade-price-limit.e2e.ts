@@ -1,6 +1,7 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, uniqueName } from './support/backend'
 import { logIn, outcomeChoice } from './support/browser'
+import { compareCredits } from '../src/utils/formatCredits'
 
 // [FE][T-2] #644, through the real ledger: a trade sends the most it will pay,
 // and a price that moved by less than that between the quote and the click
@@ -24,7 +25,7 @@ test('a trade still executes when another trade moved the price within its limit
   // The figure beside the preview's Cost label, wherever that row sits.
   const quotedCost = preview.getByText('Cost', { exact: true }).locator('xpath=following-sibling::*[1]')
   await expect(quotedCost).toHaveText(/^\d+\.\d{4} credits$/)
-  const quoted = Number.parseFloat((await quotedCost.textContent()) ?? '')
+  const quoted = ((await quotedCost.textContent()) ?? '').replace(' credits', '')
 
   // Lands between this trader's quote and their click.
   await buy(other, market, 'Yes', '1')
@@ -35,6 +36,6 @@ test('a trade still executes when another trade moved the price within its limit
   await expect(page.getByText(/prices moved/i)).toHaveCount(0)
   // The trade went through at the price the other buy left, which is higher
   // than the quote, and not at the quote itself.
-  const paid = Number.parseFloat(((await bought.textContent()) ?? '').replace('Bought 10 Yes for ', ''))
-  expect(paid).toBeGreaterThan(quoted)
+  const paid = ((await bought.textContent()) ?? '').replace(/^Bought 10 Yes for (.*) credits\.$/, '$1')
+  expect(compareCredits(paid, quoted)).toBe(1)
 })
