@@ -17,14 +17,14 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | Voiding | #221, UI #526 | shipped, both sides: an admin voids a flawed market and every holder is refunded at cost (ADR 0025) |
 | Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60, #479 | shipped, both sides, including the suspend control and a users list that filters by role and by status; promoting an admin is an API call and has no screen yet |
 | Credits | [B-1] #32, [B-2] #33, [F-1] #41, UI #376, #443, #410 | shipped; every balance is derived from append-only entries, and the portfolio shows profit and loss and how many shares a live sell order holds back |
-| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61, #429, #495, #566, #580, #592 | shipped, both sides: the price is the control that picks an outcome, a live price chart, and limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024). A trade's confirmation, or the warning that it could not be confirmed, shows even after the trader picks another outcome, and a trade sent again after no answer is made once and says so |
+| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61, #429, #495, #566, #580, #592 | shipped, both sides: the price is the control that picks an outcome, a live price chart, and limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024). A trade's confirmation, or the warning that it could not be confirmed, shows even after the trader picks another outcome, and a trade sent again after no answer is made once and says so. A trade may name a price limit and executes within it at the current price (ADR 0029); the panel sends one of its own in #652 |
 | Discovery | [X-1]–[X-4] #34–#37, #446, #447, UI #54, #126, #209, #441, #444, #448, #450, #564 | shipped: search and filters, live prices, the trader's own holdings, bands for closing soon, trending and biggest movers, and cards that show the odds as a split bar and each outcome's change over the week |
 | Leaderboard | [L-1]–[L-3] #38–#40, UI #58 | shipped, both sides |
 | Layout and accessibility | #380, #437, #438, #452, #574 | every signed-in page fits a phone, with the navigation behind a menu button, and every text colour pair passes WCAG AA, including a browse chip's label while its price flashes |
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot, the ledger's price producer and its order frames |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
-| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440, #609 | live at **https://predictsmu.xyz**: every push to `main` deploys to DigitalOcean, two app servers behind a load balancer (ADR 0026), and `npm run seed:production` seeds it with the demo markets; monitoring (#599) ships to Grafana Cloud from each server; staging (#19) and the load test [5.4] #20 are open |
+| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440, #609, #20, #640 | live at **https://predictsmu.xyz**: every push to `main` deploys to DigitalOcean, two app servers behind a load balancer (ADR 0026), and `npm run seed:production` seeds it with the demo markets; monitoring (#599) ships to Grafana Cloud from each server; the load test [5.4] #20 ran on 2026-11-04 (a trade's p95 was 5.45 s at 50 users, both servers at 100% CPU) and #640's answer ships in this release: a trade names a price limit (ADR 0029), the ledger keeps a one-second copy of who and what may trade and calls no other service on a trade (ADR 0030), a trade holds the book lock for 13 statements instead of 22 (#641), and DigitalOcean's connection pooler lets a third server start (#660); the after figures follow the release; staging (#19) is open |
 
 ## Running it
 
@@ -419,7 +419,8 @@ to make and would be expensive to reverse.
 - [0016](docs/adr/0016-deciding-a-proposal.md) deciding a proposal, by any
   admin but the proposer, with APPROVED as a status
 - [0017](docs/adr/0017-the-ledger-and-a-stopped-market.md) the ledger asks
-  market_service whether a market is still trading, once per trade
+  market_service whether a market is still trading, once per trade (amended
+  by 0030: the answer now comes from the ledger's own one-second copy)
 - [0018](docs/adr/0018-positions-are-valued-at-liquidation.md) positions are
   valued at liquidation, not at the marginal price
 - [0019](docs/adr/0019-settlement-across-services.md) settlement is the
@@ -431,7 +432,8 @@ to make and would be expensive to reverse.
   leaderboard is a snapshot on the ledger, and auth names its users through
   the first service credential
 - [0022](docs/adr/0022-the-ledger-and-a-suspended-trader.md) the ledger asks
-  auth whether a trader is still active, once per trade
+  auth whether a trader is still active, once per trade (amended by 0030: the
+  answer now comes from the ledger's own one-second copy)
 - [0023](docs/adr/0023-sending-an-approved-outcome-back.md) sending an approved
   outcome back inside its stored dispute window, by any admin
 - [0024](docs/adr/0024-resting-orders-fill-inside-the-trade.md) resting orders
@@ -441,3 +443,14 @@ to make and would be expensive to reverse.
 - [0026](docs/adr/0026-production-on-digitalocean.md) production on
   DigitalOcean, two or more app servers behind a load balancer, deployed from
   `main`
+- [0027](docs/adr/0027-login-rate-limits-in-redis-failing-open.md) login and
+  registration limits in Redis, per username or email and address, failing
+  open
+- [0028](docs/adr/0028-liveness-for-the-balancer-readiness-for-alerts.md)
+  `/health` is liveness for the balancer, `/ready` is readiness for dashboards
+  and alerts
+- [0029](docs/adr/0029-price-limits-replace-exact-quotes.md) price limits
+  replace exact quotes on the trade route, shipped expand then contract
+- [0030](docs/adr/0030-the-ledger-keeps-a-local-copy.md) the ledger keeps a
+  one-second local copy of suspensions and trading terms, and calls nobody on
+  a trade; a stale copy refuses
