@@ -1861,6 +1861,23 @@ describe('TradingPanel', () => {
       expect(localStorage.length).toBe(0)
     })
 
+    it('deletes a day-old trade on any market, for any trader, when a market loads', async () => {
+      // Someone else's trade on a market nobody here opens again: a shared
+      // computer must not keep its description for good.
+      const trade = { outcomeId: 'o-yes', outcomeLabel: 'Yes', side: 'buy', quantity: '10' }
+      const elsewhere = 'unconfirmed-trades:another-trader:another-market'
+      const recent = 'unconfirmed-trades:another-trader:a-third-market'
+      localStorage.setItem(elsewhere, JSON.stringify([{ key: 'k-old', trade, sentAt: Date.now() - 25 * 60 * 60 * 1000 }]))
+      localStorage.setItem(recent, JSON.stringify([{ key: 'k-new', trade, sentAt: Date.now() - 60 * 1000 }]))
+      mockPreview(previewResponse())
+
+      renderPanel()
+      await act(() => vi.advanceTimersByTimeAsync(1000))
+
+      expect(localStorage.getItem(elsewhere)).toBeNull()
+      expect(localStorage.getItem(recent)).not.toBeNull()
+    })
+
     it('keeps nothing for a reload once a retry of the trade was answered', async () => {
       mockPreview(previewResponse())
       let answer = noAnswer
