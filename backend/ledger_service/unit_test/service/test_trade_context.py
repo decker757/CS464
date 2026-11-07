@@ -22,7 +22,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.conftest import strip_outcomes
-from unit_test.placement_fixtures import place
+from unit_test.placement_fixtures import place, reserved_shares_of
 from unit_test.sell_fixtures import HELD, hold, sell
 from unit_test.settlement_fixtures import WINNER, SettleUpstream, settle
 from unit_test.settlement_fixtures import hold as hold_for_settlement
@@ -198,7 +198,7 @@ async def test_the_context_reads_the_reserved_shares_of_a_live_sell_order(
     session: AsyncSession,
 ) -> None:
     """The shares the holder's own resting sell order holds back, the figure
-    `reservations.reserved_shares_of` reads, which the holding check
+    `reservations.reserved_shares_query_of` reads on its own, which the holding check
     subtracts from the position."""
     upstream = Upstream()
     await warm(session, upstream)
@@ -215,13 +215,11 @@ async def test_the_context_reads_the_reserved_shares_of_a_live_sell_order(
     )
     outcome_id = upstream.outcomes[0]
 
-    from service import reservations  # noqa: PLC0415
-
     _, context = await _context_under_lock(
         session, upstream.market_id, user_id=holder, outcome_id=outcome_id
     )
 
-    separate = await reservations.reserved_shares_of(
+    separate = await reserved_shares_of(
         session, holder, market_id=upstream.market_id, outcome_id=outcome_id
     )
     assert context.reserved_shares == separate == _RESTING_SHARES

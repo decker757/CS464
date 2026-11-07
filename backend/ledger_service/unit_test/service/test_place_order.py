@@ -48,7 +48,7 @@ from model.entities import (
     Transaction,
     TransactionKind,
 )
-from service import accounts, grants, orders, posting, reservations
+from service import accounts, grants, orders, posting
 from unit_test.conftest import mint_token
 from unit_test.order_fixtures import add_order
 from unit_test.placement_fixtures import (
@@ -60,6 +60,7 @@ from unit_test.placement_fixtures import (
     place,
     record_result,
     reserved_credits_of,
+    reserved_shares_of,
 )
 from unit_test.portfolio_fixtures import read_portfolio
 from unit_test.sell_fixtures import hold
@@ -291,7 +292,7 @@ async def test_a_marketable_sell_fills_down_to_its_limit_and_reserves_the_rest(
     assert await balance_of_user(session, user_id) == balance + Decimal("8.4978")
     position = await position_of(session, user_id, upstream.market_id, upstream.outcomes[0])
     assert position.quantity == HELD - Decimal("13.7867")
-    assert await reservations.reserved_shares_of(
+    assert await reserved_shares_of(
         session, user_id, market_id=upstream.market_id, outcome_id=upstream.outcomes[0]
     ) == Decimal("16.2133")
 

@@ -24,8 +24,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from model.entities import Order, Transaction
-from service import reservations, trading
-from unit_test.placement_fixtures import limit_upstream, open_at, place, reserved_credits_of
+from service import trading
+from unit_test.placement_fixtures import (
+    limit_upstream,
+    open_at,
+    place,
+    reserved_credits_of,
+    reserved_shares_of,
+)
 from unit_test.sell_fixtures import assert_q_matches_positions, hold, holding
 from unit_test.settlement_fixtures import (
     Pause,
@@ -157,7 +163,7 @@ async def test_two_trades_crossing_the_same_orders_keep_every_invariant(
             session, user_id
         )
     held, _ = await holding(session, seller, upstream.market_id, upstream.outcomes[0])
-    assert held >= await reservations.reserved_shares_of(
+    assert held >= await reserved_shares_of(
         session, seller, market_id=upstream.market_id, outcome_id=upstream.outcomes[0]
     )
     for order_id in [sell_order.order.id, buy_order.order.id]:

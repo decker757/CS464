@@ -23,7 +23,7 @@ Each structural test names the change that turns it red:
   per market through `book_prices` and a second `market_books` one does; read
   a settled market's record on its own and a second `market_results` one does.
   #410's reserved shares are read there too: read them per position through
-  `reservations.reserved_shares_of` and an `orders` statement of their own
+  `reservations.reserved_shares_query_of` and an `orders` statement of their own
   appears.
 """
 

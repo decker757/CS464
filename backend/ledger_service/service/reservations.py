@@ -85,19 +85,3 @@ def reserved_shares_query_of(
         Order.side == Side.SELL,
         order_is_live(),
     )
-
-
-async def reserved_shares_of(
-    session: AsyncSession,
-    user_id: uuid.UUID,
-    *,
-    market_id: uuid.UUID,
-    outcome_id: uuid.UUID,
-) -> Decimal:
-    """What this user's live sell orders of one outcome reserve, read now.
-
-    Takes no lock: every caller holds the market's book row, which every
-    writer of an order or a position takes first.
-    """
-    stmt = reserved_shares_query_of(user_id, market_id=market_id, outcome_id=outcome_id)
-    return (await session.execute(stmt)).scalar_one()

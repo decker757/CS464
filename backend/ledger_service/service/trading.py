@@ -88,6 +88,8 @@ trade on a warm market calls no other service.**
     size by its owner, as pending writes after the trade's own, and each
     rolled into its order row. The session is flushed before every fill's
     position read and again before `post_all`, because `autoflush` is off.
+    It runs whenever the context statement saw an open order on the market;
+    on a market with none, the orders are not read at all.
 11. `posting.post_all`, the trade's movement first and then each fill's,
     last, because it is the one statement in this whole path that commits.
     The trade has to be affordable before any resting order fills, and a
@@ -300,25 +302,10 @@ async def _replay_if_present(
     return result_of(existing)
 
 
-def _open_orders_in(market_id: uuid.UUID) -> Select[tuple[Order]]:
+def _open_orders_query_of(market_id: uuid.UUID) -> Select[tuple[Order]]:
     """The market's open orders: what `list_open_orders` reads, and what the
     context statement asks whether there are any of."""
     return select(Order).where(Order.market_id == market_id, Order.status == OrderStatus.OPEN)
-
-
-def _refuse_if_short(
-    position: Position | None, *, reserved: Decimal, quantity: Decimal
-) -> None:
-    """Raise `InsufficientSharesHeld` if a sell of `quantity` is more than
-    the position less `reserved` ("Reserved shares cannot be sold twice",
-    ADR 0024)."""
-    held = position.quantity if position is not None else ZERO
-    if quantity > held - reserved:
-        raise InsufficientSharesHeld(
-            held=held.quantize(QUANTUM),
-            reserved=reserved.quantize(QUANTUM),
-            requested=quantity.quantize(QUANTUM),
-        )
 
 
 def _add_to_position(
@@ -540,7 +527,7 @@ async def read_trade_context(
             Position,
             key_taken.label("key_taken"),
             has_result.label("has_result"),
-            _open_orders_in(market_id).exists().label("has_open_orders"),
+            _open_orders_query_of(market_id).exists().label("has_open_orders"),
             reserved_shares.label("reserved_shares"),
             func.clock_timestamp().label("db_now"),
         )
@@ -601,27 +588,23 @@ async def find_position(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def refuse_if_short_of_shares(
-    session: AsyncSession,
-    position: Position | None,
-    *,
-    user_id: uuid.UUID,
-    market_id: uuid.UUID,
-    outcome_id: uuid.UUID,
-    quantity: Decimal,
+def refuse_if_short_of_shares(
+    position: Position | None, *, reserved: Decimal, quantity: Decimal
 ) -> None:
     """Raise `InsufficientSharesHeld` if a sell of `quantity` is more than the
-    position less what the seller's live sell orders in that outcome reserve.
+    position less `reserved`, what the seller's live sell orders in that
+    outcome hold back ("Reserved shares cannot be sold twice", ADR 0024).
 
-    Call it holding the book lock, which holds both figures still. The
-    placement sells through it; the trade applies the same rule,
-    `_refuse_if_short`, to the reservation its context statement read
-    ("Reserved shares cannot be sold twice", ADR 0024).
+    The trade and the placement pass both figures from `read_trade_context`,
+    read under the book lock, which holds them still.
     """
-    reserved = await reservations.reserved_shares_of(
-        session, user_id, market_id=market_id, outcome_id=outcome_id
-    )
-    _refuse_if_short(position, reserved=reserved, quantity=quantity)
+    held = position.quantity if position is not None else ZERO
+    if quantity > held - reserved:
+        raise InsufficientSharesHeld(
+            held=held.quantize(QUANTUM),
+            reserved=reserved.quantize(QUANTUM),
+            requested=quantity.quantize(QUANTUM),
+        )
 
 
 def write_trade(
@@ -664,7 +647,7 @@ async def list_open_orders(session: AsyncSession, market_id: uuid.UUID) -> list[
     check rank them themselves. Call it holding the book lock, which every
     writer of an order row takes first, so the read takes no lock of its own.
     The latch has just said the market has no result, so open is live."""
-    return list((await session.execute(_open_orders_in(market_id))).scalars())
+    return list((await session.execute(_open_orders_query_of(market_id))).scalars())
 
 
 def resting_order_of(order: Order, outcome_ids: Sequence[uuid.UUID]) -> RestingOrder:
@@ -981,7 +964,9 @@ async def execute(
     # sell orders reserve, not the market's shares outstanding.
     position = context.position
     if side is Side.SELL:
-        _refuse_if_short(position, reserved=context.reserved_shares, quantity=quantity)
+        refuse_if_short_of_shares(
+            position, reserved=context.reserved_shares, quantity=quantity
+        )
 
     # 9. The price, through `trade_cost_of` like the preview, so the two code
     # paths cannot disagree about what this trade costs. Its outstanding
@@ -1017,10 +1002,16 @@ async def execute(
     trade_version = book.state_version
     pool_account = context.pool_account
 
-    # 10b. The cascade, after the trade's own writes, on the price they left.
-    fills = await write_cascade(
-        session, book, outcomes=outcomes, pool_account=pool_account, now=now
-    )
+    # 10b. The cascade, after the trade's own writes, on the price they left,
+    # whenever the market has an open order (ADR 0024). The context read that
+    # under the book lock, which every writer of an order row takes first, so
+    # no order can open before this commits; with none, there is nothing to
+    # read the orders for.
+    fills: list[WrittenFill] = []
+    if context.has_open_orders:
+        fills = await write_cascade(
+            session, book, outcomes=outcomes, pool_account=pool_account, now=now
+        )
 
     # After every write, so the context carries the trade's own version and
     # the book's after the cascade.

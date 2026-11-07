@@ -26,13 +26,14 @@ from core.errors import (
     OrderReleased,
 )
 from model.entities import OrderStatus
-from service import cancellation, ledger_service, reservations
+from service import cancellation, ledger_service
 from unit_test.placement_fixtures import (
     limit_upstream,
     open_at,
     order_row,
     place,
     record_result,
+    reserved_shares_of,
 )
 from unit_test.sell_fixtures import hold
 from unit_test.service.test_place_order import (
@@ -164,7 +165,7 @@ async def test_cancelling_a_partly_filled_sell_releases_only_its_unsold_shares(
     )
     assert cancelled.order.reserved_shares == NOTHING
     session.expire_all()
-    assert await reservations.reserved_shares_of(
+    assert await reserved_shares_of(
         session, user_id, market_id=upstream.market_id, outcome_id=upstream.outcomes[0]
     ) == Decimal(0)
     position = await position_of(session, user_id, upstream.market_id, upstream.outcomes[0])
