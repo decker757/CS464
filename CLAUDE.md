@@ -717,6 +717,7 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0028** /health is liveness for the balancer, /ready is readiness for dashboards and alerts
 - **0029** price limits replace exact quotes on the trade route, shipped expand then contract
 - **0030** the ledger keeps a one-second local copy of suspensions and trading terms, and calls nobody on a trade; stale is a refusal
+- **0031** (Proposed) a per-market trading engine: one owner per book, a fenced lease, group commits; written, not built
 
 Four known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`
