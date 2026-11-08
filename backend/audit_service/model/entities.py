@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Index, String, Text, Uuid
+from sqlalchemy import DateTime, Index, String, Text, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,7 +26,11 @@ class AdminAction(Base):
     # needs RETURNING, which needs SELECT, which writers do not hold.
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
 
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Every writer supplies it. The SQL's default is a safety net for a row
+    # inserted by hand, stated here so the model matches the table.
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     # From the verified token's `sub`, never from a request body.
     actor_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
@@ -52,9 +56,19 @@ class AdminAction(Base):
 
     source_service: Mapped[str] = mapped_column(String(32), nullable=False)
 
-    # Declared to state what the reads depend on; sql/02-schemas.sql creates them.
-    __table_args__ = (
-        Index("ix_admin_actions_feed", "occurred_at", "id"),
-        Index("ix_admin_actions_actor", "actor_id", "occurred_at", "id"),
-        Index("ix_admin_actions_action_type", "action_type", "occurred_at", "id"),
-    )
+
+# Declared to state what the reads depend on; sql/02-schemas.sql creates them.
+# Newest first, as every read pages, with id breaking ties.
+Index("ix_admin_actions_feed", AdminAction.occurred_at.desc(), AdminAction.id.desc())
+Index(
+    "ix_admin_actions_actor",
+    AdminAction.actor_id,
+    AdminAction.occurred_at.desc(),
+    AdminAction.id.desc(),
+)
+Index(
+    "ix_admin_actions_action_type",
+    AdminAction.action_type,
+    AdminAction.occurred_at.desc(),
+    AdminAction.id.desc(),
+)
