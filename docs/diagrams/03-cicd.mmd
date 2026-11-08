@@ -1,0 +1,50 @@
+%% 03 — CI, and the production deploy ([5.3] #19)
+%% Drawn from: ADR 0020, ADR 0026, docs/deployment.md, CLAUDE.md "Branches",
+%%   .github/workflows/{ci-backend,ci-frontend,e2e,ci-deploy,deploy,notify-failure}.yml,
+%%   deploy/production/{release,migrate,ensure-database,roll}.sh
+%% deploy.yml has no `needs:` on CI and runs no suite. Main is normally reached by
+%% promoting dev, but CI is advisory and nothing requires it green; CI on the push to
+%% main runs beside the deploy, not before it.
+%% A workflow skipped by a paths filter reports no status, so it could not be waited on.
+%% Failure paths (release.sh, roll.sh): migrate fails, no server rolled. Roll fails,
+%% that server goes back by itself and those rolled before it are sent back. A server
+%% that cannot go back stays drained, exit 2, the rest stay as they are. The public
+%% check failing leaves every server on the new release: nothing rolls back after it.
+%% No service's /health reads a database or calls another service, so "unhealthy" means
+%% a process that did not start or answer, not a release that cannot serve.
+%%{init: {"elk": {"lineHops": false, "forceNodeModelOrder": true, "mergeEdges": true}, "flowchart": {"wrappingWidth": 620, "nodeSpacing": 16, "rankSpacing": 22, "padding": 8}, "themeVariables": {"fontSize": "21px"}}}%%
+flowchart TB
+    subgraph dep["deploy.yml: push to main, or by hand on main; does not wait for CI"]
+        images["images job: 6 images to GHCR, tagged with the commit;<br/>holds no production secrets"]
+
+        subgraph rel["release job, production environment: release.sh"]
+            send["1. each server: copy the release directory,<br/>write app.env, log in to GHCR"]
+            mig["2. once, from the first server:<br/>ensure roles and grants, migrate × 3"]
+            roll["3. one server at a time, roll.sh: pull, drain, start,<br/>wait for every health check, undrain"]
+            check["4. check all 6 public names;<br/>a failure here rolls nothing back"]
+            back["pull failed or no /health answer:<br/>that server goes back,<br/>servers before it are sent back"]
+            send --> mig
+            mig --> roll
+            roll --> check
+            roll --> back
+        end
+        images --> rel
+    end
+
+    subgraph ci["CI: path-filtered, on pull_request<br/>and push to dev, staging, main"]
+        be["ci-backend.yml<br/>pytest × 6,<br/>dead code"]
+        fe["ci-frontend.yml<br/>lint, vitest,<br/>build"]
+        e2e["e2e.yml<br/>compose up,<br/>Playwright"]
+        cd["ci-deploy.yml<br/>shellcheck, terraform,<br/>release, stack tests"]
+        be ~~~ e2e
+        fe ~~~ cd
+    end
+
+    notify["notify-failure.yml<br/>Telegram"]
+
+    dep -->|"failed"| notify
+    ci -->|"failed"| notify
+
+    classDef ext      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
+    classDef edge     fill:#FFF4CC,stroke:#9A7B00,color:#1A202C
+    class be,fe,e2e,cd,notify,images,send,mig,roll,check,back ext

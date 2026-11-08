@@ -1,0 +1,86 @@
+%% 05 — Trust model: tokens, keys, grants
+%% Drawn from: ADR 0001, ADR 0002, ADR 0003, ADR 0006, ADR 0007, ADR 0010,
+%%   ADR 0021, ADR 0022 (as amended by ADR 0024 and ADR 0030), ADR 0030,
+%%   sql/01-roles.sql, sql/02-schemas.sql, backend/shared/security.py,
+%%   backend/shared/config.py, backend/auth_service/core/config.py,
+%%   backend/auth_service/core/security.py,
+%%   backend/auth_service/controller/transport.py,
+%%   backend/auth_service/controller/{dependencies,internal_routes}.py,
+%%   backend/market_service/controller/{dependencies,internal_routes}.py,
+%%   backend/auth_service/service/auth_service.py,
+%%   backend/ledger_service/service/{local_copy,account_status,user_directory}.py,
+%%   backend/ledger_service/service/{trading,orders}.py,
+%%   deploy/production/gateway/private-paths.inc,
+%%   backend/realtime_service/controller/transport.py,
+%%   backend/realtime_service/controller/routes.py,
+%%   backend/ledger_service/model/entities.py,
+%%   backend/ledger_service/migrations/versions/0001_baseline.py
+%% Since ADR 0030 the ledger forwards no trader's token to auth: a trade and an
+%% order read suspensions from its local copy, which LEDGER_SERVICE_KEY refreshes.
+%% auth and market each check that key on their /internal/ routes, and the gateway
+%% answers 404 for /internal/ on every subdomain (private-paths.inc).
+%% The legend is drawn in the figure, inside the Postgres zone. Top to bottom, the
+%% zone titles would sit under the edges, so they are notes in the zones instead.
+%% Some labels join their words with U+00A0 so Mermaid keeps them on one line.
+%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 400}, "themeVariables": {"fontSize": "20px"}}}%%
+flowchart TB
+    subgraph br["Browser: cookies set at login,<br/>httpOnly, SameSite=Lax"]
+        direction TB
+        acc["access_token<br/>JWT, 15 min<br/>path /"]
+        ref["refresh_token<br/>opaque, 14 days<br/>path /auth"]
+    end
+
+    subgraph svc[" "]
+        direction TB
+        jwt["All five verify JWT_SECRET.<br/>HS256 lets any verifier sign:<br/>accepted in ADR 0002,<br/>RS256 the upgrade"]
+        realtime["realtime<br/>Origin allowlist,<br/>no token in URL"]
+        market["market<br/>role claim<br/>until expiry"]
+        audit["audit<br/>admin claim,<br/>GET only"]
+        ledger["ledger<br/>role claim;<br/>suspensions from<br/>its local copy"]
+        auth["auth<br/>only signer,<br/>reads live row"]
+    end
+
+    subgraph pg[" "]
+        direction TB
+        sMarket[("market")]
+        sAudit[("audit.admin_actions<br/>append-only trigger<br/>owner superuser")]
+        sLedger[("ledger.entries<br/>append-only trigger<br/>owner ledger_svc")]
+        sAuth[("auth.refresh_tokens<br/>SHA-256 only")]
+        lg["Postgres: no cross grants.<br/>Edges into it:<br/>solid = owns schema<br/>thick = SELECT + INSERT<br/>dotted = INSERT only"]
+    end
+
+    acc -->|"cookie (a browser<br/>cannot set headers)"| realtime
+    acc -->|"cookie, or Bearer<br/>(header wins)"| market
+    acc --> audit
+    acc --> ledger
+    ref -->|"/auth/refresh: single use,<br/>replay revokes all"| auth
+
+    ledger -->|"X-Service-Key, only<br/>/internal/users/suspended<br/>and /internal/users/lookup"| auth
+    realtime ~~~ jwt
+    ledger -->|"X-Service-Key, only<br/>/internal/markets/published"| market
+
+    market --> sMarket
+    market -.-> sAudit
+    audit ==> sAudit
+    ledger -.-> sAudit
+    ledger --> sLedger
+    auth -.-> sAudit
+    auth --> sAuth
+
+    classDef browser  fill:#F2F2F2,stroke:#555555,color:#1A202C
+    classDef auth     fill:#DCEBFA,stroke:#2F6DB5,color:#1A202C
+    classDef market   fill:#DFF2E1,stroke:#2E8B47,color:#1A202C
+    classDef ledger   fill:#FCEBCF,stroke:#C27C0E,color:#1A202C
+    classDef audit    fill:#ECE3F7,stroke:#7048A8,color:#1A202C
+    classDef realtime fill:#DDF3F3,stroke:#1F8A8A,color:#1A202C
+    classDef pg       fill:#E6EBF2,stroke:#3B5068,color:#1A202C
+
+    classDef legend fill:#FFFFFF,stroke:#A0AEC0,color:#1A202C
+    class lg,jwt legend
+    class acc,ref browser
+    class auth auth
+    class market market
+    class ledger ledger
+    class audit audit
+    class realtime realtime
+    class sAuth,sMarket,sLedger,sAudit pg
