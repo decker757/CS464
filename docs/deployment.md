@@ -463,8 +463,10 @@ query string, by design (docs/api/realtime-service.md), so nothing secret is in 
   setup, step 4). A wrong `TRACING_ENDPOINT` breaks nothing else: the
   service's log just shows OpenTelemetry warnings that it is dropping spans.
   `release.sh` also sets `TRACING_SAMPLE_RATIO=0.1`, so production keeps one
-  trace in ten, because a 1-vCPU server spent 12–16% of its CPU on tracing at
-  100% (#20, 2026-11-04); local and CI keep 1.0.
+  trace in ten, because tracing every request took 12–16% of self time in
+  #640's py-spy profile, taken on a laptop running the scaled stack during
+  #20's load test on 2026-11-04 (production's own share was not measured);
+  local and CI keep 1.0.
 - The same "dropping span" warnings appear while Alloy is down, including
   the moments between a roll and Alloy starting. They are harmless.
 - Background work makes small traces with no request behind them: the close
