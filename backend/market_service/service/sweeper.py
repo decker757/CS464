@@ -17,6 +17,8 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from core import observability
+from core.metrics import CLOSE_SWEEP_LAG, CLOSE_SWEEP_LAST_SUCCESS
 from service import closing
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,26 @@ async def _drain(
     return total
 
 
+async def sweep_once(
+    session_factory: async_sessionmaker[AsyncSession], *, batch_limit: int
+) -> int:
+    """One sweep: report how late it woke, drain, then record that it succeeded.
+
+    The lag is read before the drain, so the gauge shows how long the oldest
+    market waited for this sweep. The last-success time is set only after the
+    drain returns, so a failing or dead sweeper shows as growing lag. Raises
+    what `_drain` raises. #599
+    """
+    async with session_factory() as session:
+        CLOSE_SWEEP_LAG.set(await closing.read_sweep_lag_seconds(session))
+        # Ends the read's transaction, which `_drain` has no use for.
+        await session.rollback()
+
+    closed = await _drain(session_factory, batch_limit)
+    CLOSE_SWEEP_LAST_SUCCESS.set_to_current_time()
+    return closed
+
+
 async def run_close_sweeper(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -79,8 +101,11 @@ async def run_close_sweeper(
         batch_limit,
     )
     while True:
-        try:
-            await _drain(session_factory, batch_limit)
-        except Exception:
-            logger.exception("close sweep failed; retrying in %.1fs", interval_seconds)
+        with observability.background_run():
+            try:
+                await sweep_once(session_factory, batch_limit=batch_limit)
+            except Exception:
+                logger.exception(
+                    "close sweep failed; retrying in %.1fs", interval_seconds
+                )
         await asyncio.sleep(interval_seconds)

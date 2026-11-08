@@ -1,6 +1,7 @@
-# [5.3] #19. Stand-ins for the managed Postgres and Redis, for stack-test.sh
-# only. Added to ../compose.yml with COMPOSE_FILE, so they share its network
-# and the services reach them as `postgres` and `redis`.
+# [5.3] #19. Stand-ins for the managed Postgres, its connection pools and
+# Redis, for stack-test.sh only. Added to ../compose.yml with COMPOSE_FILE, so
+# they share its network and the services reach them as `postgres`,
+# `pgbouncer` and `redis`.
 services:
   postgres:
     image: postgres:17.2-alpine
@@ -18,6 +19,53 @@ services:
     image: redis:8.2-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # #640. A transaction-mode PgBouncer standing in for DigitalOcean's
+  # connection pools, one per service role, each named where the database
+  # would be, as DigitalOcean's are. The apps connect through it, and the
+  # migrate steps go straight to postgres. At least as strict as
+  # DigitalOcean's: it keeps no prepared statement, and it round-robins over at least two
+  # server connections, so a client's next transaction lands on another one.
+  # Passwords are read from Postgres, as a managed pooler's must be, so a
+  # password the test changes is followed.
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.26.1-p0@sha256:488422e38cff912895d0d65d8963fcd306e6ac589a724398b6eb8e294e94d624
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TEST_POSTGRES_PASSWORD: ${TEST_POSTGRES_PASSWORD:?}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        printf '"postgres" "%s"\n' "$$TEST_POSTGRES_PASSWORD" > /tmp/userlist.txt
+        cat > /tmp/pgbouncer.ini <<'INI'
+        [databases]
+        cs464-auth = host=postgres dbname=cs464
+        cs464-market = host=postgres dbname=cs464
+        cs464-ledger = host=postgres dbname=cs464
+        cs464-audit = host=postgres dbname=cs464
+        [pgbouncer]
+        listen_addr = 0.0.0.0
+        listen_port = 6432
+        auth_type = scram-sha-256
+        auth_file = /tmp/userlist.txt
+        auth_user = postgres
+        auth_query = SELECT usename, passwd FROM pg_shadow WHERE usename = $$1
+        pool_mode = transaction
+        max_prepared_statements = 0
+        default_pool_size = 5
+        min_pool_size = 2
+        server_round_robin = 1
+        max_client_conn = 500
+        admin_users = postgres
+        INI
+        exec pgbouncer /tmp/pgbouncer.ini
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "6432"]
       interval: 2s
       timeout: 3s
       retries: 30

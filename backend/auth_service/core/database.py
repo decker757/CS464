@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
+from core import observability
 from core.config import get_settings
 
 
@@ -39,7 +40,16 @@ def get_engine() -> AsyncEngine:
             max_overflow=settings.database_max_overflow,
             # Replace a connection Postgres closed rather than hand it out.
             pool_pre_ping=True,
+            # Parameter values (emails, password hashes, idempotency keys)
+            # never reach a log line or a span's error status.
+            hide_parameters=True,
+            # Unnamed statements only: production reaches Postgres through a
+            # transaction-mode pooler, where a named statement can be missing
+            # or clash by the next transaction. SQLAlchemy's cache stays on.
+            # D-NEW "asyncpg's statement cache is off in every engine"
+            connect_args={"statement_cache_size": 0},
         )
+        observability.instrument_engine(_engine)
     return _engine
 
 

@@ -16,6 +16,7 @@ from decimal import Decimal
 
 import httpx
 
+from core import observability
 from core.config import get_settings
 from core.errors import (
     LedgerError,
@@ -61,7 +62,8 @@ class MarketTerms:
     """A market's terms, read once and handed to `service/books.py` to copy.
 
     `status` is market_service's derived status (ADR 0011), carried and never
-    gated on: only `market_status.ensure_trading` refuses on it (ADR 0017).
+    gated on by a trade: the trade's gate reads the local copy (ADR 0030),
+    and only settlement and void read this one.
     The money fields are nullable because the wire contract is;
     `books.ensure_open` refuses a null one.
 
@@ -280,11 +282,14 @@ def open_client(
     `main.py`'s lifespan opens one for the process (#114). `transport` is the
     suite's seam: it wraps an `httpx.MockTransport` in the same client.
     """
-    return httpx.AsyncClient(
+    client = httpx.AsyncClient(
         base_url=get_settings().market_service_url,
         transport=transport,
         timeout=_TIMEOUT,
+        event_hooks={"request": [observability.send_request_id]},
     )
+    observability.instrument_client(client)
+    return client
 
 
 async def fetch(

@@ -256,3 +256,13 @@ would also come from two different rankings.
 > record's lookup route about the owners of open orders and cancels the
 > suspended ones'. That would be a second caller of this key, and under
 > section 2 it gets its own key, its own variable and its own record.
+
+> **Amended 2026-11-06 by
+> [ADR 0030](0030-the-ledger-keeps-a-local-copy.md).** One key and one
+> caller, the ledger, now with three routes: this lookup on auth, and the
+> copy's `GET /internal/users/suspended` on auth and
+> `GET /internal/markets/published` on market_service. It is the same
+> caller, so it keeps this key rather than getting its own. market_service
+> now holds the key too, and "trading is unaffected" under Consequences is
+> no longer true: while the copies disagree, trades refuse `503` five seconds
+> later.

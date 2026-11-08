@@ -293,6 +293,7 @@ def test_the_docs_error_table_is_exactly_the_issues() -> None:
         ("404", "market_not_found"),
         ("409", "market_closed"),
         ("409", "quote_stale"),
+        ("409", "price_beyond_limit"),
         ("409", "insufficient_funds"),
         ("409", "insufficient_shares_held"),
         ("409", "idempotency_key_reused"),

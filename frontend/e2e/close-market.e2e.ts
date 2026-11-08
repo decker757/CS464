@@ -36,6 +36,17 @@ test('any admin can close another admin\'s market early, and new trades are then
   const trader = await registerTrader('cm_trader')
   // The ledger's own refusal, not any failure: `call` throws
   // "POST <url> answered <status>: <body>", and a typo, a 500 or a missing
-  // outcome would satisfy a bare toThrow() too.
-  await expect(buy(trader, market, 'Yes', '1')).rejects.toThrow(/\/trades answered 409: .*"market_closed"/)
+  // outcome would satisfy a bare toThrow() too. Polled, because an early
+  // close reaches the ledger on its next copy refresh, about a second after
+  // the click (ADR 0030); a buy inside that window goes through, and the
+  // promise is that the next one does not. Five seconds of slack on a
+  // promise of about one, so a window more than five times wider fails.
+  await expect.poll(async () => {
+    try {
+      await buy(trader, market, 'Yes', '1')
+      return 'the ledger accepted the trade'
+    } catch (refusal) {
+      return (refusal as Error).message
+    }
+  }, { timeout: 5_000 }).toMatch(/\/trades answered 409: .*"market_closed"/)
 })

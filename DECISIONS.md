@@ -2306,7 +2306,7 @@ which is a weaker and more honest requirement than global uniqueness.
 
 ### D-NEW — The trade's staleness check is strict `state_version` equality, and the field is required
 
-**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** active
+**Date:** 2026-09-22 · **Ticket:** #22 · **Status:** superseded by "A trade names a price limit, and `quote_stale` is on its way out"
 
 **Decision.** The trade body carries the `state_version` the preview returned.
 Under the book lock the trade re-reads it and refuses `409 quote_stale` unless
@@ -2342,6 +2342,11 @@ This rule covers trades, not limit-order placements. A placement takes no
 would refuse an order because the price moved, which is what a limit order
 exists to tolerate. The trade route keeps the rule unchanged. See "A
 placement takes no `state_version`" in ADR 0024.
+
+*Superseded 2026-11-05 by ADR 0029 and "A trade names a price limit, and
+`quote_stale` is on its way out", the reversal this entry's trigger planned
+for. Until #640's contract step ships, a trade body that names no limit is
+still decided by this rule.*
 
 ---
 
@@ -3585,6 +3590,13 @@ holds them still and the order read takes no lock of its own. The reversal
 trigger extends to them: a writer of order rows that does not take the book lock
 first.
 
+*Noted 2026-11-07 by #641: the cascade skip leans on this rule too. A trade
+runs `write_cascade` only when the context statement, read after its book lock,
+says the market has an open order, which is safe only because no order can open
+without that lock. `test_cascade_concurrency.py::test_a_trade_queued_behind_a_placement_fills_the_order_it_rested`
+pins it. See "The locked section of a trade is budgeted at 13 statements, and
+no deciding read goes in the lock statement".*
+
 ---
 
 ### D-NEW — A sell larger than the caller's holding is `insufficient_shares_held`, distinct from `insufficient_shares_outstanding`
@@ -4341,6 +4353,14 @@ time does not: once a replica ten minutes ahead has written a grant, every
 later grant lands after PLATFORM's newest entry, a little past that future
 time, until the real clock catches up. The same happens to a market's trades
 through its pool account. Keep the replicas on NTP.
+
+*Noted 2026-11-07 by #641: the "one indexed probe ... per locked account, two
+on a trade" above now runs inside `post_all`'s floors statement, as a
+correlated `max(created_at)` the planner turns into the same backwards probe.
+A trade sends one statement for both probes rather than two. The decision
+stands. See "`post_all` reads the floors and the first stamp in one statement
+under the account locks, and movement *i* still lands at the first stamp plus
+*i* µs".*
 
 ---
 
@@ -5155,6 +5175,12 @@ at the same time.
 *Corrected 2026-10-09 by [3.4] #12: the cost in the second Rejected bullet.
 See "`post_all` stamps from one probe per locked account, and movement *i*
 lands at the first stamp plus *i* µs" below. The decision and the chain stand.*
+
+*Noted 2026-11-07 by #641: the entry the note above points to is superseded by
+"`post_all` reads the floors and the first stamp in one statement under the
+account locks, and movement *i* still lands at the first stamp plus *i* µs".
+The union query the second Rejected bullet named is now built: one statement,
+holding one probe per account. The decision and the chain still stand.*
 
 ---
 
@@ -6313,6 +6339,16 @@ of `posting.py` signs this off before it is built.
 a yes", and sign-off 3 is this running check in `_refuse_overdrafts`. The
 running check is built in the limit-order stack's PR 4a.
 
+*Noted 2026-11-07 by #641: the balances and reservations before the batch are
+now read in `post_all`'s one floors statement, which has a row for every
+locked account. "An account the batch only credits is still not read" stays
+true because both sums sit inside `CASE WHEN account.id IN (the debited USER
+accounts)`, and the `case when` assertion in
+`test_post_all.py::test_the_floors_and_the_stamp_are_read_in_one_statement_under_the_account_locks`
+pins it. See "`post_all` reads the floors and the first stamp in one statement
+under the account locks, and movement *i* still lands at the first stamp plus
+*i* µs".*
+
 ---
 
 ### D-NEW — `post_all` locks the union of the batch's accounts once, ascending, after the caller's book lock
@@ -6356,7 +6392,7 @@ commit, through `posting.post_all`" refuses.
 
 ### D-NEW — `post_all` stamps from one probe per locked account, and movement *i* lands at the first stamp plus *i* µs
 
-**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** active
+**Date:** 2026-10-09 · **Ticket:** #12 · **Status:** superseded by "`post_all` reads the floors and the first stamp in one statement under the account locks, and movement *i* still lands at the first stamp plus *i* µs"
 
 **Decision.** Holding every lock, `post_all` calls `_stamp_after_newest` once
 over the full set of locked accounts, which is one indexed probe per account.
@@ -6386,6 +6422,12 @@ locks". That bullet weighs "a thousand probes" against "one union query".
 Option A is itself one probe per account, about 1,002 for 1,000 winners. So
 the real gap is between a probe per movement, about 2,000, and a probe per
 account, about 1,000. The single union query is option B, which is not built.
+
+*Superseded 2026-11-07 by #641: option B is built, and the reversal trigger
+fired through #641's lock-section budget rather than the five-second test. See
+"`post_all` reads the floors and the first stamp in one statement under the
+account locks, and movement *i* still lands at the first stamp plus *i* µs".
+The stamp rule and the chain are unchanged.*
 
 ---
 
@@ -8628,6 +8670,24 @@ use. So a point and a frame for the same `state_version` give the same strings.
 **Reversal trigger.** A request measured as too slow. Then a stored table,
 backfilled by this replay function, which is pure and in `core/` (the replay
 PR) so the backfill can call it unchanged.
+
+*Amended 2026-11-05 by #643: the history still replays; the batch snapshot's
+seven-day baseline reads.* Every trade and fill now stores `after_q` in its
+`context`: the `q` that one movement left, in position order, as decimal
+strings, written by `trading.trade_movement_of` in the trade's own
+transaction under the book lock. `GET .../price-history` does not read it and
+still replays every trade, as above. The batch snapshot's `prices_7d_ago`
+does: "The prices a week ago are replayed from each pool's trades up to the
+window's start, in one statement for every market", amended. Nothing is
+backfilled, so a trade from before #643 has no `after_q`, and a market whose
+newest trade before the cutoff is one of those is replayed as before. Two
+records of one `q` can now disagree, so a guard test holds them together:
+`test_market_price_history.py::test_every_trade_and_fill_stores_the_q_the_replay_reaches_at_its_version`
+asserts each stored `after_q` is the `q` this replay reaches at that
+`state_version`. The Notes' caution grows by one: a `q` repaired by hand now
+needs the newest trade's `after_q` repaired too, or the card's baseline and
+this route disagree. `_fingerprint` covers kind and legs only, so the key
+cannot break a replay of the trade itself.
 
 ---
 
@@ -11018,11 +11078,37 @@ null, and a warning in the log.
   trade's context beside `trade_fields_of`, which price history and the trade
   feed share so that a trade means the same thing on every route.
 
-**Notes.** The rows read are every trade older than a week on the requested
-markets. Price history measured the replay at about 0.12 s for 10,000 trades.
+**Notes.** The rows read are one entry of `ix_ledger_entries_account_feed`
+per requested market, its newest trade at or before the cutoff, and every
+trade older than a week only for a market whose newest trade predates
+`after_q` (the amendment below). Price history measured the replay at about
+0.12 s for 10,000 trades.
 
 **Reversal trigger.** A batch read measured as slow. Then the trade records the
 `q` it leaves, and the baseline becomes one `DISTINCT ON` per pool.
+
+*Amended 2026-11-05 by #643: the reversal trigger fired.* Each trade's
+`context` now stores the `q` it left as `after_q` ("Price history is replayed
+from the trades on the pool's feed, and nothing stores it", amended).
+`list_prices_at` reads each market's newest trade at or before the cutoff in
+one statement: `market_books` for the requested ids, joined to a `LATERAL`
+subquery over `trade_entries_query()` on that book's pool, `created_at <=
+cutoff`, ordered `created_at DESC, id DESC`, `LIMIT 1`. It prices that
+trade's `after_q` through `lmsr.prices` and `book_prices.priced`, so the
+strings match the snapshot's.
+Only a market whose newest such trade has no `after_q` is replayed as above,
+every such market in one more statement, each logged at INFO so the fallback
+can be seen to die out. The 1, 2, 3, ... check therefore runs only on that
+replay: a stored `after_q` is the ledger's own record, written under the book
+lock in the trade's transaction, and is priced as it stands. An `after_q`
+whose length does not match the book's outcome rows costs that card its
+baseline and a warning, as a replay that cannot run does. Each pool costs one
+probe of `ix_ledger_entries_account_feed`, newest first, however many trades
+it holds. Rejected: `DISTINCT ON (market_id)` over the replay's join, which
+is one statement too but reads and sorts every trade up to the cutoff before
+keeping one per market. Measured on 20 books of 500 trades each: Unique over
+a Sort of 10,000 rows, 524 buffers, 14.4 ms, against 20 index probes of one
+row, 141 buffers, 0.16 ms for the `LATERAL` read.
 
 ---
 
@@ -11232,6 +11318,18 @@ not fit at the production sizes until the database plan or the pool sizes
 change, and `docs/deployment.md` says so. That is the trade made here: the
 app servers scale out, and the one database scales up.
 
+*Amended 2026-11-07 by #640: the rejected pooler is now in place.* Three
+app servers needed it. Each service role has a DigitalOcean connection pool
+in transaction mode, and the apps connect to it rather than to Postgres. The
+pools cap the server connections at 28, however many servers run. The two
+settings stay, but they now size each service's share of its pool's clients,
+and the ledger's are 10 and 5. The objection above was right, and is now
+answered. Every engine turns asyncpg's statement cache off, and the stack
+test runs the apps through a transaction-mode PgBouncer, so the pooler is
+tested before production. See "asyncpg's statement cache is off in every
+engine". `docs/deployment.md`, "Connection budget", and ADR 0026's
+amendment.
+
 ---
 
 ### D-NEW — The production site is seeded by its own command, with a generated password per account
@@ -11260,3 +11358,413 @@ repository's password to production, and the guard's whole point is that a
 seed cannot be undone. *Copying a seeded local database into production*: it
 would carry over test trades, needs care with sequences and the audit log,
 and still leaves the passwords to reset by hand.
+
+---
+
+### D-NEW — A trade names a price limit, and `quote_stale` is on its way out
+
+**Date:** 2026-11-05 · **Ticket:** #640 · **Status:** active
+
+**Decision.** A trade names a price limit: `max_cost` on a buy, the most it
+will pay, and `min_proceeds` on a sell, the least it will accept. Under the
+book lock the ledger prices the trade at the current `q`, and a price beyond
+the limit is `409 price_beyond_limit`, with `limit`, `current_total` and the
+book's current `state_version` in `error.details`. A price at the limit, or
+better for the trader by any amount, executes at the current price.
+`state_version` becomes optional and decides nothing. ADR 0029 records the
+decision; this entry records the error, the details and the rollout.
+
+It ships in two steps. The expand step (#640's PR 2) accepts a limit and does
+not require one: a body with a limit is decided by it, and a body with none
+by "The trade's staleness check is strict `state_version` equality, and the
+field is required", unchanged, `quote_stale` included. The contract step (PR
+2b, after #644 is released) requires the limit for its side and removes
+`quote_stale` from the route and from `core/errors.py`.
+
+**Why.** The superseded entry named this successor itself: "the successor is
+**not** a widened comparison but a `max_cost` bound on a buy and a
+`min_proceeds` bound on a sell, checked under the same lock". #20's
+production run on one market, 2026-11-04 (`docs/load-test.md`), is the
+measurement it waited for: 126 trades committed and 4,427 stale quotes
+retried, about 35 refusals per trade, with both app servers at 100% CPU.
+
+A new code rather than `quote_stale` reused, because the meaning changed.
+`quote_stale` said the book moved; `price_beyond_limit` says the price got
+worse than the trader allowed. The details changed with it.
+
+- `limit` is echoed exactly as the client sent it (`str(exc.limit)`), so a
+  client can match it against its own request.
+- `current_total` is the unsigned cost or proceeds at the current price,
+  quantized to four places, as `total` is.
+- `state_version` is the book's, a JSON number: a count, not money. A
+  client re-previews, and retries once the book is at that version or
+  later.
+
+The limit is checked after `trade_cost_of`, not where the version check
+stood, because the cost is what it compares.
+
+**Rejected.**
+- *A tolerance in versions or ticks on the server.* Rejected by the
+  superseded entry, for ADR 0017's reason, and by ADR 0029: the number
+  belongs to the client.
+- *Removing `state_version` from the body.* The frontend and the k6 script
+  already send it, and removing it is a second contract change for no gain.
+- *A limit for the other side ignored rather than refused.* A client that
+  sent `max_cost` on a sell believes it is protected. It is `422
+  invalid_request`.
+
+**Notes.**
+- A replay ignores the limit. `_matches` compares `outcome_id`, `side` and
+  `quantity`, as before, so a retry with a fresh limit returns the stored
+  trade at what it cost.
+- Until the contract step, `TradeIn` refuses a body with neither a limit nor
+  a `state_version` (`422 invalid_request`), and `execute` raises
+  `ValueError` on one, so no caller can trade with no price protection.
+
+---
+
+### D-NEW — The ledger's copy refuses when stale, decides a close under the lock, and floors miss refreshes at 250 ms
+
+**Date:** 2026-11-06 · **Ticket:** #640 · **Status:** active
+
+**Decision.** ADR 0030 gives the ledger a local copy of auth's suspended ids
+and market_service's published markets. This entry records its bounds and
+the rules that keep them true.
+
+- **Two settings.** `LOCAL_COPY_REFRESH_SECONDS` (default 1.0) is the wait
+  between refreshes. `LOCAL_COPY_MAX_AGE_SECONDS` (default 5.0) is the age
+  past which the copy refuses: `503 auth_unavailable` or `503
+  market_terms_unavailable`, the codes the per-trade calls used.
+- **Age is monotonic, stamped at send.** `loaded_at` is `time.monotonic()`
+  read before the request goes out, so the copy's age includes however long
+  the answer took. A trade that waited for a refresh checks the age again
+  after it.
+- **A close is decided under the lock.** The copy's check before the lock,
+  on the container's clock, is only the early refusal. Under the book lock,
+  `books.refuse_if_closed_under_lock` compares the copied `close_time` with
+  Postgres's `clock_timestamp()`, the clock market_service decides its own
+  closes on.
+- **A miss on an unknown id refreshes once, at most every 250 ms.** A market
+  absent from the copy refreshes it only if the copy is at least 250 ms old
+  (`_MISS_REFRESH_FLOOR_SECONDS`). Still absent with no book: `404
+  market_not_found`.
+- **A miss on a market with a book refreshes past the floor.** A book means
+  the market was published (`books.ensure_open` opened it from
+  market_service's terms), so its absence is the copy running behind. It is
+  refreshed until the copy is stamped at or after the book was read, at
+  most twice more, because a miss can join a run sent earlier and runs are
+  serialised; the copy is read again after the book read, since a refresh
+  that landed during it saves the fetch, and its age is checked there.
+  Still absent then: `503 market_terms_unavailable`.
+- **Single flight.** The market refresher and the miss path share one
+  coalesced refresh (`local_copy.coalesced`). Callers who arrive while it
+  runs share its result, and its error if it fails.
+- **Strictly newer.** A refresh replaces the copy only if its `loaded_at` is
+  later than the copy's, so two overlapping refreshes never put it back in
+  time.
+
+**Why.** Each rule closes a way for the copy to say yes when it should not,
+or to cost more than the calls it replaced. Stamping at send stops a slow
+answer from looking fresh. The under-lock check makes a close on `close_time`
+exact even for a trade that queued on the lock past it. The floor caps
+refetches for random ids, which a per-id cache would not. Single flight means
+that during an outage the upstream sees one attempt, not one per trade.
+
+**Rejected.** *A per-id negative cache instead of the floor*: it absorbs
+repeats of one id and nothing else. *Stamping `loaded_at` when the answer
+arrives*: it understates the age by the length of the call. *Comparing
+`close_time` only before the lock*: a trade queued behind others could
+commit after `close_time`.
+
+**Notes.** The floor costs at most one fail-closed `404` for a market
+published in the last quarter second and not yet touched; the next refresh
+brings it in. It must not cost a market with a book anything: the trade
+panel snapshots before it trades, and the snapshot opens the book, so the
+first trade in the second after publication arrives with a book and no copy
+entry, and floored it was `503` one time in four (#656's first CI run).
+The refresher logs the first failure of a streak at ERROR, repeats at
+WARNING with the count, and the recovery at INFO.
+
+---
+
+### D-NEW — asyncpg's statement cache is off in every engine
+
+**Date:** 2026-11-07 · **Ticket:** #640 · **Status:** active
+
+**Decision.** Each service's `core/database.py` passes
+`connect_args={"statement_cache_size": 0}`, always, locally and in CI as in
+production. SQLAlchemy's own prepared statement cache stays at its default.
+The pooled addresses carry no cache setting.
+
+**Why.** Production reaches Postgres through DigitalOcean's transaction-mode
+pools (ADR 0026's amendment). SQLAlchemy prepares every statement through
+asyncpg, and asyncpg names a statement whenever its own cache is on. A named
+statement lives on one server connection, and a transaction-mode pool hands
+the next transaction to whichever connection is free. There the statement is
+missing, or another process made one with the same name, because each
+process counts names from 1. With the cache off, asyncpg sends unnamed
+statements, and a pooler cannot mix those up.
+
+Measured on 2026-11-07 against PgBouncer 1.26.1 in transaction mode, with
+SQLAlchemy 2.0.52 and asyncpg 0.31.0. A transaction of 20 primary-key
+SELECTs and 5 UPDATEs, 500 timed after 50 warm-up, one process:
+
+| Set-up | Median | p95 | Failed |
+|---|---|---|---|
+| Direct to Postgres, both caches on | 5.4 ms | 7.2 ms | 0 |
+| Pooler without prepared-statement tracking, asyncpg's cache off (this) | 6.8 ms | 8.5–10.9 ms | 0 |
+| Pooler that tracks prepared statements, both caches on | 6.3–7.0 ms | 8.5 ms¹ | 0 |
+| Pooler without tracking, the URL's `prepared_statement_cache_size=0` | 18.5 ms | 24–29 ms | 57–433 of 500 with two processes |
+
+The times are wall clock through Docker on a laptop: compare them, do not
+quote them as production's. With asyncpg's cache off, Postgres still parses
+the statement on every execute: 102 Parse messages for 101 executions. But
+the Parse goes in the same round trip as the Bind, and costs about 0.014 ms.
+
+¹ The other of its two runs had a p95 of 25.4 ms, with a median of 7.0 ms.
+Nobody looked into why, and one run on a laptop is not evidence either way,
+so the table gives the 8.5 ms run.
+
+**Rejected.**
+- *`?prepared_statement_cache_size=0` on the URL*, which #640's design
+  proposed. It turns off SQLAlchemy's cache, which was never the problem.
+  asyncpg still names its statements, so it failed under two processes. And
+  every statement took a second round trip to prepare, which made the
+  transaction about three times slower. asyncpg's own setting cannot go on
+  the URL either: SQLAlchemy hands it over as the string `"0"`, and the
+  connect fails with `TypeError`.
+- *A setting, off by default, that production could turn back on* if
+  DigitalOcean's pooler tracks prepared statements. Its docs do not say that
+  it does. Turned on wrongly, requests fail rather than slow down, and the
+  setting would be a production configuration no test runs. What it would
+  save is the microseconds of a re-parse.
+- *Session-mode pools*, which keep prepared statements. A session holds its
+  server connection until the client disconnects, so the pools would again
+  have to cover every SQLAlchemy connection on every server, which is the
+  limit the pooler exists to lift.
+
+**Notes.** The guard is `deploy/production/test/stack-test.sh`. It runs the
+apps through a transaction-mode PgBouncer with no prepared-statement tracking
+and round-robin over two or more server connections, so a named statement
+fails at once, on a client's next transaction. With this line removed from the
+four engines, the stack test fails. `ci-deploy.yml` runs it for a change to
+any `core/database.py`.
+
+The migrate engine (`shared/migrating.py`) keeps asyncpg's default cache. It
+connects directly (`<SVC>_DIRECT_DATABASE_URL`), never through a pool, so
+nothing here applies to it. The stack test checks that the pooler carried
+nothing while the migrate steps ran. Do not justify the direct address by
+`search_path`, which the migrate engine sends when it connects: PgBouncer
+1.26.1 accepts it.
+
+### D-NEW — The locked section of a trade is budgeted at 13 statements, and no deciding read goes in the lock statement
+
+**Date:** 2026-11-07 · **Ticket:** #641 · **Status:** active
+
+**Decision.** From the `FOR UPDATE` on `market_books` to the commit, a trade
+on a warm market with no open orders sends at most 13 statements, the lock
+included. The lock statement is the book row alone, `FOR UPDATE` with
+`populate_existing` (#543). Every read that decides something is a statement
+of its own, issued after the lock statement has returned.
+
+The 13, the same on a buy and a sell:
+
+1. `SELECT market_books FOR UPDATE`, the book lock.
+2. The context statement, `trading.read_trade_context`.
+3. `SELECT accounts FOR UPDATE`, the first account.
+4. `SELECT accounts FOR UPDATE`, the second. One per account, ascending
+   (ADR 0009).
+5. `post_all`'s key lookup on `transactions`.
+6. The floors-and-stamp statement, `posting._floors_and_stamp`.
+7. `UPDATE market_books`.
+8. `UPDATE market_outcomes`.
+9. `UPDATE positions`.
+10. `SAVEPOINT`.
+11. `INSERT transactions`.
+12. `INSERT entries`.
+13. `RELEASE SAVEPOINT`.
+
+The COMMIT after it does not go through the cursor, so it is not counted.
+
+Two merged statements do most of the work:
+
+- **The context statement**, after the book lock. It selects the outcomes in
+  `position` order, each row carrying the pool account, this user's position
+  in the traded outcome (an outer join), `EXISTS` for the trade key, for a
+  `market_results` row and for open orders, the shares this user's live sell
+  orders reserve, and `clock_timestamp()` as `db_now`. It replaces the key
+  re-check, the latch, the clock, the outcomes, the position and the pool
+  account: six reads on a buy, and seven on a sell with the reserved shares.
+  A book with no outcome rows returns no row and is `MarketBookIncomplete`.
+- **The floors-and-stamp statement**, after the account locks. One row per
+  locked account: the balance and the reservation of each USER account the
+  batch debits, and every locked account's newest `created_at`. It replaces
+  the balance, the reservation and the two stamp probes on a buy, and the two
+  stamp probes on a sell, which debits no USER account. See "`post_all` reads
+  the floors and the first stamp in one statement under the account locks,
+  and movement *i* still lands at the first stamp plus *i* µs".
+
+`write_cascade` runs only when the context says the market has an open order.
+On a market with none, the orders are not read.
+
+`orders.place` sends the same two statements. Its own key re-check stays a
+read of its order row, before the context, because a placement's record is an
+order and not a transaction. The context's `key_taken` is computed there and
+not used. That costs one unique-index probe inside a statement sent anyway,
+and it was accepted in review: answering a placement's retry from `key_taken`
+would make the EXISTS ask about order keys too, which changes what a key
+means.
+
+**Why.** Every statement under the book lock is a round trip that every other
+trade on the market waits for. Under #20's production load a round trip took
+20 to 75 ms. On `dev` the locked section was 22 statements on a buy and 21 on
+a sell. The context statement took it to 17 and 15, the floors statement to 14
+on both, and skipping the orders read to 13. Several of the reads it removed
+were duplicates: the key, the orders table and the entries table were each
+read more than once.
+
+**The snapshot rule.** Under READ COMMITTED a statement's snapshot is taken
+when the statement starts. A `SELECT ... FOR UPDATE` that waits for its lock
+re-fetches only the rows it locked, at their newest version. Every other table
+in that statement, and every scalar subquery, still answers from the snapshot
+taken before the wait. So a deciding read folded into the lock statement reads
+stale data exactly when it matters: put the latch's `EXISTS` there, and a trade
+that queued behind a settlement reads "no result" from before the wait and
+trades on a settled market. That is ADR 0015's class of bug. A read issued
+after the lock returns starts a new snapshot, which sees everything the last
+holder committed. So the lock statement stays the book row alone, and the
+context statement comes after it.
+
+**The clock.** `db_now` is Postgres's `clock_timestamp()`, not the container's
+clock, because this check decides and writes under a row lock (D-025's
+exception, ADR 0030). It is one more column in the context statement, so the
+deciding close check costs no round trip of its own.
+
+**Skipping the cascade is safe** because every writer of an order row holds
+the book lock first (the 2026-10-17 amendment to "The holdings check is read
+under the book lock, and the position takes no lock of its own"):
+`orders.place`, the cancel ("A cancel takes the book lock and no account
+lock") and the cascade itself, the three `unit_test/test_order_writers.py`
+lists. Settlement and the void write no order row: their `market_results`
+row is what makes an order stop being live, and the latch reads it. The
+context's `EXISTS` is read after the trade's book lock returned, so no order
+can open between that read and the commit. A market with any open order runs
+the cascade exactly as before (ADR 0024).
+
+**The guard.** `test_trade.py::test_a_warm_trade_stays_within_its_statement_budget`,
+for a buy and a sell, counts every statement from the book's `FOR UPDATE` to
+the end of what it captures and fails above 13, printing each statement's verb,
+tables and lock. It pins a promise, so it stays even when it looks like a
+count (root `CLAUDE.md`, "Tests earn their place"). The snapshot rule's own
+guards are `test_trade_context.py::test_the_context_is_one_statement_issued_after_the_lock`,
+its placement twin `test_place_order.py::test_the_placement_reads_its_context_in_one_statement_after_the_lock`
+and `test_post_all.py::test_the_floors_and_the_stamp_are_read_in_one_statement_under_the_account_locks`.
+
+**Rejected.**
+- *Locking the outcome rows in the lock statement*, which #641 first scoped.
+  It needs an inner join from the book to its outcomes, so a damaged book with
+  no outcome rows would never be locked or refused. Reading the outcomes in the
+  next statement is just as fresh, because that statement starts after the lock
+  returns.
+- *Opening `post_all`'s SAVEPOINT only when the session holds no pending
+  writes* (the design's stretch, −2, to 11). Its premise was that with pending
+  writes the `IntegrityError` branch always ends in `PendingWritesOnReplay`, so
+  the savepoint protects nothing. That is false: an `IntegrityError` that is not
+  a key race is re-raised, and
+  `test_post_all.py::test_a_failure_mid_batch_commits_nothing` pins that the
+  caller's pending write is still in its session after one. Without the
+  savepoint the failed INSERT aborts the whole transaction, so that assertion
+  cannot hold. Changing it is a behaviour change, and #641 is a refactor.
+
+**Notes.** The budget covers less than it might seem to:
+- **The placement has no budget test.** It sends the same two merged
+  statements, but nothing counts its locked section, and it still reads the
+  open orders on every placement for its crossing check.
+- **A placement that fills on arrival reads the open orders twice**: once in
+  `place` for the crossing check, and again in `write_cascade` from
+  `_commit_fill`. A fill on arrival is not the warm path, so this is a
+  deferred follow-up, not a decision. The cheapest fix later is to skip the cascade when `place`'s own
+  `open_orders` is empty.
+- **Nothing before the lock is budgeted.** The replay lookup, `books.find`,
+  `accounts.ensure` and the grant lookup hold no lock, and the gate's one
+  call out still runs with no transaction open (D-043).
+- **A cascade is not budgeted either.** With open orders the orders read comes
+  back, and each fill adds its own reads and writes (ADR 0024).
+
+A known edge, accepted in both reviews: a book with no outcome rows is refused
+`MarketBookIncomplete` by the context statement, before the latch and the close
+check. On such a book a trade or a placement on a market that has a result, or
+has closed, answers `500 market_book_incomplete` where it answered `409
+market_closed`. The placement's key re-check still comes first, and a retry
+of a trade that has committed is answered by the unlocked lookup before the
+lock. Only the test helper `strip_outcomes` can make such a book.
+
+A follow-up, not a decision: the close-race tests cannot tell `db_now` from a
+`datetime.now()` read after the lock, because in tests the app and Postgres
+share one host clock. A cheap fix is to monkeypatch the module's
+`datetime.now` to `close_time` minus an hour in those two tests, so only the
+database clock can refuse.
+
+---
+
+### D-NEW — `post_all` reads the floors and the first stamp in one statement under the account locks, and movement *i* still lands at the first stamp plus *i* µs
+
+**Date:** 2026-11-07 · **Ticket:** #641 · **Status:** active
+
+**Decision.** Holding every account lock, `post_all` sends one statement,
+`posting._floors_and_stamp` (built by `_floors_and_stamp_query_of`). It returns
+one row per locked account: its id, its balance and its reservation if the batch
+debits it, and the newest `created_at` among its entries. The first stamp is
+`max(now, newest created_at + 1 µs)` over every locked account, PLATFORM and
+the pools included, worked out from those rows. Movement *i*, counted from 0 in
+input order, is stamped at the first stamp plus *i* µs, and every leg of a
+movement carries its stamp, as before.
+
+The balance and the reservation sit inside `CASE WHEN account.id IN (the
+debited USER accounts)`, so Postgres sums them only for the accounts the
+overdraft check needs.
+
+**Supersedes** "`post_all` stamps from one probe per locked account, and
+movement *i* lands at the first stamp plus *i* µs". The stamp rule and the chain
+are unchanged; only the way they are read changed.
+
+**Why.** This is the old entry's "Option B, one statement over the union". Its
+reversal trigger named PR 5's five-second settlement test, which never missed.
+The trigger fired another way: #641 budgets a trade's locked section, and on a
+trade the balance, the reservation and the two stamp probes were four round
+trips under the book lock. One statement is one. The old entry's objection, a
+second way to compute the same stamp beside `_stamp_after_newest`, no longer
+applies, because that helper is gone.
+
+It is still one probe per account. `max(created_at)` correlated to one account
+is planned as one backwards probe of `ix_ledger_entries_account_feed`, the same
+probe `ORDER BY created_at DESC LIMIT 1` was. A settlement's thousand winners
+cost a thousand probes inside one statement, rather than a thousand statements.
+
+**Why the CASE.** Without it the statement sums every locked account's entries.
+PLATFORM's and the pools' feeds are the longest in the ledger, and grow with
+every grant and every trade, and the old code never read their balances. The
+reviewer's `EXPLAIN`, with PLATFORM among the locked accounts, read 34
+buffers with the CASE and 772 without it; the four statements it replaced
+read 31.
+
+**Rejected.**
+- *No CASE*: the cost above, paid on every trade and growing with the ledger.
+- *Gating the sums on `kind = 'user'`*: it would sum a USER account the batch
+  only credits, which "An account the batch only credits is still not read"
+  rules out.
+- *Folding the read into `accounts.lock`*: the snapshot rule in "The locked
+  section of a trade is budgeted at 13 statements, and no deciding read goes in
+  the lock statement".
+
+**Notes.**
+- The CASE is pinned by the `case when` assertion in
+  `test_post_all.py::test_the_floors_and_the_stamp_are_read_in_one_statement_under_the_account_locks`.
+  Remove it and every other test stays green.
+- The floors are built in the order the batch first debits its accounts, so
+  with several short accounts the same one is refused first. Rows come back in
+  no order, which does not matter: the stamp is a maximum over all of them.
+- `test_post_all.py::test_statements_grow_by_two_per_movement` keeps its
+  ceiling of two statements per movement. This shape grows by one, the lock, so
+  that test would no longer catch the probes going back to one statement per
+  account. The structural test above is what holds the one statement.

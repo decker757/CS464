@@ -101,7 +101,8 @@ jobs:
           --health-timeout 3s
           --health-retries 10
 
-      # [F-2] #42. Used by one matrix leg and started for all five, because a
+      # [F-2] #42, [A-2] #600. Used by the realtime leg and the auth leg (its
+      # login limits count here) and started for all five, because a
       # service container cannot be made conditional on a matrix value. It costs
       # a couple of seconds on the other four and it is not worth a second job
       # to avoid. Same major version as docker-compose.yml.

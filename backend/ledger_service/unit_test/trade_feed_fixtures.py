@@ -38,7 +38,14 @@ from unit_test.settlement_fixtures import (
     transaction_by_key,
 )
 from unit_test.settlement_fixtures import warm as warm_settleable
-from unit_test.trade_fixtures import SMALL_QUANTITY, Upstream, books, buy, fund
+from unit_test.trade_fixtures import (
+    SMALL_QUANTITY,
+    Upstream,
+    books,
+    buy,
+    fund,
+    open_copy,
+)
 
 
 @dataclass(frozen=True)
@@ -104,7 +111,7 @@ async def _buy_on(session: AsyncSession, upstream: SettleUpstream, outcome: int)
         quantity=SMALL_QUANTITY,
         state_version=await version_of(session, upstream.market_id),
         client_key=f"feed-{uuid.uuid4()}",
-        transport=upstream.gate_open,
+        local_copy=open_copy(upstream),
     )
 
 

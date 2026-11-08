@@ -9,6 +9,8 @@
 # Needs `gh` logged in as an admin of the repository, and the same
 # DIGITALOCEAN_TOKEN and TF_VAR_domain as `infra/tf`. Every value is piped
 # into `gh` on stdin, so none appears on a command line or in the terminal.
+# The Grafana Cloud values are not Terraform's, so this script does not push
+# them. They are set by hand: docs/deployment.md, "Monitoring: first-time setup".
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -47,6 +49,10 @@ set_secret AUTH_DATABASE_URL auth_database_url
 set_secret MARKET_DATABASE_URL market_database_url
 set_secret LEDGER_DATABASE_URL ledger_database_url
 set_secret AUDIT_DATABASE_URL audit_database_url
+set_secret AUTH_DIRECT_DATABASE_URL auth_direct_database_url
+set_secret MARKET_DIRECT_DATABASE_URL market_direct_database_url
+set_secret LEDGER_DIRECT_DATABASE_URL ledger_direct_database_url
+set_secret AUDIT_DIRECT_DATABASE_URL audit_direct_database_url
 set_secret AUTH_DB_PASSWORD auth_db_password
 set_secret MARKET_DB_PASSWORD market_db_password
 set_secret LEDGER_DB_PASSWORD ledger_db_password

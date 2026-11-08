@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Select, case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -146,15 +146,16 @@ def _net_by_account(legs: list[Leg]) -> dict[uuid.UUID, tuple[Account, Decimal]]
     return netted
 
 
-def _debited_users_of(batch_legs: list[list[Leg]]) -> dict[uuid.UUID, Account]:
-    """The USER accounts some movement of the batch takes credits from. Only
-    these are read: an account the batch only credits cannot be overdrawn."""
-    debited: dict[uuid.UUID, Account] = {}
+def _debited_user_ids_of(batch_legs: list[list[Leg]]) -> list[uuid.UUID]:
+    """The USER accounts some movement of the batch takes credits from, in
+    the order the batch first debits them. Only these are read: an account
+    the batch only credits cannot be overdrawn."""
+    debited: dict[uuid.UUID, None] = {}
     for legs in batch_legs:
         for account, net in _net_by_account(legs).values():
             if net < ZERO and account.kind is AccountKind.USER:
-                debited[account.id] = account
-    return debited
+                debited[account.id] = None
+    return list(debited)
 
 
 def _drops_by_account(movements: list[Movement]) -> dict[uuid.UUID, Decimal]:
@@ -171,43 +172,102 @@ def _drops_by_account(movements: list[Movement]) -> dict[uuid.UUID, Decimal]:
     return drops
 
 
-async def _floors_before_batch(
-    session: AsyncSession, movements: list[Movement], batch_legs: list[list[Leg]]
-) -> dict[uuid.UUID, _Floor]:
-    """Each debited USER account's balance and reservation before the batch.
+def _floors_and_stamp_query_of(
+    *, account_ids: set[uuid.UUID], debited_ids: list[uuid.UUID]
+) -> Select[tuple[uuid.UUID, Decimal | None, Decimal | None, datetime | None]]:
+    """One row per locked account: its id, its balance and reservation if the
+    batch debits it, and its newest entry's `created_at`.
 
-    Raises `InsufficientFunds` with a `shortfall` if the balance is already
-    below the reservation there. The reservation is read under the account
-    lock, after the caller has flushed its order rows, so it is the figure
-    after the batch; adding back the batch's drops gives the figure before
-    it. A placement's new buy order so counts at its whole budget (ADR 0024).
+    The balance and the reservation sit inside a CASE, so Postgres sums them
+    only for the debited USER accounts, never for PLATFORM or a pool, whose
+    entries grow with every grant and trade. `max(created_at)` is one
+    backwards probe of `ix_ledger_entries_account_feed` per account.
     """
+    is_debited = Account.id.in_(debited_ids)
+    balance = accounts.balance_query_of(account_id=Account.id).scalar_subquery()
+    reserved = reservations.reserved_query_of(Account.owner_id).scalar_subquery()
+    newest = (
+        select(func.max(Entry.created_at))
+        .where(Entry.account_id == Account.id)
+        .scalar_subquery()
+    )
+    return select(
+        Account.id,
+        case((is_debited, balance)).label("balance"),
+        case((is_debited, reserved)).label("reserved"),
+        newest.label("newest"),
+    ).where(Account.id.in_(sorted(account_ids)))
+
+
+def _floor_of(
+    account_id: uuid.UUID, *, balance: Decimal, reserved: Decimal
+) -> _Floor:
+    """The account's floor at the start of the batch, or `InsufficientFunds`
+    with a `shortfall` if its balance is already below its reservation."""
+    if balance < reserved:
+        raise InsufficientFunds(
+            account_id=account_id,
+            balance=balance,
+            reserved=reserved,
+            available=balance - reserved,
+            shortfall=reserved - balance,
+        )
+    return _Floor(balance_before=balance, balance=balance, reserved=reserved)
+
+
+async def _floors_and_stamp(
+    session: AsyncSession,
+    movements: list[Movement],
+    batch_legs: list[list[Leg]],
+    *,
+    account_ids: set[uuid.UUID],
+    now: datetime,
+) -> tuple[dict[uuid.UUID, _Floor], datetime]:
+    """Each debited USER account's balance and reservation before the batch,
+    and the batch's first stamp, read in one statement. Call it holding every
+    account's lock: issued after the lock statements, it reads what the last
+    writer committed (ADR 0015), so never fold it into `accounts.lock`.
+
+    Raises `InsufficientFunds` with a `shortfall` if a balance is already
+    below its reservation. The reservation is read after the caller has
+    flushed its order rows, so it is the figure after the batch; adding back
+    the batch's drops gives the figure before it, and a placement's new buy
+    order counts at its whole budget (ADR 0024).
+
+    The stamp is `now`, or one tick after the newest entry on any locked
+    account if that is later, so feed order is commit order on every account
+    and no two entries on one share a time. #187, DECISIONS.md, "A movement's
+    timestamp is fixed under its account locks, not trusted from the clock".
+    """
+    debited_ids = _debited_user_ids_of(batch_legs)
+    stmt = _floors_and_stamp_query_of(account_ids=account_ids, debited_ids=debited_ids)
+    rows = {row.id: row for row in (await session.execute(stmt)).all()}
+
+    stamp = now
+    for row in rows.values():
+        if row.newest is not None and row.newest + _TICK > stamp:
+            stamp = row.newest + _TICK
+
     drops = _drops_by_account(movements)
     floors: dict[uuid.UUID, _Floor] = {}
-    for account_id, account in _debited_users_of(batch_legs).items():
-        balance = await accounts.balance_of(session, account_id)
-        reserved = await reservations.reserved_of(session, account.owner_id)
-        reserved += drops.get(account_id, ZERO)
-        if balance < reserved:
-            raise InsufficientFunds(
-                account_id=account_id,
-                balance=balance,
-                reserved=reserved,
-                available=balance - reserved,
-                shortfall=reserved - balance,
-            )
-        floors[account_id] = _Floor(
-            balance_before=balance, balance=balance, reserved=reserved
+    for account_id in debited_ids:
+        row = rows[account_id]
+        floors[account_id] = _floor_of(
+            account_id,
+            balance=row.balance,
+            reserved=row.reserved + drops.get(account_id, ZERO),
         )
-    return floors
+    return floors, stamp
 
 
-async def _refuse_overdrafts(
-    session: AsyncSession, movements: list[Movement], batch_legs: list[list[Leg]]
+def _refuse_overdrafts(
+    floors: dict[uuid.UUID, _Floor],
+    movements: list[Movement],
+    batch_legs: list[list[Leg]],
 ) -> None:
-    """Raise `InsufficientFunds` if a USER account the batch debits is below
-    what its buy orders reserve, at the start of the batch or after any
-    movement that debits it. ADR 0024.
+    """Raise `InsufficientFunds` if a USER account the batch debits falls
+    below what its buy orders reserve after any movement that debits it,
+    walking on from `floors`, the figures at the start of the batch. ADR 0024.
 
     Walked in movement order, not netted, so nothing later in the batch, a
     credit or a reservation a fill drops, pays for a debit before it. A
@@ -217,7 +277,6 @@ async def _refuse_overdrafts(
     PLATFORM and MARKET_POOL are meant to go negative (ADR 0009, D-009).
     Adding a kind here means deciding it holds spendable money.
     """
-    floors = await _floors_before_batch(session, movements, batch_legs)
     for movement, legs in zip(movements, batch_legs, strict=True):
         for account_id, (_, net) in _net_by_account(legs).items():
             floor = floors.get(account_id)
@@ -234,33 +293,6 @@ async def _refuse_overdrafts(
                     required=floor.balance_before - floor.balance,
                     movement_key=movement.idempotency_key,
                 )
-
-
-async def _stamp_after_newest(
-    session: AsyncSession, account_ids: set[uuid.UUID], now: datetime
-) -> datetime:
-    """`now`, or one tick after the newest entry on any of these accounts if
-    that is later. Call it holding their locks. #187, DECISIONS.md,
-    "A movement's timestamp is fixed under its account locks".
-
-    Every writer holds an account's lock from here to its commit, so on every
-    account the feed order is the commit order and no two entries share a
-    time, whatever the clock says on whichever replica. One probe of
-    `ix_ledger_entries_account_feed` per account.
-    """
-    stamp = now
-    for account_id in account_ids:
-        newest = (
-            await session.execute(
-                select(Entry.created_at)
-                .where(Entry.account_id == account_id)
-                .order_by(Entry.created_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if newest is not None and newest + _TICK > stamp:
-            stamp = newest + _TICK
-    return stamp
 
 
 def _transaction_of(
@@ -467,11 +499,14 @@ async def post_all(
             session, keys, fingerprints, existing, caller_pending=caller_pending
         )
 
-    await _refuse_overdrafts(session, movements, batch_legs)
-
-    first_stamp = await _stamp_after_newest(
-        session, account_ids, now or datetime.now(UTC)
+    floors, first_stamp = await _floors_and_stamp(
+        session,
+        movements,
+        batch_legs,
+        account_ids=account_ids,
+        now=now or datetime.now(UTC),
     )
+    _refuse_overdrafts(floors, movements, batch_legs)
 
     transactions: list[Transaction] = []
     entries: list[Entry] = []

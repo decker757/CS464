@@ -9,6 +9,8 @@ from core.roles import UserRole
 from model.entities import User
 from model.schemas import RegisterRequest
 from service import auth_service
+from service.attempt_limits import AttemptLimiter
+from unit_test.conftest import TEST_IP
 
 
 @pytest.fixture
@@ -17,8 +19,12 @@ def register_request(registration_payload: dict[str, str]) -> RegisterRequest:
 
 
 @pytest.fixture
-async def registered_user(session: AsyncSession, register_request: RegisterRequest) -> User:
-    user, _ = await auth_service.register(session, register_request)
+async def registered_user(
+    session: AsyncSession, register_request: RegisterRequest, attempt_limiter: AttemptLimiter
+) -> User:
+    user, _ = await auth_service.register(
+        session, register_request, limiter=attempt_limiter, client_ip=TEST_IP
+    )
     return user
 
 

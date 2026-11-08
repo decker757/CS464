@@ -77,12 +77,22 @@ services:
       # Required, same as POSTGRES_PASSWORD above. Copy .env.example to .env
       # and fill both in.
       JWT_SECRET: ${JWT_SECRET:?}
-      # [L-1] #38, ADR 0021. The key the ledger presents to
-      # `/internal/users/lookup`; auth compares it. Required on both sides, for
-      # JWT_SECRET's reason: a default would be a published credential.
+      # [L-1] #38, ADR 0021. The key the ledger presents to auth's `/internal`
+      # routes; auth compares it. Required on both sides, for JWT_SECRET's
+      # reason: a default would be a published credential.
       LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      # [A-2] #600, ADR 0027. Login and registration limits count in Redis.
+      # Spelled out rather than read from .env, whose REDIS_URL is the
+      # host-side address. No `depends_on: redis`, as for realtime: the limiter
+      # fails open, so an unreachable Redis costs the limit and not a login.
+      REDIS_URL: redis://redis:6379/0
+      # e2e and `seed:demo` log in and register many times from one machine,
+      # so the per-address limits are raised. The account limits stay at their
+      # production values, so #601's e2e can drive them on a fresh account.
+      LOGIN_ATTEMPTS_PER_IP: "10000"
+      REGISTRATIONS_PER_IP: "10000"
     ports:
       - "${AUTH_PORT:-8000}:8000"
     restart: unless-stopped
@@ -124,8 +134,11 @@ services:
       # service could also mint tokens; ADR 0002 records why that is acceptable
       # today and what the upgrade is.
       JWT_SECRET: ${JWT_SECRET:?}
+      # #640, ADR 0030. The key the ledger's local copy presents to this
+      # service's `/internal/markets/published`; required, as auth's is above.
+      LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
-      # [1.2] #2. Optional, unlike the two above: a liquidity parameter is not
+      # [1.2] #2. Optional, unlike the keys above: a liquidity parameter is not
       # a credential, so a default here is a tuning choice rather than a
       # published secret. An admin overrides it per market.
       DEFAULT_LIQUIDITY_B: ${DEFAULT_LIQUIDITY_B:-100}

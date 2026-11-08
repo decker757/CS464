@@ -39,6 +39,8 @@ docs/architecture.md    three mermaid diagrams — the services and their
 DECISIONS.md            the layer under the ADRs: smaller decisions, in order,
                         cited from code comments by number (D-001 to D-052)
                         or, after those, by title (D-NEW "<title>")
+loadtest/               k6 load test of the trade endpoint [5.4] #20;
+                        docs/load-test.md runs it and keeps the results
 scripts/                sprint digest to Telegram
 .github/workflows/      path-filtered CI, one workflow per area
 .claude/skills/         shared Claude skills; /pr-review lives here
@@ -91,7 +93,8 @@ docker compose -f docker-compose.yml -f docker-compose.scale.yml \
 cd backend/auth_service       # or market_service, audit_service, ledger_service
 .venv/bin/pip install -r requirements-dev.txt   # again after pulling #75 (Alembic)
                                                 # and #342 (pytest-cov)
-.venv/bin/pytest              # needs `docker compose up -d db`
+.venv/bin/pytest              # needs `docker compose up -d db`; auth's also needs
+                              # `redis` (its login limits, #600)
 .venv/bin/pytest unit_test/core unit_test/model   # no database needed
 COVERAGE_RCFILE=../.coveragerc .venv/bin/pytest --cov=. --cov-report=term-missing
                               # the figure CI reports, for one suite [F-12] #342
@@ -386,7 +389,10 @@ and only the caller knows which.
 `POST /ledger/markets/{id}/trades` ([T-2] #22) accepts a trader's own token,
 which is safe only because the body names no account, no amount and no leg:
 `TradeIn` is `extra="forbid"`, the debited account comes from the token's
-`sub`, and the price is computed under the book lock.
+`sub`, and the price is computed under the book lock. Whether the trader is
+suspended and the market still trading, it reads from its own one-second copy
+rather than asking auth and market_service, and a copy older than five seconds
+refuses `503` (ADR 0030).
 `POST /ledger/markets/{id}/orders` ([T-6] #26) is the same shape: `OrderIn`
 names a limit price and a quantity, and the budget is computed from them.
 `POST /ledger/orders/{id}/cancel` ([T-8] #28) takes an empty body: the order
@@ -454,11 +460,16 @@ checkout. `pytest.ini` says the same with `pythonpath = . ..`.
 
 It holds token verification, the settings base, the role enum, the cursor
 format, the audit writer and `actor_of`, the migration runner (`shared/migrating.py`, ADR
-0020) and the test helpers in `shared/testing.py` (the env loader, the
-import-boundary scan, the migration guard tests' `schema_catalog`,
-`drop_own_tables`, the two `assert_...` round trips and `compose_service`, plus
-`open_audit_reader`, which opens the session the writing services' suites read
-the log back through).
+0020), the readiness check behind `/ready` (`shared/readiness.py`, ADR
+0028), the request-ID middleware and context (`shared/request_ids.py`), the
+JSON log formatter and setup (`shared/logs.py`), the HTTP metrics and
+`/metrics` route (`shared/http_metrics.py`), the tracing setup
+(`shared/tracing.py`) and the test helpers in
+`shared/testing.py` (the env loader, the import-boundary scan, the migration
+guard tests' `schema_catalog`, `drop_own_tables`, the two `assert_...` round
+trips and `compose_service`, plus `open_audit_reader`, which opens the session
+the writing services' suites read the log back through, and the span recorder
+the tracing tests arm with `recording`).
 That is the whole list, and ADR 0012 spends most of its length on what was
 left copied and why — `core/database.py` above all, because one shared `Base`
 would enrol every service's tables in every other service's metadata and the
@@ -692,16 +703,20 @@ Do not relitigate these without reading them: `docs/adr/`.
 - **0014** closing a market early, by any admin, with the reason in the log
 - **0015** every read that decides a write is locked, and the wider lock goes first
 - **0016** deciding a proposal, by any admin but the proposer, with APPROVED as a status
-- **0017** the ledger asks market_service whether a market is still trading, once per trade, and a replay answers first
+- **0017** the ledger asks market_service whether a market is still trading, once per trade, and a replay answers first (until ADR 0030)
 - **0018** positions are valued at liquidation, not at the marginal price
 - **0019** settlement is the ledger's request, paid in one transaction, and market_service is told afterwards
 - **0020** migrations by Alembic, per service, run as a one-off step
 - **0021** the leaderboard is a snapshot on the ledger, and auth names its users through the first service credential
-- **0022** the ledger asks auth whether a trader is still active, once per trade
+- **0022** the ledger asks auth whether a trader is still active, once per trade (until ADR 0030)
 - **0023** sending an approved outcome back inside its stored dispute window, by any admin
 - **0024** resting orders fill against the AMM inside the trade that moved the price
 - **0025** voiding a flawed market, by any admin without a stake, refunded at cost
 - **0026** production on DigitalOcean, two or more app servers behind a load balancer, deployed from main
+- **0027** login and registration limits in Redis, per username or email and address, failing open
+- **0028** /health is liveness for the balancer, /ready is readiness for dashboards and alerts
+- **0029** price limits replace exact quotes on the trade route, shipped expand then contract
+- **0030** the ledger keeps a one-second local copy of suspensions and trading terms, and calls nobody on a trade; stale is a refusal
 
 Four known constraints recorded there. Logout cannot revoke an already-issued
 access token, so the 15-minute lifetime bounds the window. A `SameSite=Lax`

@@ -41,6 +41,7 @@ if not _test_db:
 os.environ["DATABASE_URL"] = _test_db
 # Fresh per run, so no key-shaped string sits in the repository.
 os.environ.setdefault("JWT_SECRET", secrets.token_urlsafe(32))
+os.environ.setdefault("LEDGER_SERVICE_KEY", secrets.token_urlsafe(48))
 
 from collections.abc import Iterator  # noqa: E402
 from contextlib import contextmanager  # noqa: E402

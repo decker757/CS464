@@ -435,3 +435,99 @@ def test_a_non_positive_quantity_is_refused(quantity: Decimal) -> None:
     negative price."""
     with pytest.raises(ValueError):
         _pricing().per_share(Decimal("1.0000"), quantity)
+
+
+# --- a price limit [#640] -------------------------------------------------
+#
+# A buy names the most it will pay and a sell the least it will accept; only a
+# price beyond that is refused, and a price exactly at it executes.
+_LIMIT_QUANTITY = Decimal("41")
+_STATE_VERSION = 7
+
+
+def _cost_of(side: str):
+    """A real `TradeCost` against the trade suite's unfriendly book."""
+    from unit_test.trade_fixtures import B, Q  # noqa: PLC0415
+
+    return _pricing().trade_cost_of(
+        Q, B, index=0, side=side, quantity=_LIMIT_QUANTITY
+    )
+
+
+def test_a_buy_at_exactly_its_limit_is_within_it() -> None:
+    """Equality executes: the limit is the most the buyer will pay."""
+    buy, _ = _sides()
+    cost = _cost_of(buy)
+
+    assert (
+        _pricing().refuse_if_beyond_limit(
+            cost, side=buy, limit=cost.magnitude, state_version=_STATE_VERSION
+        )
+        is None
+    )
+
+
+def test_a_buy_one_tick_over_its_limit_is_refused_with_the_figures() -> None:
+    """The refusal carries what the trade would cost and the book it saw."""
+    buy, _ = _sides()
+    cost = _cost_of(buy)
+    limit = cost.magnitude - _QUANTUM
+
+    with pytest.raises(_errors().PriceBeyondLimit) as raised:
+        _pricing().refuse_if_beyond_limit(
+            cost, side=buy, limit=limit, state_version=_STATE_VERSION
+        )
+
+    assert raised.value.code == "price_beyond_limit"
+    assert raised.value.status_code == 409
+    assert raised.value.limit == limit
+    assert raised.value.current_total == cost.magnitude
+    assert raised.value.state_version == _STATE_VERSION
+
+
+def test_a_sell_at_exactly_its_limit_is_within_it() -> None:
+    """Equality executes: the limit is the least the seller will accept."""
+    _, sell = _sides()
+    cost = _cost_of(sell)
+
+    assert (
+        _pricing().refuse_if_beyond_limit(
+            cost, side=sell, limit=cost.magnitude, state_version=_STATE_VERSION
+        )
+        is None
+    )
+
+
+def test_a_sell_one_tick_under_its_limit_is_refused_with_the_figures() -> None:
+    """A sell is refused when it would pay less than its limit, not more."""
+    _, sell = _sides()
+    cost = _cost_of(sell)
+    limit = cost.magnitude + _QUANTUM
+
+    with pytest.raises(_errors().PriceBeyondLimit) as raised:
+        _pricing().refuse_if_beyond_limit(
+            cost, side=sell, limit=limit, state_version=_STATE_VERSION
+        )
+
+    assert raised.value.code == "price_beyond_limit"
+    assert raised.value.limit == limit
+    assert raised.value.current_total == cost.magnitude
+    assert raised.value.state_version == _STATE_VERSION
+
+
+# Both strings, so the test bites whichever side the comparison branches on.
+@pytest.mark.parametrize(
+    ("side", "offset"), [("sell", _QUANTUM), ("buy", -_QUANTUM)]
+)
+def test_the_side_string_is_coerced_so_a_sell_is_not_compared_as_a_buy(
+    side: str, offset: Decimal
+) -> None:
+    """`"sell" is Side.SELL` is False; uncoerced, a string side would fall into
+    the other side's comparison and a limit it breaks would pass."""
+    cost = _cost_of(side)
+    limit = cost.magnitude + offset
+
+    with pytest.raises(_errors().PriceBeyondLimit):
+        _pricing().refuse_if_beyond_limit(
+            cost, side=side, limit=limit, state_version=_STATE_VERSION
+        )

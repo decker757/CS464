@@ -75,3 +75,13 @@ def clear_auth_cookies(response: Response) -> None:
         path=settings.refresh_cookie_path,
         domain=settings.cookie_domain,
     )
+
+
+def client_ip(request: Request) -> str:
+    """The caller's address, or "unknown" when the server was given none.
+
+    The attempt limiter keys on it; every address-less request shares one key.
+    """
+    if request.client is None:
+        return "unknown"
+    return request.client.host

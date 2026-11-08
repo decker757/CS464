@@ -94,7 +94,9 @@ async def list_snapshots(
     and the credits it has traded, once each, in the order its id first
     appears, with its prices seven days before `now`. [X-1] #432, #446, #447.
 
-    One statement reads every book and one more their trades, with no lock.
+    One statement reads every book and one more each one's newest trade a
+    week ago, with no lock; a third replays only the markets whose newest
+    trade predates `after_q` (`price_history.list_prices_at`).
     Opens no book, asks market_service nothing and writes nothing: an id with
     no book is absent (DECISIONS.md, "The batch snapshot opens no book: a
     market without one is absent"), and so is a book that cannot be priced,

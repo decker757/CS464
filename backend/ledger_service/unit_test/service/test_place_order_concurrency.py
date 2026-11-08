@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_engine
 from core.errors import InsufficientFunds
 from model.entities import Transaction
-from service import books, reservations
+from service import books, posting
 from unit_test.placement_fixtures import (
     limit_upstream,
     open_at,
@@ -105,7 +105,7 @@ async def test_a_resting_buy_racing_a_trade_in_another_market_cannot_both_spend(
     factory = session_factory()
     start = asyncio.Barrier(2)
     trading_session, placing_session = factory(), factory()
-    pause = Pause(monkeypatch, reservations, "reserved_of", session=trading_session, call=1)
+    pause = Pause(monkeypatch, posting, "_floors_and_stamp", session=trading_session, call=1)
 
     async def run_trade():
         await trading_session.connection()

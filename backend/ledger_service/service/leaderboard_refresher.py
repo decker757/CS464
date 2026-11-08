@@ -18,6 +18,7 @@ import logging
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from core import observability
 from service import leaderboard
 
 logger = logging.getLogger(__name__)
@@ -42,10 +43,11 @@ async def run_leaderboard_refresher(
         interval_seconds,
     )
     while True:
-        try:
-            await leaderboard.refresh(session_factory, auth_client)
-        except Exception:
-            logger.exception(
-                "leaderboard refresh failed; retrying in %.1fs", interval_seconds
-            )
+        with observability.background_run():
+            try:
+                await leaderboard.refresh(session_factory, auth_client)
+            except Exception:
+                logger.exception(
+                    "leaderboard refresh failed; retrying in %.1fs", interval_seconds
+                )
         await asyncio.sleep(interval_seconds)

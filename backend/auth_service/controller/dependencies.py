@@ -21,9 +21,18 @@ from core.errors import (
 )
 from core.roles import UserRole
 from model.entities import User
+from service.attempt_limits import AttemptLimiter
 from service.audit import Actor
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
+
+
+def get_attempt_limiter(request: Request) -> AttemptLimiter:
+    """The limiter `create_app` put on the app, so a test can swap it."""
+    return request.app.state.attempt_limiter
+
+
+Limiter = Annotated[AttemptLimiter, Depends(get_attempt_limiter)]
 
 
 async def get_current_user(request: Request, session: DbSession) -> User:
@@ -89,7 +98,7 @@ async def require_service_key(request: Request) -> None:
 
     Raises InvalidServiceKey. A missing header is compared as an empty string,
     so a missing and a wrong key take one code path and the same time. Guards
-    `/internal/users/lookup` and nothing else; an access token does not pass
+    the `/internal` routes and nothing else; an access token does not pass
     here, and this key does not pass `get_current_user`.
     """
     presented = request.headers.get("X-Service-Key") or ""

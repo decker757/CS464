@@ -8,17 +8,27 @@
 # It builds the six images and pushes them to a throwaway local registry, so
 # the scripts pull exactly as they do from GHCR. It stands in for the managed
 # database with a Postgres whose admin is NOT a superuser, as DigitalOcean's
-# doadmin is not. Then it runs migrate.sh and roll.sh and checks:
+# doadmin is not, and with DigitalOcean's connection pools by a
+# transaction-mode PgBouncer, which the apps reach it through and the migrate
+# steps bypass. Then it runs migrate.sh and roll.sh and checks:
 #
 #   - the frontend is served on the domain, and was built for it
 #   - each service answers on its own subdomain
+#   - /ready, /metrics and /internal/ answer only on the private network
+#   - ensure-database.sh puts the database admin's password on no command
+#     line, docker's or psql's
 #   - a trader can register and log in, and the login cookie names the domain
 #   - the ledger, market service and database work together through the gateway
+#   - auth, market and the ledger reached the database through the pooler,
+#     and their migrate steps did not
 #   - the price websocket upgrades through the gateway, for the site's origin only
 #   - draining makes /lb-health answer 503, and undraining brings it back
 #   - a release that cannot be pulled leaves the server untouched
 #   - a release that starts unhealthy is rolled back to the one before
 #   - a good release replaces the one before, which is kept, and nothing older
+#   - with Grafana configured but unreachable, Alloy runs steadily beside it,
+#     and Alloy failing outright still lets a roll succeed
+#   - switching Grafana off removes Alloy
 #   - going back from a release that added a service runs the old release
 #     from its own files, without that service, and with today's secrets: a
 #     database password changed since the old release was deployed
@@ -50,8 +60,9 @@ expect() {
 }
 
 status_of() {
-  # The HTTP status of a GET to the gateway, addressed to one host name.
-  curl -s -o /dev/null -w '%{http_code}' -H "Host: $1" "$gateway$2"
+  # status_of <host> <path> [curl arguments...]: the HTTP status of a GET to
+  # the gateway, addressed to one host name.
+  curl -s -o /dev/null -w '%{http_code}' -H "Host: $1" "${@:3}" "$gateway$2"
 }
 
 status_becomes() {
@@ -83,6 +94,7 @@ install_release() {
   cp "${2:-$repo/deploy/production/compose.yml}" "$directory/compose.yml"
   cp "$repo/deploy/production/sql/ensure-roles.sql" "$repo/sql/02-schemas.sql" "$directory/sql/"
   cp "$repo/deploy/production/test/backing.yml" "$directory/"
+  cp -r "$repo/deploy/production/alloy" "$directory/"
   echo "IMAGE_TAG=$1" > "$directory/release.env"
 }
 
@@ -100,6 +112,32 @@ compose() {
   (cd -P "$work/current" && docker compose --env-file "$work/app.env" --env-file release.env "$@")
 }
 
+is_ready_inside() {
+  # Asked from the gateway container, on the private network, where /ready is
+  # not hidden. ADR 0028.
+  compose exec -T gateway wget -qO- "http://$1:8000/ready" | grep -q '"status":"ready"'
+}
+
+metric_inside() {
+  # metric_inside <service> <metric name>: the service exports that metric.
+  # Asked from the gateway container, on the private network, where /metrics
+  # is not hidden. The body is fetched before grep reads it: grep -q quitting
+  # on its first match would kill wget with SIGPIPE under pipefail.
+  local body
+  body=$(compose exec -T gateway wget -qO- "http://$1:8000/metrics") || return 1
+  grep -q "^$2" <<<"$body"
+}
+
+internal_answers_inside() {
+  # internal_answers_inside <service> <path>: the route answers the service
+  # key. Asked from the gateway container, on the private network, where
+  # /internal/ is not hidden. Fetched first, for metric_inside's reason.
+  local body
+  body=$(compose exec -T gateway wget -qO- --header "X-Service-Key: $ledger_service_key" \
+    "http://$1:8000$2") || return 1
+  grep -q '"as_of"' <<<"$body"
+}
+
 every_image_is_at() {
   # Every image this stack pulled from the registry carries tag $1. The
   # stand-in Postgres and Redis come from Docker Hub and are not counted.
@@ -108,9 +146,39 @@ every_image_is_at() {
   test "$others" = 0
 }
 
-no_container_runs_for() {
-  test -z "$(docker ps -q --filter "label=com.docker.compose.project=$project" \
+no_container_for() {
+  # Running or not: a crash-looping container is briefly in neither list.
+  test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$project" \
     --filter "label=com.docker.compose.service=$1")"
+}
+
+alloy_is_steady() {
+  # Running, and never restarted. The state alone passes a crash loop, which
+  # reads "running" between restarts.
+  local container state
+  container=$(compose ps -aq alloy) || return 1
+  test -n "$container" || return 1
+  state=$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$container") || return 1
+  test "$state" = "true 0"
+}
+
+roll_log=""
+roll_records() {
+  # roll_records <tag>: roll that release, keeping what roll.sh printed.
+  local status=0
+  roll_log=$("$work/releases/$1/roll.sh" 2>&1) || status=$?
+  printf '%s\n' "$roll_log" | sed 's/^/        /'
+  return "$status"
+}
+roll_said() { grep -q "$1" <<< "$roll_log"; }
+
+without_lines() {
+  # without_lines <pattern...>: drop those lines from app.env, as a deploy
+  # that no longer sets them would.
+  local pattern arguments=()
+  for pattern in "$@"; do arguments+=(-e "$pattern"); done
+  grep -v "${arguments[@]}" "$work/app.env" > "$work/app.env.next"
+  mv "$work/app.env.next" "$work/app.env"
 }
 
 releases_kept_are() {
@@ -119,6 +187,35 @@ releases_kept_are() {
     names+="$(basename "$directory") "
   done
   test "$names" = "$1 "
+}
+
+pooled_transactions_of() {
+  # pooled_transactions_of <service>: how many transactions the stand-in
+  # pooler has carried for that service's pool, from its admin console. The
+  # password is the container's own variable, so it is on no command line.
+  # shellcheck disable=SC2016 # expanded by the container's shell, not this one
+  backing exec -T pgbouncer sh -c \
+    'PGPASSWORD=$TEST_POSTGRES_PASSWORD psql -h 127.0.0.1 -p 6432 -U postgres -d pgbouncer --csv -c "SHOW STATS"' |
+    python3 -c '
+import csv, sys
+for row in csv.DictReader(sys.stdin):
+    if row["database"] == sys.argv[1]:
+        print(row["total_xact_count"])
+' "cs464-$1"
+}
+
+went_through_the_pooler() {
+  local count
+  count=$(pooled_transactions_of "$1") || return 1
+  test "${count:-0}" -gt 0
+}
+
+bypassed_the_pooler() {
+  # A pool nobody has used has no row, which counts as none. A probe that
+  # fails is a failure, not a pass.
+  local count
+  count=$(pooled_transactions_of "$1") || return 1
+  test "${count:-0}" -eq 0
 }
 
 image_is_here() {
@@ -156,26 +253,33 @@ for service in auth market ledger audit realtime gateway; do
   push_as two "$service"
   push_as broken "$service"
 done
-publish() {
-  # publish <source image> <image to push>
-  docker tag "$1" "$2"
-  docker push -q "$2" > /dev/null
+# "broken" is release one, except that auth's image is built from the real one
+# with its command replaced by `sleep`: it keeps auth's own HEALTHCHECK, which
+# never passes because nothing listens on 8000.
+build_stand_in() {
+  # build_stand_in <image to push>
+  printf 'FROM %s/cs464-auth:one\nCMD ["sleep", "infinity"]\n' "$registry" \
+    | docker build -q -t "$1" - > /dev/null
+  docker push -q "$1" > /dev/null
 }
-# "broken" is release one, except that auth's image is the realtime service,
-# which cannot start without REDIS_URL. Its health check never passes.
-publish "$registry/cs464-realtime:one" "$registry/cs464-auth:broken"
+build_stand_in "$registry/cs464-auth:broken"
 # "three" is broken the same way, and also adds a service, `extra`, whose
 # image exists only at tag three. Going back to two with three's files would
 # look for cs464-extra:two, which nobody pushed.
 for service in market ledger audit realtime gateway; do
   push_as three "$service"
 done
-publish "$registry/cs464-realtime:one" "$registry/cs464-auth:three"
-publish "$registry/cs464-realtime:one" "$registry/cs464-extra:three"
+build_stand_in "$registry/cs464-auth:three"
+build_stand_in "$registry/cs464-extra:three"
 
 # --- A server's directory, as the deploy lays it out --------------------
 
-admin_password=$(random_secret)
+# The admin's password ends in the four characters a URL has to escape, so
+# ensure-database.sh has to decode the URL to log in. admin_secret is the part
+# that reads the same in the URL and out of it, which the command-line check
+# below looks for.
+admin_secret=$(random_secret)
+admin_password="$admin_secret@:/%"
 export TEST_POSTGRES_PASSWORD
 TEST_POSTGRES_PASSWORD=$(random_secret)
 export AUTH_DB_PASSWORD MARKET_DB_PASSWORD LEDGER_DB_PASSWORD AUDIT_DB_PASSWORD
@@ -183,6 +287,12 @@ AUTH_DB_PASSWORD=$(random_secret)
 MARKET_DB_PASSWORD=$(random_secret)
 LEDGER_DB_PASSWORD=$(random_secret)
 AUDIT_DB_PASSWORD=$(random_secret)
+ledger_service_key=$(random_secret)
+
+# As production's: the apps through their pool, named where the database
+# would be, and the migrate steps straight to Postgres.
+pooled_url() { echo "postgresql+asyncpg://$1_svc:$2@pgbouncer:6432/cs464-$1"; }
+direct_url() { echo "postgresql+asyncpg://$1_svc:$2@postgres:5432/cs464"; }
 
 cat > "$work/app.env" <<EOF
 COMPOSE_PROJECT_NAME=$project
@@ -190,11 +300,15 @@ COMPOSE_FILE=compose.yml:backing.yml
 IMAGE_REGISTRY=$registry
 DOMAIN=$domain
 JWT_SECRET=$(random_secret)
-LEDGER_SERVICE_KEY=$(random_secret)
-AUTH_DATABASE_URL=postgresql+asyncpg://auth_svc:$AUTH_DB_PASSWORD@postgres:5432/cs464
-MARKET_DATABASE_URL=postgresql+asyncpg://market_svc:$MARKET_DB_PASSWORD@postgres:5432/cs464
-LEDGER_DATABASE_URL=postgresql+asyncpg://ledger_svc:$LEDGER_DB_PASSWORD@postgres:5432/cs464
-AUDIT_DATABASE_URL=postgresql+asyncpg://audit_svc:$AUDIT_DB_PASSWORD@postgres:5432/cs464
+LEDGER_SERVICE_KEY=$ledger_service_key
+AUTH_DATABASE_URL=$(pooled_url auth "$AUTH_DB_PASSWORD")
+MARKET_DATABASE_URL=$(pooled_url market "$MARKET_DB_PASSWORD")
+LEDGER_DATABASE_URL=$(pooled_url ledger "$LEDGER_DB_PASSWORD")
+AUDIT_DATABASE_URL=$(pooled_url audit "$AUDIT_DB_PASSWORD")
+AUTH_DIRECT_DATABASE_URL=$(direct_url auth "$AUTH_DB_PASSWORD")
+MARKET_DIRECT_DATABASE_URL=$(direct_url market "$MARKET_DB_PASSWORD")
+LEDGER_DIRECT_DATABASE_URL=$(direct_url ledger "$LEDGER_DB_PASSWORD")
+AUDIT_DIRECT_DATABASE_URL=$(direct_url audit "$AUDIT_DB_PASSWORD")
 REDIS_URL=redis://redis:6379/0
 LEADERBOARD_REFRESH_ENABLED=true
 TEST_POSTGRES_PASSWORD=$TEST_POSTGRES_PASSWORD
@@ -223,15 +337,15 @@ backing() {
   (cd "$work/releases/one" && docker compose --env-file "$work/app.env" --env-file release.env "$@")
 }
 
-echo "starting the stand-in database and Redis"
-backing up -d --wait postgres redis > /dev/null
+echo "starting the stand-in database, its pooler and Redis"
+backing up -d --wait postgres pgbouncer redis > /dev/null
 backing exec -T postgres psql -q -U postgres -v ON_ERROR_STOP=1 \
   -c "CREATE ROLE doadmin LOGIN CREATEROLE PASSWORD '$admin_password'" \
   -c "CREATE DATABASE cs464 OWNER doadmin" > /dev/null
 
 # --- Deploy release one --------------------------------------------------
 
-export DATABASE_ADMIN_URL="postgresql://doadmin:$admin_password@postgres:5432/cs464"
+export DATABASE_ADMIN_URL="postgresql://doadmin:$admin_secret%40%3A%2F%25@postgres:5432/cs464"
 export DOCKER_NETWORK="${project}_default"
 export DRAIN_SECONDS=1 WAIT_SECONDS=90
 
@@ -239,6 +353,46 @@ echo "migrate.sh, release one"
 "$work/releases/one/migrate.sh"
 echo "migrate.sh, release one, again: it must be safe to repeat"
 "$work/releases/one/migrate.sh"
+# Nothing else has connected yet, so the pooler has carried only what the
+# migrate steps sent it, which must be nothing.
+for service in auth market ledger; do
+  expect "$service's migrate step went straight to the database" bypassed_the_pooler "$service"
+done
+
+# #611. Run ensure-database.sh once more with every command line recorded:
+# docker's, by a docker on the PATH that logs and passes through, and psql's
+# inside the container, by a psql earlier on the container's PATH that logs
+# and runs the real one. psql's is the one that matters: a shell inside the
+# container expanding the URL into psql's arguments is invisible from here.
+echo "ensure-database.sh, with every command line recorded"
+spy=$work/spy
+mkdir -p "$spy/host" "$spy/container"
+cat > "$spy/host/docker" <<'SPY'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SPY_DIR/host-argv"
+if [ "$1" = run ]; then
+  shift
+  exec "$REAL_DOCKER" run -v "$SPY_DIR/container:/spy" \
+    -e PATH=/spy:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$@"
+fi
+exec "$REAL_DOCKER" "$@"
+SPY
+cat > "$spy/container/psql" <<'SPY'
+#!/bin/sh
+printf '%s\n' "$*" >> /spy/argv
+exec /usr/local/bin/psql "$@"
+SPY
+chmod +x "$spy/host/docker" "$spy/container/psql"
+REAL_DOCKER=$(command -v docker) SPY_DIR=$spy PATH="$spy/host:$PATH" \
+  "$work/releases/one/ensure-database.sh"
+expect "ensure-database's psql ran with its command line recorded" test -s "$spy/container/argv"
+in_no_file() {
+  # in_no_file <text> <file>...
+  ! grep -qF "$1" "${@:2}"
+}
+expect "the database admin's password is on no command line" \
+  in_no_file "$admin_secret" "$spy/host-argv" "$spy/container/argv"
+
 echo "roll.sh, release one"
 "$work/releases/one/roll.sh"
 
@@ -254,8 +408,24 @@ expect "the bundle was built for https://auth.$domain" \
 
 for service in auth market ledger audit realtime; do
   expect "$service answers on $service.$domain" test "$(status_of "$service.$domain" /health)" = 200
+  expect "$service's /ready is not public" test "$(status_of "$service.$domain" /ready)" = 404
+  expect "$service is ready on the private network" is_ready_inside "$service"
 done
 expect "an unknown host name gets 404" test "$(status_of nobody.test /health)" = 404
+
+# #640, ADR 0030. The routes the ledger's local copies refresh from are for
+# the private network. From the internet the gateway answers 404, even to a
+# request that carries the key. Auth's lookup (ADR 0021) is hidden the same way.
+for pair in auth:/internal/users/suspended market:/internal/markets/published; do
+  service=${pair%%:*}
+  path=${pair#*:}
+  expect "$service's $path is not public, even with the key" \
+    test "$(status_of "$service.$domain" "$path" -H "X-Service-Key: $ledger_service_key")" = 404
+  expect "$service's $path answers the key on the private network" \
+    internal_answers_inside "$service" "$path"
+done
+expect "auth's /internal/users/lookup is not public" \
+  test "$(status_of "auth.$domain" /internal/users/lookup)" = 404
 
 username="stack$(date +%s)"
 password=$(random_secret)
@@ -273,9 +443,66 @@ expect "the login cookie names the parent domain, so every subdomain gets it" \
   grep -qi "set-cookie: access_token=.*Domain=$domain" "$login_headers"
 expect "the login cookie is Secure" grep -qi "set-cookie: access_token=.*Secure" "$login_headers"
 
+# [BE][5.5] #599. /metrics is for Alloy on the private network, never the
+# internet. Every metric an alert reads exists from boot (labels are
+# pre-created), so a renamed one fails here. After login, so auth has counted
+# a request.
+for service in auth market ledger audit realtime; do
+  expect "$service's /metrics is not public" test "$(status_of "$service.$domain" /metrics)" = 404
+  expect "$service's /metrics answers on the private network" \
+    metric_inside "$service" service_dependency_ready
+done
+for pair in ledger:ledger_trades_committed_total market:market_close_sweep_last_success_timestamp_seconds \
+            market:market_close_sweep_lag_seconds auth:auth_limiter_fail_open_total \
+            realtime:realtime_open_websockets auth:http_requests_total; do
+  expect "${pair#*:} is exported" metric_inside "${pair%%:*}" "${pair#*:}"
+done
+
+# [BE][A-2] #600. Each registration forges a different X-Forwarded-For. If the
+# gateway passed them on, every one would count against a different address
+# and none would ever be refused.
+refused=no
+for attempt in $(seq 1 25); do
+  name="forge$attempt$(date +%s)"
+  status=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: auth.$domain" \
+    -H "X-Forwarded-For: 198.51.100.$attempt" -H 'Content-Type: application/json' \
+    -d "{\"username\":\"$name\",\"email\":\"$name@example.com\",\"password\":\"$password\"}" \
+    "$gateway/auth/register")
+  if [ "$status" = 429 ]; then refused=yes; break; fi
+done
+expect "forged addresses still share one registration limit" test "$refused" = yes
+
+# [BE][5.5] #599. Request IDs: stamped by the gateway, kept from the client,
+# and on the services' JSON log lines.
+request_id_of() {
+  curl -s -D - -o /dev/null -H "Host: auth.$domain" "$@" "$gateway/health" \
+    | tr -d '\r' | sed -n 's/^[Xx]-[Rr]equest-[Ii][Dd]: //p'
+}
+gateway_logged() { test -n "$1" || return 1; compose logs --no-log-prefix gateway 2>/dev/null | grep -q "rid=$1"; }
+ledger_logged_json() {
+  curl -s -o /dev/null -H "Host: ledger.$domain" -H 'X-Request-ID: stack-test-0002' \
+    -H "Authorization: Bearer $token" "$gateway/ledger/portfolio/me"
+  compose logs --no-log-prefix ledger 2>/dev/null | grep -q '"request_id": "stack-test-0002"'
+}
+rid=$(request_id_of)
+expect "a response carries a request ID" sh -c "echo '$rid' | grep -qE '^[0-9a-f]{32}$'"
+expect "the gateway logged the same ID the service answered with" gateway_logged "$rid"
+expect "a client's own request ID comes back unchanged" \
+  test "$(request_id_of -H 'X-Request-ID: stack-test-0001')" = stack-test-0001
+# 65 characters, one past the services' rule. The gateway must replace it
+# itself, or its log line names an ID the service then threw away.
+unsafe_rid=$(request_id_of -H "X-Request-ID: $(printf '%65s' '' | tr ' ' a)")
+expect "an unsafe request ID is replaced, not echoed" \
+  sh -c "echo '$unsafe_rid' | grep -qE '^[0-9a-f]{32}$'"
+expect "the gateway logged the ID that replaced an unsafe one" gateway_logged "$unsafe_rid"
+expect "the ledger's log line for a request is JSON and carries its ID" ledger_logged_json
+
 expect "the ledger mints the starting grant on first read" has_starting_grant
 expect "the market service reads its schema" \
   test "$(curl -s -o /dev/null -w '%{http_code}' -H "Host: market.$domain" -H "Authorization: Bearer $token" "$gateway/public/markets")" = 200
+for service in auth market ledger; do
+  expect "$service reached the database through the pooler" went_through_the_pooler "$service"
+done
 
 upgrade_status() {
   # The first status line of a websocket handshake from one origin.
@@ -313,19 +540,48 @@ expect "and auth runs release one's image" \
   test "$(compose ps --format '{{.Image}}' auth)" = "$registry/cs464-auth:one"
 expect "and it is undrained and serving" status_becomes 127.0.0.1 /lb-health 200
 
+echo "Grafana Cloud is configured, and unreachable"
+# Phase two: Alloy on, pointed at an address nothing answers. A deploy that a
+# Grafana outage could fail would be an outage of its own.
+cat >> "$work/app.env" <<EOF
+COMPOSE_PROFILES=observability
+TRACING_ENDPOINT=http://alloy:4318/v1/traces
+SERVER_LABEL=app-1
+GRAFANA_PROMETHEUS_URL=http://grafana.invalid/api/prom/push
+GRAFANA_PROMETHEUS_USER=1
+GRAFANA_LOKI_URL=http://grafana.invalid/loki/api/v1/push
+GRAFANA_LOKI_USER=2
+GRAFANA_OTLP_URL=http://grafana.invalid/otlp
+GRAFANA_OTLP_USER=3
+GRAFANA_CLOUD_TOKEN=not-a-real-token
+EOF
+
 echo "roll.sh, release two"
 install_release two
 expect "roll.sh moves to a good release" "$work/releases/two/roll.sh"
+expect "Alloy runs beside the release, steadily, and a Grafana it cannot reach does not fail the roll" \
+  alloy_is_steady
 expect "and the server is on two" test "$(current_release)" = two
 expect "and every service runs release two" every_image_is_at two
 expect "and only two and the release before it are kept" releases_kept_are "one two"
 expect "and release one's images are kept, for going back" image_is_here "$registry/cs464-auth:one"
 
-echo "the ledger's database password changes, as a deploy would change it"
+echo "roll.sh, release two again, with a Grafana address Alloy cannot parse"
+# release.sh refuses an address like this one, and this one it would accept;
+# it stands for Alloy failing in any way at all. Alloy exits as it starts.
+without_lines '^GRAFANA_PROMETHEUS_URL='
+echo 'GRAFANA_PROMETHEUS_URL=https://[bad' >> "$work/app.env"
+expect "roll.sh still succeeds" roll_records two
+expect "and warns that Alloy is not staying up" roll_said "WARNING: Alloy is not staying up"
+expect "and the server is on two" test "$(current_release)" = two
+expect "and serving" status_becomes 127.0.0.1 /lb-health 200
+
+echo "the ledger's database password changes, and Grafana is switched off, as a deploy would"
 LEDGER_DB_PASSWORD=$(random_secret)
-grep -v '^LEDGER_DATABASE_URL=' "$work/app.env" > "$work/app.env.next"
-echo "LEDGER_DATABASE_URL=postgresql+asyncpg://ledger_svc:$LEDGER_DB_PASSWORD@postgres:5432/cs464" >> "$work/app.env.next"
-mv "$work/app.env.next" "$work/app.env"
+without_lines '^LEDGER_DATABASE_URL=' '^LEDGER_DIRECT_DATABASE_URL=' '^COMPOSE_PROFILES=' \
+  '^TRACING_ENDPOINT=' '^GRAFANA_'
+echo "LEDGER_DATABASE_URL=$(pooled_url ledger "$LEDGER_DB_PASSWORD")" >> "$work/app.env"
+echo "LEDGER_DIRECT_DATABASE_URL=$(direct_url ledger "$LEDGER_DB_PASSWORD")" >> "$work/app.env"
 "$work/releases/two/migrate.sh"
 
 echo "roll.sh, a release that adds a service and never becomes healthy"
@@ -333,7 +589,8 @@ install_release three "$work/compose-three.yml"
 expect "roll.sh refuses it" roll_is_refused three
 expect "and the server is back on two" test "$(current_release)" = two
 expect "and every service runs release two" every_image_is_at two
-expect "and the service only three has is not running" no_container_runs_for extra
+expect "and the service only three has is not running" no_container_for extra
+expect "and Alloy, with Grafana now off, is removed" no_container_for alloy
 expect "and it is serving" status_becomes 127.0.0.1 /lb-health 200
 expect "and its ledger reaches the database with today's password" has_starting_grant
 

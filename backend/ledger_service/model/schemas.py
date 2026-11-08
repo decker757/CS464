@@ -34,7 +34,14 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_serializer
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    model_validator,
+)
 
 from core.clock import as_utc
 from core.pricing import Side
@@ -266,6 +273,18 @@ class TradeFields:
     average_price: Decimal | None = None
 
 
+def _listed_context_of(context: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A stored `context` as a history row shows it: a copy without `after_q`.
+
+    `after_q` is the market's `q`, each outcome's shares outstanding, which
+    the exposure read refuses a trader. The batch snapshot reads it from the
+    table (#643); no history row carries it.
+    """
+    if context is None:
+        return None
+    return {key: value for key, value in context.items() if key != "after_q"}
+
+
 class LedgerEntryOut(BaseModel):
     """One side of one movement, as it was written.
 
@@ -394,7 +413,7 @@ class LedgerEntryOut(BaseModel):
             balance_after=balance_after,
             transaction_id=entry.transaction_id,
             kind=entry.transaction.kind,
-            context=entry.transaction.context,
+            context=_listed_context_of(entry.transaction.context),
             market_id=trade.market_id,
             outcome_id=trade.outcome_id,
             side=trade.side,
@@ -545,9 +564,14 @@ class TradeIn(BaseModel):
     `side` is `core.pricing.Side`: anything else is a 422 here rather than a
     refusal a layer down, and the route passes the enum straight through.
 
-    `state_version` is required, not optional with a default — an optional
-    staleness field would let a client silently opt out of the only
-    staleness protection a trade has.
+    A trade names a price limit for its side: `max_cost` on a buy,
+    `min_proceeds` on a sell. A body with a limit is decided by the limit,
+    and its `state_version` decides nothing. A body with no limit is still
+    decided by `state_version` for now, which it must then send: an optional
+    staleness field would let a client silently opt out of the only price
+    protection a trade has. Once every client sends a limit, a body with no
+    limit will be refused. A limit for the other side is refused rather than
+    ignored, because a client that sent one believes it is protected.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -567,12 +591,43 @@ class TradeIn(BaseModel):
             "wider than the column could never be written as a share count."
         ),
     )
-    state_version: int = Field(
+    max_cost: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=18,
+        decimal_places=4,
         description=(
-            "The `state_version` the preview quoted. Compared, under the "
-            "book's own lock, for strict equality against the market's "
-            "current one; a mismatch either direction is `409 quote_stale`."
-        )
+            "A buy only: the most this trade may cost, in credits. Priced "
+            "under the book's own lock; a cost above it refuses "
+            "the trade and one exactly at it executes. When present it "
+            "decides, and `state_version` decides nothing. Four decimal "
+            "places and 18 digits, as `quantity`. Sent on a sell, it is 422."
+        ),
+    )
+    min_proceeds: Decimal | None = Field(
+        default=None,
+        ge=0,
+        max_digits=18,
+        decimal_places=4,
+        description=(
+            "A sell only: the least this trade may pay, in credits. Priced "
+            "under the book's own lock; proceeds below it refuse the trade "
+            "and proceeds exactly at it execute. `0` is a limit too, one "
+            "that accepts any price. When present it decides, and "
+            "`state_version` decides nothing. Four decimal places and 18 "
+            "digits, as `quantity`. Sent on a buy, it is 422."
+        ),
+    )
+    state_version: int | None = Field(
+        default=None,
+        description=(
+            "The `state_version` the preview quoted. With a limit it "
+            "decides nothing. A body with no limit is still decided by it "
+            "for now: it is then required, and compared under the book's "
+            "own lock for strict equality against the market's current one. "
+            "A mismatch either direction is `409 quote_stale`. Once every "
+            "client sends a limit, a body with no limit will be refused."
+        ),
     )
     idempotency_key: str = Field(
         min_length=1,
@@ -586,6 +641,30 @@ class TradeIn(BaseModel):
             "derivation prefix, 175 left for this value."
         ),
     )
+
+    @model_validator(mode="after")
+    def _a_limit_for_its_side_or_a_quote(self) -> TradeIn:
+        if self.side is Side.SELL and self.max_cost is not None:
+            raise ValueError(
+                "max_cost limits a buy; a sell names its limit as min_proceeds."
+            )
+        if self.side is Side.BUY and self.min_proceeds is not None:
+            raise ValueError(
+                "min_proceeds limits a sell; a buy names its limit as max_cost."
+            )
+        if self.limit is None and self.state_version is None:
+            raise ValueError(
+                "Send a price limit (max_cost on a buy, min_proceeds on a "
+                "sell) or the state_version the preview quoted."
+            )
+        return self
+
+    @property
+    def limit(self) -> Decimal | None:
+        """The limit for this trade's side, or None when it names none."""
+        if self.side is Side.BUY:
+            return self.max_cost
+        return self.min_proceeds
 
 
 class TradeOut(BaseModel):
