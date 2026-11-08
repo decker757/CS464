@@ -546,7 +546,8 @@ DigitalOcean connection pool (PgBouncer), in `infra/terraform/databases.tf`:
 
 The pools hold 38 connections to Postgres, however many servers run. The
 other 9 or so stay free for what connects directly: the three migrate steps
-(one at a time), `ensure-database.sh`, and an operator with `psql`. A request
+(one at a time), `ensure-database.sh`, the production seed's `psql` steps,
+and an operator with `psql`. A request
 that finds its pool busy waits its turn inside the pool, instead of failing
 with "too many connections".
 
@@ -565,17 +566,28 @@ queued at the pooler, and the dashboard showed `ledger on app-1: database`
 DOWN while trades still committed. So the ledger's pool is at least every
 ledger client at full overflow: 24, for 6 + 2 on each of up to three
 servers. A fourth server needs a bigger pool or smaller client pools; keep
-`app_server_count × (pool + overflow) ≤ 24`. The other services hold no lock
-while they wait, so their pools stay smaller than their clients.
+`app_server_count × (pool + overflow) ≤ 24`, which a `validation` on
+`app_server_count` in `infra/terraform/variables.tf` enforces. The other
+services hold no lock while they wait, so their pools stay smaller than
+their clients.
+
+This keeps the queue out of the pooler, not out of the ledger. A trade
+waiting for the book lock still holds one of its process's 8 connections,
+so on one hot market waiting trades could fill all 8 and leave the
+readiness check and other reads queued inside the process. #667's second
+part limits how many trades for one market may hold a connection at once.
 
 **Changing a pool's size replaces the pool.** The DigitalOcean provider
 (2.106.0) has no update for a connection pool, so a new `size` in
 `databases.tf` makes Terraform delete the pool and create it again, and that
 service loses its database until the new one exists. Resize it in the
 DigitalOcean console instead (Databases, the cluster, Connection Pools, the
-pool's Edit), which changes it in place, then run `infra/tf plan`: it should
-show no change to the pool. If the plan still says the pool must be
-replaced, stop and find out why before applying.
+pool's Edit), which changes it in place. Then change `databases.tf` to
+match, merge it to `main`, and run `infra/tf plan` from the main checkout,
+which holds the state: it should show no change to the pool. Until that
+change is on `main`, nobody applies anything from `main`: its old size would
+replace the resized pool. Each pool carries `prevent_destroy`, so a plan that
+would replace one fails instead of running.
 
 **Two addresses per role.** `app.env` carries both, and `release.sh` writes
 them from the GitHub secrets that `infra/push-secrets.sh` sets:
@@ -700,6 +712,8 @@ rebuild from nothing.
   ledger's pool or client pools resized first ("The ledger's pool holds all
   of its clients"). To give the database more work at once, raise a pool's
   `size` in `infra/terraform/databases.tf`, resizing it in the console first.
+  At 38 of about 47, the ledger's pool cannot grow much more without a
+  bigger `database_size`.
   The pools together must leave room for the direct connections. Past about
   40 in all, take a bigger `database_size`.
 - **Bigger servers:** change `app_server_size`, then resize one server at a

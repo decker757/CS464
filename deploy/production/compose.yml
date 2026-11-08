@@ -87,10 +87,11 @@ services:
   # however many servers run (infra/terraform/databases.tf). Per server:
   # auth 3+1, market 3+2, ledger 6+2, audit 1+1 = 19; three servers make 57
   # client connections onto those 38. The ledger's clients on three servers
-  # (3 x 8 = 24) fit its pool of 24, so a trade waiting for a book lock,
-  # which keeps its server connection while it waits, can never leave a
-  # ledger read or the readiness check queued at the pooler (#667).
-  # docs/deployment.md, "Connection budget".
+  # (3 x 8 = 24) fit its pool of 24, so the pooler never queues the ledger
+  # (#667). A trade waiting for a book lock still keeps its connection while
+  # it waits, so on one hot market waiting trades could fill a ledger's own
+  # 8; the ledger limits how many trades per market hold one (#667's second
+  # part). docs/deployment.md, "Connection budget".
   auth:
     <<: *app
     image: ${IMAGE_REGISTRY:?}/cs464-auth:${IMAGE_TAG:?}
