@@ -1,4 +1,4 @@
-# The secrets we generate, generated here so no person types or chooses one.
+# The secrets Terraform generates, so no person types or chooses one.
 # DigitalOcean makes the rest: the database admin password and the Valkey
 # URL (outputs.tf). push-secrets.sh copies them all into the GitHub
 # "production" environment. REGISTRY_TOKEN is the deploy run's own token.
