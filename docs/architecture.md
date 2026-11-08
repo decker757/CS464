@@ -393,15 +393,20 @@ disagree, the code is right.
 
 In production the browser reaches the load balancer, then the gateway on an app
 server, which serves the frontend and sends each subdomain to its service. Each
-service but realtime connects as its own Postgres role, the ledger calls
-auth and market directly and publishes prices to Valkey after every commit, and
-the close sweeper and leaderboard refresher run inside their services. Locally
+service but realtime connects as its own Postgres role, and the ledger
+publishes prices to Valkey after every commit. A trade calls no other service:
+the ledger keeps a local copy of who is suspended and which markets are
+published, refreshed about every second from auth and market with
+`LEDGER_SERVICE_KEY` (ADR 0030). The ledger still calls market on a market's
+first trade and to read and mark a settlement or a void. The close sweeper,
+the leaderboard refresher and the copy's refresh run inside their services. Locally
 compose publishes one port per service, no gateway runs, and the bus is Redis.
 `audit_svc` holds INSERT as well as SELECT only so that its own suite can seed
 rows; the audit service has no write route.
-**Drawn from:** ADR 0003, 0006, 0010, 0011, 0017, 0019, 0021, 0022, 0025, 0026;
-`deploy/production/`, `infra/terraform/load_balancer.tf`, `docker-compose.yml`,
-`sql/`.
+**Drawn from:** ADR 0003, 0006, 0010, 0011, 0017 and 0022 (as amended by
+0030), 0019, 0021, 0025, 0026, 0030; `deploy/production/`,
+`infra/terraform/load_balancer.tf`, `docker-compose.yml`, `sql/`,
+`backend/ledger_service/service/local_copy.py`.
 [Source](diagrams/01-system-architecture.mmd)
 
 ### 2. Production deployment
@@ -468,11 +473,16 @@ does; Mermaid's identifying/non-identifying distinction is not used.
 
 Browsers hold a 15-minute JWT and a single-use, rotating refresh token in
 httpOnly cookies; every service verifies the token itself; the ledger checks
-the trader with auth on each trade and order, and names leaderboard holders
-with the one service key; Postgres grants confine each service to its own
-schema plus INSERT-only access to the append-only audit log.
-**Drawn from:** ADR 0001, 0002, 0006, 0007, 0021, 0022; `sql/`,
-`backend/shared/security.py`, `backend/auth_service/`.
+a trader against its local copy of suspended accounts and forwards no trader's
+token to auth, and the one service key refreshes that copy, the copy of
+published markets and the leaderboard's names, on `/internal/` routes that auth
+and market check and the gateway hides from the internet; Postgres grants
+confine each service to its own schema plus INSERT-only access to the
+append-only audit log.
+**Drawn from:** ADR 0001, 0002, 0006, 0007, 0021, 0022 (as amended by 0030),
+0030; `sql/`, `backend/shared/security.py`, `backend/auth_service/`,
+`backend/ledger_service/service/local_copy.py`,
+`deploy/production/gateway/private-paths.inc`.
 [Source](diagrams/05-security.mmd)
 
 ### 6. A trade, print version
@@ -531,16 +541,19 @@ record.
 ![Horizontal scaling](diagrams/rendered/10-horizontal-scaling.svg)
 
 The two app servers run the same services, so a server can be added or replaced;
-Postgres and Valkey stay at one each. Pool and overflow per service add up to 20
-connections a server, so two servers use 40 of about 47, which leaves room for the
-migrate steps, run one after another. A third server needs smaller pools or a
-bigger plan. The close sweeper runs
+Postgres and Valkey stay at one each. Pool and overflow per service add up to 26
+clients a server, and every server connects through four PgBouncer pools that
+hold 28 of Postgres's 47 or so connections however many servers run, so a third
+server adds clients waiting on the same 28; the migrate steps connect directly,
+one after another, in the room left. The close sweeper runs
 on both servers, safely under SKIP LOCKED, and the leaderboard refresher on the
-first only. A server's ledger calls the auth and market on that same server. The
+first only. Each server's ledger refreshes its local copy from the auth and
+market on that same server, and calls that market for a settlement or a void. The
 same idea was first run locally, two replicas behind one nginx, in
 [horizontal-scaling.md](horizontal-scaling.md).
-**Drawn from:** ADR 0011, 0020, 0021, 0026; `deploy/production/`,
-`infra/terraform/variables.tf`, DECISIONS.md "Each service's connection pool is a
+**Drawn from:** ADR 0011, 0020, 0021, 0026, 0030; `deploy/production/`,
+`infra/terraform/{variables,databases}.tf`, [deployment.md](deployment.md)
+"Connection budget", DECISIONS.md "Each service's connection pool is a
 setting, sized to the database's ceiling".
 [Source](diagrams/10-horizontal-scaling.mmd)
 
