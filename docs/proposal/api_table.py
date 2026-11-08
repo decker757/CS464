@@ -38,8 +38,9 @@ Method, Path, Service
     `app.openapi()["paths"]`. Every operation is matched to its route object
     by `operationId == route.unique_id`. The price socket is not in OpenAPI,
     so WebSocket routes are taken from `app.routes` (method shown as `WS`).
-    Operations tagged `ops` (`GET /health`, one per service) are left out of
-    the rows and named once in the conventions line.
+    Operations tagged `ops` (`GET /health` and `GET /ready`, on every
+    service) are left out of the rows and named once in each table's opening
+    lines, with `/metrics`, which is not in OpenAPI at all.
 
 Reachable code (used by the next three columns)
     Starting from the route's endpoint and every callable in its `dependant`
@@ -51,10 +52,12 @@ Reachable code (used by the next three columns)
     each service's `core/errors.py`), or a module-level table of them, counts
     as a refusal the route can produce, unless it only appears in an
     `except` clause, an `isinstance` check or a type annotation. A class
-    defined under `backend/` that reachable code constructs has all its
-    methods followed, so a method called on an instance is not missed. Every
-    branch counts, so this over-approximates; a call through an object whose
-    class is never constructed in reachable code is not seen.
+    defined under `backend/` that reachable code constructs, or names as a
+    parameter's type, has all its methods followed, so a method called on an
+    instance is not missed. The second covers an object built at startup and
+    handed in, such as auth's login limiter. Every branch counts, so this
+    over-approximates; a call through an object whose class reachable code
+    neither constructs nor names as a parameter's type is not seen.
 
 Auth
     From what the reachable code reads and refuses:
@@ -92,8 +95,9 @@ Main error codes
     status from 400 up shows the error codes its description names in
     backticks, keeping only words that are codes of that service's error
     classes. A status declared in prose without a code shows the walk's codes
-    with that status; when the walk has more than one, the group is marked ‡,
-    since the walk cannot tell which of them the route really returns. A 422
+    with that status; when the walk has more than one, the group shows its
+    status only, marked ‡, since the walk cannot tell which of them the
+    route really returns, and a shorter true list beats a longer one. A 422
     declared with a response `model` is the ledger's request-validation
     envelope and is not filled from the walk.
 
@@ -109,13 +113,17 @@ Main error codes
     The full table's cross-check section lists disagreements between the
     declaration and the walk: codes the walk reaches that the route does not
     declare, and declared codes the walk did not reach. A status declared
-    with no code named is not compared.
+    with no code named is not compared. Because the walk over-approximates,
+    many of these are not responses at all, and its opening says so.
 
 No entry in either table comes from `docs/api/*.md`. Those files are only
 read for the cross-check section: routes with no `METHOD /path` heading
 there, headings that are not a route, and derived codes they never mention.
-The conventions line is prose written in this script (`_conventions`), not
-generated; every claim in it is visible in the services' `controller/`.
+The conventions line and the body table's price-limit sentence are prose
+written in this script (`_conventions`, `PRICE_LIMIT_SENTENCE`), not
+generated; every claim in them is visible in the services' `controller/` and
+`model/schemas.py`, and the script stops if a field the sentence names is
+gone from its route's request body.
 """
 
 from __future__ import annotations
@@ -209,16 +217,37 @@ WALK_ONLY_FOOTNOTE = (
 )
 AMBIGUOUS_FOOTNOTE = (
     "‡ The route declares this status in prose without naming a code, and "
-    "the code it can reach holds more than one error with that status. All "
-    "are listed; the walk counts every branch, so some may never come back "
-    "from this route."
+    "the code it can reach holds more than one error with that status. The "
+    "walk counts every branch, so it cannot tell which of them this route "
+    "really returns, and none is listed. The route's description in `/docs` "
+    "says when it happens."
 )
 CROSS_CHECK_INTRO = (
-    "Generated alongside the table. For each route: error codes the code can "
-    "reach that its `responses=` does not declare, codes it declares that the "
-    "walk did not reach, and anything `docs/api/` does not mention. Nothing "
-    "here changes the table above."
+    "**These are not responses a client should expect.** They are notes for "
+    "whoever next edits a route's `responses=` or `docs/api/`, and are not "
+    "for the proposal. The walk follows every branch of every function a "
+    "route can call, shared ones included, so a code here may be impossible "
+    "from this route. `GET /ledger/balances/me` calls the posting function "
+    "only to mint the signup grant, for example, so it lists that function's "
+    "refusals, such as `insufficient_funds`, which the grant can never meet. "
+    "For each route: codes the walk reaches that its `responses=` does not "
+    "declare, codes it declares that the walk did not reach, and anything "
+    "`docs/api/` does not mention. Nothing here changes the tables."
 )
+
+# The body table's one sentence on the price limit a trade and an order name
+# (ADR 0029). Prose, so `_body_document` checks each field it names against
+# that route's request body and stops if one has gone.
+PRICE_LIMIT_SENTENCE = (
+    "A trade names a price limit, `max_cost` on a buy or `min_proceeds` on a "
+    "sell, and a price past it is `409 price_beyond_limit` with nothing "
+    "written; `quote_stale` is left for an older client that sends a "
+    "`state_version` instead. An order names its own `limit_price`."
+)
+PRICE_LIMIT_FIELDS = {
+    ("POST", "/ledger/markets/{market_id}/trades"): ["max_cost", "min_proceeds", "state_version"],
+    ("POST", "/ledger/markets/{market_id}/orders"): ["limit_price"],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -391,12 +420,17 @@ def _walk_reachable(seeds: list) -> dict:
             if inspect.isfunction(function):
                 pending.append(function)
 
-        # A backend class the code constructs: its methods may be called on
-        # the instance, which the name lookup above cannot see.
+        # A backend class the code constructs, or takes as a parameter's type
+        # (an object built elsewhere, such as at startup, and handed in): its
+        # methods may be called on the instance, which the name lookup above
+        # cannot see.
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
+            if isinstance(node, ast.Call):
+                target = _resolve(node.func, namespace)
+            elif isinstance(node, ast.arg) and node.annotation is not None:
+                target = _resolve(node.annotation, namespace)
+            else:
                 continue
-            target = _resolve(node.func, namespace)
             if inspect.isclass(target) and _is_backend_object(target) and not _is_error_class(target):
                 if target not in expanded_classes:
                     expanded_classes.add(target)
@@ -722,72 +756,86 @@ def _ambiguous_statuses(row: dict, error_codes: dict) -> set[str]:
     return ambiguous
 
 
-def _errors_label(row: dict, error_codes: dict, *, list_ambiguous: bool) -> str:
-    """The error column; `list_ambiguous=False` shows a ‡ group as its status only."""
+def _error_groups(row: dict, error_codes: dict) -> list[tuple[str, list[str], bool]]:
+    """The error column as (status label, codes, is ‡) groups, in status order.
+
+    A ‡ status comes with no codes: the walk cannot tell which of its codes
+    the route really returns, and a shorter list that is true beats a longer
+    one that may not be.
+    """
     shown = _shown_codes(row, error_codes)
-    if not shown:
-        return "—"
     ambiguous = _ambiguous_statuses(row, error_codes)
-    parts = []
+    groups = []
     for status in sorted(shown, key=_status_order):
-        prefix = "error frame" if status == "frame" else status
-        if status in ambiguous and not list_ambiguous:
-            parts.append(f"{prefix} ‡")
-            continue
-        codes = ", ".join(f"`{code}`" for code in sorted(shown[status]))
-        marker = " ‡" if status in ambiguous else ""
-        parts.append(f"{prefix} {codes}{marker}")
-    label = "; ".join(parts)
-    if not row["declared_responses"]:
-        label += " †"
-    return label
+        label = "error frame" if status == "frame" else status
+        if status in ambiguous:
+            groups.append((label, [], True))
+        else:
+            groups.append((label, sorted(shown[status]), False))
+    return groups
+
+
+def _group_text(label: str, codes: list[str]) -> str:
+    """`409 `a`, `b``, or the bare status when there are no codes."""
+    if not codes:
+        return label
+    return f"{label} " + ", ".join(f"`{code}`" for code in codes)
+
+
+def _full_errors(groups: list[tuple[str, list[str], bool]]) -> str:
+    """`404 `x`; 409 ‡`, for the full table."""
+    parts = []
+    for label, codes, is_ambiguous in groups:
+        if is_ambiguous:
+            parts.append(f"{label} ‡")
+        else:
+            parts.append(_group_text(label, codes))
+    return "; ".join(parts) or "—"
 
 
 # --- Tables -------------------------------------------------------------------
 
 
-def _statuses_only(errors: str) -> str:
-    """`404 `x`; 409 `a`, `b`` becomes `404, 409`, for the one-page appendix."""
-    statuses = re.findall(r"(?:^|; )(\d{3,4}|error frame)", errors)
-    return ", ".join(statuses) or "—"
+def _statuses_only(groups: list[tuple[str, list[str], bool]]) -> str:
+    """`404, 409`, for the one-page appendix."""
+    return ", ".join(label for label, _codes, _is_ambiguous in groups) or "—"
 
 
-def _first_codes(errors: str) -> str:
+def _first_codes(groups: list[tuple[str, list[str], bool]]) -> str:
     """Every status, with its codes while BODY_ERRORS_LIMIT lasts, for the body."""
-    cleaned = re.sub(r" [†‡]", "", errors)
     shown = []
     used = 0
-    for section in cleaned.split("; "):
+    for label, codes, _is_ambiguous in groups:
+        section = _group_text(label, codes)
         if used + len(section) <= BODY_ERRORS_LIMIT:
             shown.append(section)
             used += len(section)
         else:
-            status = section.partition(" `")[0]
-            shown.append(f"{status} …")
-    return "; ".join(shown)
+            shown.append(f"{label} …")
+    return "; ".join(shown) or "—"
 
 
 def _table_lines(
     rows: list[dict],
     error_codes_by_service: dict,
     *,
-    list_ambiguous: bool,
-    shorten_errors: Callable[[str], str] | None = None,
+    render_errors: Callable[[list[tuple[str, list[str], bool]]], str],
+    with_footnotes: bool,
 ) -> list[str]:
     lines = [
         "| Service | Method | Path | Auth | Idempotent | Main error codes |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows:
-        error_codes = error_codes_by_service[row["service"]]
-        errors = _errors_label(row, error_codes, list_ambiguous=list_ambiguous)
-        if shorten_errors is not None:
-            errors = shorten_errors(errors)
+        groups = _error_groups(row, error_codes_by_service[row["service"]])
+        errors = render_errors(groups)
+        if with_footnotes and groups and not row["declared_responses"]:
+            errors += " †"
         lines.append(
             f"| {row['service']} | {row['method']} | `{row['path']}` | "
             f"{_auth_label(row)} | {_idempotency_label(row)} | {errors} |"
         )
-    if shorten_errors is not None:
+    if not with_footnotes:
         return lines
     footnotes = []
     if any(not row["declared_responses"] for row in rows):
@@ -799,20 +847,40 @@ def _table_lines(
     return lines
 
 
+def _ops_routes(all_rows: list[dict]) -> str:
+    """The `ops` routes, which the tables leave out, as "`GET /health`, `GET /ready`".
+
+    Stops if one of them is missing from a service, because the sentences
+    that use this say every service serves it.
+    """
+    services_by_route: dict[str, set[str]] = {}
+    for row in all_rows:
+        if "ops" in row["tags"]:
+            route = f"`{row['method']} {row['path']}`"
+            services_by_route.setdefault(route, set()).add(row["service"])
+    for route, services in services_by_route.items():
+        if services != set(SERVICES):
+            raise SystemExit(f"{route} is served by {sorted(services)} only; reword the ops sentences")
+    return ", ".join(sorted(services_by_route))
+
+
+def _short_ops_sentence(all_rows: list[dict]) -> str:
+    return f"{_ops_routes(all_rows)} and `/metrics`, on every service, are left out."
+
+
 def _conventions(all_rows: list[dict], services_wrapping_422: list[str]) -> str:
     """The one paragraph of rules every route shares. Prose, with two derived parts.
 
-    Which services serve `GET /health`, and which register their own handler
-    for FastAPI's `RequestValidationError`, come from the apps.
+    Which `ops` routes every service serves, and which services register
+    their own handler for FastAPI's `RequestValidationError`, come from the
+    apps.
     """
-    health_services = []
-    for service in SERVICES:
-        if any(row["service"] == service and "ops" in row["tags"] for row in all_rows):
-            health_services.append(service)
-    if len(health_services) == len(SERVICES):
-        health = "Every service also serves an unauthenticated `GET /health`."
-    else:
-        health = f"An unauthenticated `GET /health` is on {', '.join(health_services)}."
+    health = (
+        f"Every service also serves an unauthenticated {_ops_routes(all_rows)} "
+        "and `/metrics`, which these tables leave out. From the internet, the "
+        "production gateway answers 404 for `/ready`, `/metrics` and every "
+        "`/internal/` path."
+    )
 
     validation = ""
     if services_wrapping_422:
@@ -975,48 +1043,62 @@ def _full_document(rows: list[dict], conventions: str, error_codes_by_service: d
         conventions,
         "",
     ]
-    lines.extend(_table_lines(rows, error_codes_by_service, list_ambiguous=True))
+    lines.extend(
+        _table_lines(
+            rows, error_codes_by_service, render_errors=_full_errors, with_footnotes=True
+        )
+    )
     lines.extend(["", "## Cross-check", "", CROSS_CHECK_INTRO, ""])
     lines.extend(_cross_check_lines(rows, error_codes_by_service) or ["- Nothing disagrees."])
     lines.append("")
     return "\n".join(lines)
 
 
-def _appendix_document(rows: list[dict], error_codes_by_service: dict) -> str:
+def _appendix_document(rows: list[dict], error_codes_by_service: dict, ops_sentence: str) -> str:
     lines = [
         GENERATED_NOTICE,
         "",
         f"All {len(rows)} endpoints, with the error statuses each can answer. "
-        f"{SHORT_CONVENTIONS}",
+        f"{SHORT_CONVENTIONS} {ops_sentence}",
         "",
     ]
     lines.extend(
         _table_lines(
-            rows, error_codes_by_service, list_ambiguous=False, shorten_errors=_statuses_only
+            rows, error_codes_by_service, render_errors=_statuses_only, with_footnotes=False
         )
     )
     lines.append("")
     return "\n".join(lines)
 
 
-def _body_document(rows: list[dict], error_codes_by_service: dict) -> str:
+def _refuse_if_price_limit_fields_gone(rows_by_key: dict) -> None:
+    """Stop if a field PRICE_LIMIT_SENTENCE names is gone from its route's body."""
+    for key, fields in PRICE_LIMIT_FIELDS.items():
+        missing = [field for field in fields if field not in rows_by_key[key]["body_fields"]]
+        if missing:
+            raise SystemExit(f"{key} no longer takes {missing}; reword PRICE_LIMIT_SENTENCE")
+
+
+def _body_document(rows: list[dict], error_codes_by_service: dict, ops_sentence: str) -> str:
     rows_by_key = {(row["method"], row["path"]): row for row in rows}
     chosen = []
     for key in BODY_ROUTES:
         if key not in rows_by_key:
             raise SystemExit(f"BODY_ROUTES names {key}, which no service serves")
         chosen.append(rows_by_key[key])
+    _refuse_if_price_limit_fields_gone(rows_by_key)
 
     lines = [
         GENERATED_NOTICE,
         "",
         f"{len(chosen)} of the {len(rows)} endpoints, following a market from "
-        f"creation to payout; all of them are in the appendix. {SHORT_CONVENTIONS}",
+        f"creation to payout; all of them are in the appendix. {SHORT_CONVENTIONS} "
+        f"{ops_sentence} {PRICE_LIMIT_SENTENCE}",
         "",
     ]
     lines.extend(
         _table_lines(
-            chosen, error_codes_by_service, list_ambiguous=False, shorten_errors=_first_codes
+            chosen, error_codes_by_service, render_errors=_first_codes, with_footnotes=False
         )
     )
     lines.append("")
@@ -1049,15 +1131,16 @@ def main() -> None:
             services_wrapping_422.append(service)
     rows = [row for row in all_rows if "ops" not in row["tags"]]
     conventions = _conventions(all_rows, services_wrapping_422)
+    ops_sentence = _short_ops_sentence(all_rows)
 
     FULL_TABLE_PATH.write_text(
         _full_document(rows, conventions, error_codes_by_service), encoding="utf-8"
     )
     BODY_TABLE_PATH.write_text(
-        _body_document(rows, error_codes_by_service), encoding="utf-8"
+        _body_document(rows, error_codes_by_service, ops_sentence), encoding="utf-8"
     )
     APPENDIX_TABLE_PATH.write_text(
-        _appendix_document(rows, error_codes_by_service), encoding="utf-8"
+        _appendix_document(rows, error_codes_by_service, ops_sentence), encoding="utf-8"
     )
     print(f"{FULL_TABLE_PATH.name}: {len(rows)} rows")
     print(f"{BODY_TABLE_PATH.name}: {len(BODY_ROUTES)} rows")
