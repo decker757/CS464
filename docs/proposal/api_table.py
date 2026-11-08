@@ -127,7 +127,9 @@ The conventions line and the body table's price-limit sentence are prose
 written in this script (`_conventions`, `PRICE_LIMIT_SENTENCE`), not
 generated; every claim in them is visible in the services' `controller/` and
 `model/schemas.py`, and the script stops if a field the sentence names is
-gone from its route's request body.
+gone from its route's request body. So is the body table's sentence on a
+status shown with no code (`BARE_STATUS_SENTENCE`), which restates the ‡
+rule above and appears only when one of the body's rows has such a status.
 """
 
 from __future__ import annotations
@@ -238,6 +240,15 @@ CROSS_CHECK_INTRO = (
     "For each route: codes the walk reaches that its `responses=` does not "
     "declare, codes it declares that the walk did not reach, and anything "
     "`docs/api/` does not mention. Nothing here changes the tables."
+)
+
+# The body table's note on a status shown with no code, which is always a ‡
+# status (AMBIGUOUS_FOOTNOTE), added when one of its rows has one.
+BARE_STATUS_SENTENCE = (
+    "A status with no code beside it, such as a bare `409`, is one the route "
+    "declares in prose without naming a code, where more than one error with "
+    "that status is reachable; none is listed, and the route's description in "
+    "`/docs` says when it happens."
 )
 
 # The body table's one sentence on the price limit a trade and an order name
@@ -1101,12 +1112,18 @@ def _body_document(rows: list[dict], error_codes_by_service: dict, ops_sentence:
         chosen.append(rows_by_key[key])
     _refuse_if_price_limit_fields_gone(rows_by_key)
 
+    bare_status = ""
+    for row in chosen:
+        if _ambiguous_statuses(row, error_codes_by_service[row["service"]]):
+            bare_status = f" {BARE_STATUS_SENTENCE}"
+            break
+
     lines = [
         GENERATED_NOTICE,
         "",
         f"{len(chosen)} of the {len(rows)} endpoints, following a market from "
-        f"creation to payout; all of them are in the appendix. {SHORT_CONVENTIONS} "
-        f"{ops_sentence} {PRICE_LIMIT_SENTENCE}",
+        f"creation to payout; all of them are in the appendix. {SHORT_CONVENTIONS}"
+        f"{bare_status} {ops_sentence} {PRICE_LIMIT_SENTENCE}",
         "",
     ]
     lines.extend(
