@@ -36,7 +36,7 @@ docs/deployment.md      production: first-time setup, deploys, rollback,
 docs/architecture.md    three mermaid diagrams — the services and their
                         schemas, a trade across three services, the ERDs —
                         each naming the ADR it was drawn from, then the
-                        diagram set below, embedded with captions
+                        diagram set, embedded with captions
 docs/diagrams/          the diagram set for the final proposal #590: twelve
                         .mmd sources, rendered/ SVG and PNG made by render.py,
                         and _conventions.md, the rules every one follows

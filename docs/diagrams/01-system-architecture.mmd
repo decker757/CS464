@@ -11,8 +11,11 @@
 %%   backend/ledger_service/service/leaderboard_refresher.py
 %% A trade calls nobody (ADR 0030): the copy job refreshes who is suspended and
 %% which markets are published about every second, and the trade reads it in
-%% memory. GET /public/markets/{id} is a book's first touch (books.ensure_open)
-%% and the read before settle and void (market_status.read_terms).
+%% memory. A market missing from the copy, published under a second ago, makes
+%% the trade fetch /internal/markets/published itself (local_copy.ensure_trading).
+%% GET /public/markets/{id} is a book's first touch, by a trade, an order, a
+%% preview or a snapshot (books.ensure_open, book_prices.read_or_open), and the
+%% read before settle and void (market_status.read_terms).
 %% Production: the load balancer, then the gateway on each server (02). Locally,
 %% compose publishes one port per service, 8000 to 8004, and no gateway runs; the
 %% scale stack puts one nginx in front (docs/horizontal-scaling.md). The bus is Valkey in
@@ -49,7 +52,7 @@ flowchart TB
     copy -->|"GET /internal/<br/>users/suspended<br/>X-Service-Key"| auth
     refresher -->|"POST /internal/<br/>users/lookup<br/>X-Service-Key"| auth
     copy -->|"GET /internal/<br/>markets/published<br/>X-Service-Key"| market
-    ledger -->|"GET /public/<br/>markets/{id}: first<br/>trade, settle, void;<br/>POST settle, void"| market
+    ledger -->|"GET /public/<br/>markets/{id}: first<br/>touch, settle, void;<br/>POST settle, void"| market
 
     pg[("Postgres 17: a schema and role per service,<br/>no cross grants; writers INSERT the audit log")]:::pg
     redis[("Valkey pub/sub<br/>market.price, order.update")]:::redis
