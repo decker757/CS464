@@ -71,4 +71,13 @@ resource "digitalocean_database_connection_pool" "service" {
   size       = each.value
   db_name    = digitalocean_database_db.cs464.name
   user       = "${each.key}_svc"
+
+  # The provider has no update for a pool, so any change here (a new size
+  # above all) would delete the pool and create it again, and its service
+  # would lose the database meanwhile. Resize in the DigitalOcean console
+  # first; then the plan shows no change. If a plan wants to replace a pool,
+  # this stops it. docs/deployment.md, "Changing a pool's size replaces the pool".
+  lifecycle {
+    prevent_destroy = true
+  }
 }
