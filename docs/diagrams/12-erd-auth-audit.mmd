@@ -44,7 +44,7 @@ erDiagram
         timestamptz created_at
     }
 
-    audit_admin_actions["audit.admin_actions (append‑only; writers INSERT, only audit_svc SELECTs)"] {
+    audit_admin_actions["audit.admin_actions (append‑only; only audit_svc SELECTs)"] {
         uuid id PK "generated by the writer"
         timestamptz occurred_at "writer's clock; now() only as fallback"
         uuid actor_id "token sub; no FK"

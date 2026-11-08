@@ -466,7 +466,9 @@ marked "→ auth.users" are ids that name a row in another table without a
 foreign key: across schemas because no service holds a grant on another's,
 and for `proposed_outcome_id` by choice. On solid lines the crow's-foot ends
 show what the constraints enforce, on dotted lines what the writing code
-does; Mermaid's identifying/non-identifying distinction is not used.
+does; Mermaid's identifying/non-identifying distinction is not used. In
+print it needs a landscape page: its text is about 5.3 pt at the portrait text
+width and 7.4 pt at 22.3 cm wide, where it still fits the page's height.
 **Drawn from:** `backend/*/model/entities.py`, each service's
 `migrations/versions/`, `sql/02-schemas.sql`, ADR 0003.
 [Source](diagrams/04-erd-overview.mmd)
@@ -528,7 +530,9 @@ label, and [load-test.md](load-test.md)'s results. [Source](diagrams/07-gantt.mm
 The creator drafts, submits and publishes; the clock or an administrator
 closes trading; a second administrator approves or rejects the creator's
 proposed outcome; and the ledger settles or voids the market after moving the
-money. Trading stops at `close_time` whatever the status column says.
+money. Trading stops at `close_time` whatever the status column says. In
+print it needs a landscape page: its text is about 5.3 pt at the portrait text
+width and 8.2 pt across a landscape page's 24.6 cm.
 **Drawn from:** `MarketStatus` in `backend/market_service/model/entities.py`,
 `service/market_service.py`; ADR 0008, 0011, 0013, 0014, 0016, 0023, 0025.
 [Source](diagrams/08-market-lifecycle.mmd)
