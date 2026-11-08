@@ -193,11 +193,12 @@ one-second sleep.
   arithmetic.
 - **Behind the pooler, the lock queue holds the ledger's connections.** During
   the one-market run, `ledger on app-1: database` showed DOWN on the dashboard:
-  the ledger's pool has 14 server connections for both servers, every
+  the ledger's pool then had 14 server connections for both servers, every
   transaction queued on the book lock keeps one, and the readiness check's
   `SELECT 1` waited behind them. The five-market run never did this. The
   ledger's pool should be sized above its client pools' total (two servers at
-  10 + 5 each), inside the connection budget in `docs/deployment.md`.
+  10 + 5 each), inside the connection budget in `docs/deployment.md`. #667
+  does: 24, with 6 + 2 on each of up to three servers.
 - **Next measurements:** the one, two and three server runs (#668), which
   say how far the five-market figure moves with CPU. What each fix changed
   is under "Capacity and its limits", below.
@@ -301,23 +302,27 @@ why the next step does too.
   not measured on its own. Bigger servers are the lever not pulled;
   `docs/deployment.md`, "What it costs", has the prices.
 - **One primary database.** One managed Postgres node (1 vCPU, 2 GB, no
-  standby), with about 47 connections, of which the pools use 28. Every
+  standby), with about 47 connections, of which the pools use 38. Every
   trade, lock and balance is there, so adding app servers adds no database.
   It ran at 45% CPU on 4 November. On 7 November it was not recorded. The
   lever is a bigger plan: the app servers scale out and the database scales
   up ([ADR 0026](adr/0026-production-on-digitalocean.md)). The audit log
   needs every service on that one database
   ([ADR 0006](adr/0006-audit-log-write-path.md)).
-- **The ledger's pool is smaller than its clients (#667).** The ledger's
-  pool has 14 server connections for both servers, and each ledger process
-  has 10 + 5 client connections, 30 in all. A trade waiting for the book lock
-  keeps its server connection while it waits, so on one busy market the 14
-  fill with waiting trades and every other ledger read waits behind them.
+- **Waiting trades hold the ledger's connections (#667).** On 7 November the
+  ledger's pool had 14 server connections for both servers, and each ledger
+  process had 10 + 5 client connections, 30 in all. A trade waiting for the
+  book lock keeps its server connection while it waits, so on one busy market
+  the 14 filled with waiting trades and every other ledger read waited behind
+  them.
   During the one-market run, app-1's readiness check, a `SELECT 1`, timed out
   and the dashboard showed `ledger on app-1: database` DOWN while trades
-  still committed. The five-market run never did. #667's fix is to make the
-  two agree, for example a pool of 24 with 8 + 4 per server, inside the
-  budget in `docs/deployment.md`. It is not done yet.
+  still committed. The five-market run never did. #667 makes the pool hold
+  its clients (24, and 6 + 2 per server), so the pooler never queues the
+  ledger (`docs/deployment.md`, "Connection budget"). That alone moves the
+  queue into each ledger process, whose 8 connections waiting trades could
+  still fill, so #667's second part limits how many trades for one market
+  hold a connection at once. Both go live before #668's runs.
 
 ### Reads that grow without bound
 
@@ -368,7 +373,8 @@ was CPU starvation.
 ### What comes next, in order
 
 Two things first, which change no design: #667's pool sizes (one number in
-Terraform and two in the production compose file) and #668's runs.
+Terraform and two in the production compose file, live before the runs) and
+#668's runs.
 
 1. **A single-statement write path.** Everything a trade writes, as one
    data-modifying statement after the account locks, so the locked section

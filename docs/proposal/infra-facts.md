@@ -52,8 +52,8 @@ DigitalOcean's list prices when `docs/deployment.md` was written. That page says
 | Load balancer | health check | `/lb-health` on port 80, every 3 s, 3 failures or 2 successes. The gateway answers it with the ledger's `/health` | `infra/terraform/load_balancer.tf:49-57`; `deploy/production/gateway/default.conf.template:54-68` |
 | Load balancer | idle timeout | 600 s | `infra/terraform/load_balancer.tf:59-61` |
 | Connections | ceiling on the 2 GB plan | about 47 (25 a GB, less 3 DigitalOcean keeps); DigitalOcean's figure, which the repository cannot check | `docs/deployment.md:531-533`; ADR 0026:86-88 |
-| Connections | to Postgres | Four PgBouncer pools in transaction mode, one per service role: auth 6, market 6, ledger 14, audit 2 = 28, however many servers run | `infra/terraform/databases.tf:47-70`; `docs/deployment.md:537-550` |
-| Connections | to the pools, per server | auth 3+1, market 3+2, ledger 10+5, audit 1+1 = 26 client connections (pool + overflow) | `deploy/production/compose.yml:84-90,97-98,113-114,126-127,141-142` |
+| Connections | to Postgres | Four PgBouncer pools in transaction mode, one per service role: auth 6, market 6, ledger 24, audit 2 = 38, however many servers run. The ledger's 24 holds three servers' ledger clients, so the pooler never queues the ledger (#667) | `infra/terraform/databases.tf:63-88`; `docs/deployment.md:538-558` |
+| Connections | to the pools, per server | auth 3+1, market 3+2, ledger 6+2, audit 1+1 = 19 client connections (pool + overflow) | `deploy/production/compose.yml:101-102,117-118,130-131,145-146` |
 | Connections | left over | about 19, for what connects to Postgres directly: the three migrate steps, one at a time, `ensure-database.sh` and an operator | `docs/deployment.md:548-550`; `infra/terraform/outputs.tf:15-21`; `deploy/production/compose.yml:32-38,66-82` |
 
 ## Backups
@@ -65,7 +65,7 @@ DigitalOcean's list prices when `docs/deployment.md` was written. That page says
 | There is no standby node | `infra/terraform/databases.tf:10`; ADR 0026:108-110 |
 | The repository records no restore having been tried | a search of `docs/deployment.md` and ADR 0026 for "restore" finds nothing |
 | The app servers hold no data, so they have nothing to back up | `infra/terraform/servers.tf:1-2`; `deploy/production/compose.yml:1-4` |
-| Valkey holds nothing that needs a backup: the price bus keeps no messages, and auth's login-attempt counters are disposable, since losing them only turns the limit off for a while (it fails open). Terraform's comment still calls Valkey the bus only | `infra/terraform/databases.tf:27-28`; `deploy/production/compose.yml:100-101`; ADR 0027, Consequences |
+| Valkey holds nothing that needs a backup: the price bus keeps no messages, and auth's login-attempt counters are disposable, since losing them only turns the limit off for a while (it fails open) | `infra/terraform/databases.tf:27-33`; `deploy/production/compose.yml:100-101`; ADR 0027, Consequences |
 | `infra/tf destroy` deletes the database too | `docs/deployment.md:705-706` |
 | `terraform.tfstate` holds every generated secret. It is on the machine that ran `apply`, gitignored, and not backed up by anything in the repository | `infra/terraform/versions.tf:4-6`; `docs/deployment.md:82-83` |
 

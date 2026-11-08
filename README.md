@@ -431,12 +431,15 @@ Measured or decided, with the record that says so.
   cost of serialising money through Postgres. The step past it, a single
   writer per market, is the proposed engine,
   [ADR 0031](docs/adr/0031-a-per-market-trading-engine.md).
-- **Behind the pooler, a hot market's lock queue holds the ledger's
-  connections.** During the one-market run, one server's readiness check
-  reported its database down while trades still committed: the ledger's
-  pool (14 connections) is smaller than its two servers' client pools
-  together (30). The fix is one number in Terraform, inside the connection
-  budget in [`docs/deployment.md`](docs/deployment.md).
+- **A hot market's lock queue holds the ledger's connections (#667).**
+  During the one-market run, one server's readiness check reported its
+  database down while trades still committed: trades waiting for the book
+  lock held the ledger's 14 pooled connections. The pool now holds every
+  ledger client (24, for 6 + 2 on up to three servers;
+  [`docs/deployment.md`](docs/deployment.md), "Connection budget"), so the
+  pooler never queues the ledger. Inside each ledger, waiting trades can
+  still fill its 8 connections until #667's second part, a limit on how many
+  trades for one market hold a connection, lands.
 - **A price is published after the trade commits, and a crash between the
   two loses that frame** ([ADR 0010](docs/adr/0010-realtime-price-broadcast.md)).
   A client that reconnects fetches a snapshot, which is the recovery path it

@@ -541,20 +541,53 @@ DigitalOcean connection pool (PgBouncer), in `infra/terraform/databases.tf`:
 | --- | --- | --- | --- |
 | `cs464-auth` | `auth_svc` | transaction | 6 |
 | `cs464-market` | `market_svc` | transaction | 6 |
-| `cs464-ledger` | `ledger_svc` | transaction | 14 |
+| `cs464-ledger` | `ledger_svc` | transaction | 24 |
 | `cs464-audit` | `audit_svc` | transaction | 2 |
 
-The pools hold 28 connections to Postgres, however many servers run. The
-other 19 or so stay free for what connects directly: the three migrate steps
-(one at a time), `ensure-database.sh`, and an operator with `psql`. A request
+The pools hold 38 connections to Postgres, however many servers run. The
+other 9 or so stay free for what connects directly: the three migrate steps
+(one at a time), `ensure-database.sh`, the production seed's `psql` steps,
+and an operator with `psql`. A request
 that finds its pool busy waits its turn inside the pool, instead of failing
 with "too many connections".
 
 The services' own SQLAlchemy pools (`DATABASE_POOL_SIZE` and
 `DATABASE_MAX_OVERFLOW` in `deploy/production/compose.yml`) now count
 connections to the pooler, which are cheap: each pool takes up to 5,000. Per
-server: auth 3+1, market 3+2, ledger 10+5, audit 1+1, so 26. Three servers
-make 78, all sharing the same 28.
+server: auth 3+1, market 3+2, ledger 6+2, audit 1+1, so 19. Three servers
+make 57, all sharing the same 38.
+
+**The ledger's pool holds all of its clients (#667).** A trade waiting for a
+market's book lock keeps its server connection while it waits. Until #667
+the ledger's pool had 14 server connections and each ledger had 10 + 5
+clients, so on the 7 November one-market run the 14 filled with waiting
+trades: every other ledger read, and the readiness check's `SELECT 1`, then
+queued at the pooler, and the dashboard showed `ledger on app-1: database`
+DOWN while trades still committed. So the ledger's pool is at least every
+ledger client at full overflow: 24, for 6 + 2 on each of up to three
+servers. A fourth server needs a bigger pool or smaller client pools; keep
+`app_server_count × (pool + overflow) ≤ 24`, which a `validation` on
+`app_server_count` in `infra/terraform/variables.tf` enforces. The other
+services hold no lock while they wait, so their pools stay smaller than
+their clients.
+
+This keeps the queue out of the pooler, not out of the ledger. A trade
+waiting for the book lock still holds one of its process's 8 connections,
+so on one hot market waiting trades could fill all 8 and leave the
+readiness check and other reads queued inside the process. #667's second
+part limits how many trades for one market may hold a connection at once.
+
+**Changing a pool's size replaces the pool.** The DigitalOcean provider
+(2.106.0) has no update for a connection pool, so a new `size` in
+`databases.tf` makes Terraform delete the pool and create it again, and that
+service loses its database until the new one exists. Resize it in the
+DigitalOcean console instead (Databases, the cluster, Connection Pools, the
+pool's Edit), which changes it in place. Then change `databases.tf` to
+match, merge it to `main`, and run `infra/tf plan` from the main checkout,
+which holds the state: it should show no change to the pool. Until that
+change is on `main`, nobody applies anything from `main`: its old size would
+replace the resized pool. Each pool carries `prevent_destroy`, so a plan that
+would replace one fails instead of running.
 
 **Two addresses per role.** `app.env` carries both, and `release.sh` writes
 them from the GitHub secrets that `infra/push-secrets.sh` sets:
@@ -673,10 +706,14 @@ rebuild from nothing.
   `infra/terraform/variables.tf`, `infra/tf apply`, `infra/push-secrets.sh`,
   then deploy. The load balancer picks the new server up by its tag.
 - **Postgres's connections no longer limit the number of servers.** Every
-  server shares the four connection pools, which hold 28 of the 2 GB plan's
+  server shares the four connection pools, which hold 38 of the 2 GB plan's
   47 or so, however many servers run ("Connection budget" above). What a
-  third server adds is clients waiting on the same 28. To give the database
-  more work at once, raise a pool's `size` in `infra/terraform/databases.tf`.
+  third server adds is clients waiting on the same 38. A fourth needs the
+  ledger's pool or client pools resized first ("The ledger's pool holds all
+  of its clients"). To give the database more work at once, raise a pool's
+  `size` in `infra/terraform/databases.tf`, resizing it in the console first.
+  At 38 of about 47, the ledger's pool cannot grow much more without a
+  bigger `database_size`.
   The pools together must leave room for the direct connections. Past about
   40 in all, take a bigger `database_size`.
 - **Bigger servers:** change `app_server_size`, then resize one server at a
@@ -703,7 +740,9 @@ Grafana Cloud's free tier allows 10,000 active series, 50 GB of logs and
 (the series budget above). Alloy itself used 51–169 MB of memory per server,
 minutes after its first deploy. Images on GHCR are free for a public
 repository. To stop paying, run `infra/tf destroy`. That deletes the database too, so take a backup first if
-anything in it matters.
+anything in it matters. Remove the `lifecycle { prevent_destroy = true }` block
+from the pools in `infra/terraform/databases.tf` first, or `destroy` refuses
+to start ("Changing a pool's size replaces the pool" above).
 
 ## Tests
 
