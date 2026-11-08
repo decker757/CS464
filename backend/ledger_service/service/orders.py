@@ -62,7 +62,7 @@ from model.entities import (
     Transaction,
     TransactionKind,
 )
-from model.schemas import PriceEvent
+from model.schemas import OrderEvent, PriceEvent
 from service import (
     accounts,
     book_prices,
@@ -82,6 +82,7 @@ from service.trading import (
     fill_key,
     list_open_orders,
     log_refused_fill,
+    order_events_of,
     price_event_of,
     publish_order_updates,
     read_trade_context,
@@ -155,7 +156,7 @@ class _FillFrames:
     price: PriceEvent
     # The placed order's own fill, the id a failed price publish is logged with.
     transaction_id: uuid.UUID
-    filled: list[tuple[Order, Transaction]]
+    orders: list[OrderEvent]
 
 
 def _fill_of(transaction: Transaction) -> Fill:
@@ -426,7 +427,9 @@ async def _commit_fill(
         book_state_version=order.book_state_version,
     )
     frames = _FillFrames(
-        price=event, transaction_id=transactions[0].id, filled=filled
+        price=event,
+        transaction_id=transactions[0].id,
+        orders=order_events_of(filled, now=now),
     )
     return placement, frames
 
@@ -645,7 +648,7 @@ async def place(
         )
 
     await bus.publish(redis_client, frames.price, transaction_id=frames.transaction_id)
-    await publish_order_updates(redis_client, frames.filled, now=now)
+    await publish_order_updates(redis_client, frames.orders)
     return placement
 
 

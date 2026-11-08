@@ -12,8 +12,9 @@ trade on a warm market calls no other service.**
 0. The market's connection slot, `service/connection_slots.py`, waited for
    in memory before the first statement and held until the transaction has
    ended, so only a few trades per market hold a connection while they queue
-   for the book lock (#667). Steps 1 to 12 run inside it and step 13 after
-   it. It decides nothing about the trade.
+   for the book lock (#667). Steps 1 to 12, and building step 13's frames,
+   run inside it; the publish runs after it. It decides nothing about the
+   trade.
 1. The idempotency lookup, unlocked. A hit is compared against the request
    and returned — no status check, no HTTP call, no lock. "The replay lookup
    is unlocked, and that is safe because it can only ever short-circuit": a
@@ -818,26 +819,37 @@ def price_event_of(
     )
 
 
-async def publish_order_updates(
-    redis_client: redis.Redis,
-    filled: Sequence[tuple[Order, Transaction]],
-    *,
-    now: datetime,
-) -> None:
+def order_events_of(
+    filled: Sequence[tuple[Order, Transaction]], *, now: datetime
+) -> list[OrderEvent]:
     """One order frame per fill, in fill order, for each order's owner: each
-    pair is an order and the transaction of its fill. Call it after the
-    commit, and after that commit's price frame (D-NEW "Order frames pass no
-    version gate on the relay").
+    pair is an order and the transaction of its fill.
 
-    An order fills at most once per commit (ADR 0024), so its row as committed
-    is its state after that fill. Only the Redis call is guarded:
-    `bus.publish_order` swallows a failed publish, so one stops none of the
-    rest. Building a frame is not: if it raised, the request would fail after
-    its commit and skip the frames after it.
+    Build them inside the slot, before its rollback: they read the ORM rows,
+    and every instance is dead after a rollback (bug journal, 2026-09-15). An
+    order fills at most once per commit (ADR 0024), so its row as committed
+    is its state after that fill.
     """
-    for order, transaction in filled:
-        event = _order_event_of(order, result_of(transaction), now=now)
-        await bus.publish_order(redis_client, event, transaction_id=transaction.id)
+    return [
+        _order_event_of(order, result_of(transaction), now=now)
+        for order, transaction in filled
+    ]
+
+
+async def publish_order_updates(
+    redis_client: redis.Redis, events: Sequence[OrderEvent]
+) -> None:
+    """Publish `order_events_of`'s frames, in order. Call it after the commit,
+    after the slot, and after that commit's price frame (D-NEW "Order frames
+    pass no version gate on the relay").
+
+    `bus.publish_order` swallows a failed publish, so one stops none of the
+    rest.
+    """
+    for event in events:
+        await bus.publish_order(
+            redis_client, event, transaction_id=event.fill.transaction_id
+        )
 
 
 async def execute(
@@ -1064,23 +1076,27 @@ async def execute(
         # 12. The response, from the trade's transaction `post_all` committed.
         result = result_of(transactions[0])
 
-    # 13. The publish: one frame, at the counter after the cascade (D-NEW "One
-    # price frame per commit, at the final `state_version`"). After the
-    # commit and after the slot, never before either, and never on a
-    # rejection or a replay — both of which have already returned by this
-    # point. A publish failure is swallowed inside `bus.publish` and never
-    # reaches here.
-    event = price_event_of(
-        market_id,
-        state_version=result.book_state_version,
-        outcomes=outcomes,
-        after_q=after_q,
-        b=b,
-        now=now,
-    )
-    await bus.publish(redis_client, event, transaction_id=result.transaction_id)
-    # The trade's own transaction is first; the fills' follow, in fill order.
-    filled = list(zip([fill.order for fill in fills], transactions[1:], strict=True))
-    await publish_order_updates(redis_client, filled, now=now)
+        # 13's frames: one price frame, at the counter after the cascade
+        # (D-NEW "One price frame per commit, at the final `state_version`"),
+        # then one order frame per fill. Built here, from the ORM rows, before
+        # the slot's rollback can expire them; only plain frames leave.
+        price_frame = price_event_of(
+            market_id,
+            state_version=result.book_state_version,
+            outcomes=outcomes,
+            after_q=after_q,
+            b=b,
+            now=now,
+        )
+        # The trade's own transaction is first; the fills' follow, in fill order.
+        filled = list(zip([fill.order for fill in fills], transactions[1:], strict=True))
+        order_frames = order_events_of(filled, now=now)
+
+    # 13. The publish. After the commit and after the slot, never before
+    # either, and never on a rejection or a replay — both of which have
+    # already returned by this point. A publish failure is swallowed inside
+    # `bus` and never reaches here.
+    await bus.publish(redis_client, price_frame, transaction_id=result.transaction_id)
+    await publish_order_updates(redis_client, order_frames)
 
     return result
