@@ -51,7 +51,7 @@ flowchart LR
     browser -->|"WebSocket /ws/prices"| realtime
 
     ledger -->|"GET /internal/users/suspended<br/>POST /internal/users/lookup"| auth
-    ledger -->|"GET /internal/markets/published<br/>GET /public/markets/{id}<br/>POST /markets/{id}/settle"| market
+    ledger -->|"GET /internal/markets/published<br/>GET /public/markets/{id}<br/>POST /markets/{id}/settle<br/>POST /markets/{id}/void"| market
 
     auth -->|owns| sAuth
     market -->|owns| sMarket
@@ -85,9 +85,10 @@ other way. What the drawing cannot say for itself:
   `:8002` and the dashed arrows are not calls to it (ADR 0006). `audit_svc`
   also holds INSERT, so its own suite can seed rows; nobody anywhere holds
   UPDATE, DELETE or TRUNCATE.
-- **The two arrows from the ledger to auth and market carry five routes and
-  two different credentials.** `/public/markets/{id}` and
-  `/markets/{id}/settle` forward the caller's own access token unchanged;
+- **The two arrows from the ledger to auth and market carry six routes and
+  two different credentials.** `/public/markets/{id}`,
+  `/markets/{id}/settle` and `/markets/{id}/void` forward the caller's own
+  access token unchanged;
   the three `/internal/` routes present
   `LEDGER_SERVICE_KEY`, which is the only service credential in the system and
   has one caller and three routes (ADR 0021, ADR 0030).
@@ -98,7 +99,8 @@ other way. What the drawing cannot say for itself:
 
 ## A trade, end to end
 
-The trade itself calls no other service: the account check and the market gate
+The trade itself calls no other service, except to fetch the terms of a market
+the ledger has never touched: the account check and the market gate
 read the ledger's local copy, which two background refreshers keep within about
 a second of auth and market_service. Both checks happen before any lock is
 taken, a close on `close_time` is checked again under it, and the price frame
@@ -138,25 +140,29 @@ sequenceDiagram
     end
     Note over L,M: Each answer replaces the copy whole. ADR 0030
 
-    B->>L: POST /ledger/markets/{id}/trades<br/>outcome, side, quantity, limit, Idempotency-Key
+    B->>L: POST /ledger/markets/{id}/trades<br/>outcome, side, quantity, limit, idempotency_key
     L->>DB: look the derived key up, no lock
 
     alt this key already names a committed transaction
         DB-->>L: that transaction
-        L-->>B: 200, the stored result
+        L-->>B: 201, the stored result
         Note over L: A replay takes no lock, writes nothing and asks nobody,<br/>so a trade that was charged and whose response was lost<br/>still answers with what it did. ADR 0017
     else first time for this key
         L->>L: the copy: is the trader suspended, is the market trading
         Note over L: In memory, before the book lock, and both fail closed:<br/>403 account_suspended, 409 market_closed,<br/>503 if either copy is older than five seconds. ADR 0022, ADR 0017, ADR 0030
+        opt no book for this market yet: its first touch, ever
+            L->>M: GET /public/markets/{id}, the trader's token
+            M-->>L: b, the outcomes, the seed
+        end
         L->>DB: open and fund the book — once per market<br/>mint the starting grant — once per trader, ever
         L->>DB: SELECT FOR UPDATE on market_books, the wider lock first
         L->>DB: one context statement after the lock: the key, the latch, close_time against<br/>clock_timestamp(), q, the holding; b and state_version from the locked book row (#641)
-        L->>L: trade_cost_of(q, b) in core/lmsr.py
+        L->>L: trade_cost_of(q, b) in core/pricing.py
         L->>DB: write q, the position, the transaction and its entries — pending
         Note over L,DB: COMMIT. posting.post_all is the one statement that commits,<br/>so everything above it is pending until here and rolls back together.<br/>ADR 0009, ADR 0015
         L->>R: PUBLISH market.price at the committed state_version
         Note over L,R: After the commit, never before it, and never on a refusal or a replay.<br/>bus.publish logs a failure and swallows it: the trade has happened and is correct.<br/>A crash in this window loses the frame and a reconnecting client<br/>recovers from GET /ledger/markets/{id}/snapshot. ADR 0010, D-049
-        L-->>B: 200, the trade result
+        L-->>B: 201, the trade result
         R-->>RT: the price frame
         RT->>RT: drop anything not strictly newer for this market
         RT-->>B: price frame on /ws/prices
@@ -258,7 +264,7 @@ erDiagram
     accounts {
         uuid id PK
         varchar kind "user, platform or market_pool"
-        uuid owner_id "unique with kind; names auth.users or a market, and cannot be an FK"
+        uuid owner_id "unique with kind; names auth.users, a market, or all zeros for the platform, and cannot be an FK"
         timestamptz created_at
     }
     transactions {
@@ -294,8 +300,8 @@ erDiagram
     }
     positions {
         uuid user_id PK
-        uuid market_id PK
-        uuid outcome_id PK
+        uuid market_id PK, FK
+        uuid outcome_id PK, FK
         numeric quantity "never negative; no shorting"
         numeric cost_basis
         timestamptz updated_at
@@ -310,7 +316,7 @@ erDiagram
     }
     orders {
         uuid id PK
-        bigint seq "the fill order within a market"
+        bigint seq "one identity for the table; at one price, orders fill in seq order"
         uuid user_id
         uuid market_id FK
         uuid outcome_id FK
@@ -342,8 +348,13 @@ erDiagram
     market_outcomes ||--o{ positions : "what a user holds"
     market_outcomes ||--o{ orders : "resting against"
     market_books ||--o| market_results : "one row per finished market"
+    market_outcomes |o--o| market_results : "the winner; none on a void"
     leaderboard_generations ||--o{ leaderboard_entries : "one generation's ranking"
 ```
+
+Three ends are kept by the code, not by a constraint: a transaction always has
+entries, a book always has outcomes, and a pool account belongs to one book
+(D-028). `pool_account_id` has no unique constraint.
 
 Two absences are the point of this one.
 
