@@ -40,7 +40,7 @@ variable "database_size" {
 }
 
 variable "cache_size" {
-  description = "The managed Valkey (Redis-compatible) plan that carries live prices."
+  description = "The managed Valkey (Redis-compatible) plan that carries live prices and auth's login limits."
   type        = string
   default     = "db-s-1vcpu-1gb"
 }
