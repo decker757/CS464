@@ -16,6 +16,7 @@ request connects before it reaches the trade path.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
@@ -29,7 +30,9 @@ from sqlalchemy.pool import NullPool
 from core.config import get_settings
 from core.database import dispose_engine, get_engine
 from service import connection_slots
+from service.bus import ORDER_CHANNEL, PRICE_CHANNEL
 from shared.readiness import is_database_reachable, readiness_of
+from unit_test.order_fixtures import add_order
 from unit_test.placement_fixtures import order_count, place
 from unit_test.trade_fixtures import (
     BOOK_LOCK_WAITERS,
@@ -58,10 +61,12 @@ _TRADE_CONNECTIONS = _POOL_SIZE + _MAX_OVERFLOW - _FOR_READS
 # and queued on the book.
 _SETTLE_SECONDS = 0.5
 
-# A total far above what any of these trades costs, so a trade that waited is never
-# refused for the price it moved to (#640); a placement this low rests.
+# A total far above what any of these trades costs, so a trade that waited is
+# never refused for the price it moved to (#640). A placement at 0.1000 rests;
+# one at 0.9900, above outcome 0's price near 0.84, fills on arrival.
 _BUY_LIMIT = Decimal("100.0000")
 _RESTING_LIMIT = Decimal("0.1000")
+_FILLING_LIMIT = Decimal("0.9900")
 
 # How long a third request may take to commit while two publishes stall. A
 # warm trade takes milliseconds.
@@ -298,6 +303,7 @@ async def test_a_trade_gives_its_connection_back_before_its_slot(
     assert get_engine().pool.checkedout() == 0
 
 
+
 class _StalledBus(Recorder):
     """A Redis whose every publish waits until `release` is set, as a stalled
     one does up to its socket timeout. `reached` counts the publishes that
@@ -323,67 +329,133 @@ async def _until_publishing(bus: _StalledBus, task: asyncio.Task) -> None:
             await asyncio.sleep(0.01)
 
 
+async def _rest_a_buy_a_trade_fills(upstream: Upstream) -> uuid.UUID:
+    """A resting buy of one share of outcome 1 at 0.5000, which the next
+    trade's cascade fills (ADR 0024): outcome 1 trades near 0.16 here. So
+    that trade publishes an order frame as well as a price frame."""
+    owner = uuid.uuid4()
+    async with session_factory()() as setup:
+        await fund(setup, owner)
+        order = await add_order(
+            setup,
+            user_id=owner,
+            market_id=upstream.market_id,
+            outcome_id=upstream.outcomes[1],
+            budget="0.5000",
+        )
+        await setup.commit()
+        return order.id
+
+
+async def _commit_one(
+    upstream: Upstream, submit: str, user_id: uuid.UUID, redis_client: Recorder
+):
+    """A trade, or a placement priced to fill on arrival, so either publishes
+    a price frame and at least one order frame."""
+    async with session_factory()() as own:
+        if submit == "trade":
+            return await buy(
+                own,
+                upstream,
+                user_id=user_id,
+                quantity=SMALL_QUANTITY,
+                state_version=None,
+                limit=_BUY_LIMIT,
+                client_key=f"publish-{user_id}",
+                redis_client=redis_client,
+            )
+        return await place(
+            own,
+            upstream,
+            user_id=user_id,
+            limit_price=_FILLING_LIMIT,
+            quantity=SMALL_QUANTITY,
+            redis_client=redis_client,
+        )
+
+
 @pytest.mark.parametrize("submit", ["trade", "placement"])
 async def test_a_stalled_publish_does_not_hold_the_market_s_slot(
-    clean_database, submit: str
+    clean_database, monkeypatch: pytest.MonkeyPatch, submit: str
 ) -> None:
     """ADR 0010: the publish never gets in a trade's way. Two requests on one
     market commit and then stall in their publish, which fills the market's
     two slots if the publish runs inside them. A third request must still
-    commit while both publishes wait. Move the publish back inside the slot
-    and the third waits for a slot until this gives up."""
+    commit while both publishes wait. Each stalled trade also fills a resting
+    order, so its order frame is under test too. Move the price frame's or
+    the order frames' publish back inside the slot and the third waits for a
+    slot until this gives up."""
+    monkeypatch.setattr(get_settings(), "database_connections_per_market", _PER_MARKET)
     (upstream,) = await _warm_markets(1)
-    users = [uuid.uuid4() for _ in range(3)]
+    users = [uuid.uuid4() for _ in range(_PER_MARKET + 1)]
     async with session_factory()() as setup:
         for user_id in users:
             await fund(setup, user_id)
     release = asyncio.Event()
 
-    async def commit_one(user_id: uuid.UUID, redis_client: Recorder):
-        async with session_factory()() as own:
-            if submit == "trade":
-                return await buy(
-                    own,
-                    upstream,
-                    user_id=user_id,
-                    quantity=SMALL_QUANTITY,
-                    state_version=None,
-                    limit=_BUY_LIMIT,
-                    client_key=f"stall-{user_id}",
-                    redis_client=redis_client,
-                )
-            # At the market's price, so the placement fills and publishes.
-            return await place(
-                own,
-                upstream,
-                user_id=user_id,
-                limit_price=Decimal("0.9900"),
-                quantity=SMALL_QUANTITY,
-                redis_client=redis_client,
-            )
-
     stalled = []
-    for user_id in users[:2]:
+    for user_id in users[:_PER_MARKET]:
+        if submit == "trade":
+            await _rest_a_buy_a_trade_fills(upstream)
         bus = _StalledBus(release)
-        task = asyncio.create_task(commit_one(user_id, bus))
+        task = asyncio.create_task(_commit_one(upstream, submit, user_id, bus))
         await _until_publishing(bus, task)
         stalled.append(task)
 
-    loop = asyncio.get_running_loop()
-    started = loop.time()
     try:
         async with asyncio.timeout(_STALLED_PUBLISH_PATIENCE):
-            await commit_one(users[2], Recorder())
+            await _commit_one(upstream, submit, users[-1], Recorder())
     except TimeoutError:
         pytest.fail(
             "a third request waited for a slot while two publishes stalled: "
-            "the publish runs inside the market's slot"
+            "a publish runs inside the market's slot"
         )
     finally:
         release.set()
         await _finish(stalled)
-    print(f"third request committed in {loop.time() - started:.3f} s")
 
     async with session_factory()() as check:
-        assert (await book_row(check, upstream.market_id)).state_version == 3
         await assert_ledger_balances(check)
+
+
+@pytest.mark.parametrize("submit", ["trade", "placement"])
+async def test_the_frames_survive_a_rollback_that_ends_the_slot(
+    clean_database, monkeypatch: pytest.MonkeyPatch, submit: str
+) -> None:
+    """Every ORM instance is dead after `rollback()` (bug journal,
+    2026-09-15). The slot rolls back on the way out. After the commit that is
+    a no-op, but a read added between the commit and the end of the block
+    makes it real and expires the outcomes and the orders. A frame built from
+    them after the block would then reload them outside the slot, and a
+    committed trade would answer 500 with `MissingGreenlet`.
+
+    So the slot here issues one read before its rollback, and the request
+    must still answer, with frames that match what it committed. Build a
+    price or order frame after the block and this fails."""
+    real_slot = connection_slots.hold_a_slot
+
+    @asynccontextmanager
+    async def slot_that_reads_last(session: AsyncSession, market_id: uuid.UUID):
+        async with real_slot(session, market_id):
+            yield
+            await session.execute(text("SELECT 1"))
+
+    monkeypatch.setattr(connection_slots, "hold_a_slot", slot_that_reads_last)
+    (upstream,) = await _warm_markets(1)
+    resting_id = await _rest_a_buy_a_trade_fills(upstream) if submit == "trade" else None
+    user_id = uuid.uuid4()
+    async with session_factory()() as setup:
+        await fund(setup, user_id)
+    bus = Recorder()
+
+    answer = await _commit_one(upstream, submit, user_id, bus)
+
+    (price_frame,) = [json.loads(p) for p in bus.payloads_on(PRICE_CHANNEL)]
+    order_frames = [json.loads(p) for p in bus.payloads_on(ORDER_CHANNEL)]
+    if submit == "trade":
+        assert price_frame["state_version"] == answer.book_state_version
+        assert [frame["order_id"] for frame in order_frames] == [str(resting_id)]
+    else:
+        assert price_frame["state_version"] == answer.book_state_version
+        assert [frame["order_id"] for frame in order_frames] == [str(answer.order.id)]
+    assert all(frame["fill"]["quantity"] for frame in order_frames)
