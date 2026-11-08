@@ -148,6 +148,18 @@ function tradeErrorFigure(details: Record<string, unknown>, key: string): string
   return typeof value === 'string' ? value : undefined
 }
 
+/** How far a trade refused as `price_beyond_limit` missed its limit: what it
+ *  now comes to and the limit it was sent with, as the ledger sent them.
+ *  Null for any other refusal, or when either figure is missing. */
+export function priceLimitMissOf(err: unknown): { currentTotal: string; limit: string } | null {
+  if (errorCode(err) !== 'price_beyond_limit') return null
+  const details = tradeErrorDetails(err)
+  const currentTotal = tradeErrorFigure(details, 'current_total')
+  const limit = tradeErrorFigure(details, 'limit')
+  if (currentTotal === undefined || limit === undefined) return null
+  return { currentTotal, limit }
+}
+
 /** What the trader should do about a failed preview or trade (ledger-service.md). */
 export function describeTradeError(err: unknown): string {
   const code = errorCode(err)
@@ -155,12 +167,9 @@ export function describeTradeError(err: unknown): string {
   const details = tradeErrorDetails(err)
   if (code === 'quote_stale') return 'Prices moved while you were looking. Getting a fresh quote…'
   if (code === 'price_beyond_limit') {
-    const currentTotal = tradeErrorFigure(details, 'current_total')
-    const limit = tradeErrorFigure(details, 'limit')
-    if (currentTotal !== undefined && limit !== undefined) {
-      return `The price moved past your limit: this trade now comes to ${formatCreditsPrecise(currentTotal)} credits, and your limit was ${formatCreditsPrecise(limit)}. Getting a fresh quote…`
-    }
-    return 'The price moved past your limit. Getting a fresh quote…'
+    const miss = priceLimitMissOf(err)
+    if (!miss) return 'The price moved past your limit. Getting a fresh quote…'
+    return `The price moved past your limit: this trade now comes to ${formatCreditsPrecise(miss.currentTotal)} credits, and your limit was ${formatCreditsPrecise(miss.limit)}. Getting a fresh quote…`
   }
   if (code === 'insufficient_funds') {
     const balance = tradeErrorFigure(details, 'balance')

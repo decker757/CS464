@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { describeInsufficientFunds, describeInsufficientShares, describeTradeError, errorCode, isDefiniteRejection } from '../../api/errors'
+import { describeInsufficientFunds, describeInsufficientShares, describeTradeError, errorCode, isDefiniteRejection, priceLimitMissOf } from '../../api/errors'
 import { postTrade, type TradePreview, type TradeSide } from '../../api/ledgerApi'
 import type { PublicOutcome } from '../../api/marketApi'
 import { useBalance } from '../../context/BalanceContext'
@@ -148,17 +148,27 @@ function describeUnconfirmedTrade(trade: SentTrade): string {
   return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} could not be confirmed, and may have gone through. Check your portfolio before trading again, or send the same trade again from this page: it will not be made twice.`
 }
 
+/** A trade refused because its price moved, and, for `price_beyond_limit`,
+ *  what it came to against its limit (#644). */
+interface RefusedTrade {
+  trade: SentTrade
+  limitMiss: { currentTotal: string; limit: string } | null
+}
+
 /** What a trader is told about a trade refused because its price moved, when
  *  the in-place "Prices moved" line is not on screen to say it: it was not
- *  made, and which trade it was (#589). Nothing about what to do next — the
- *  re-quote may have failed, and the preview's own error says why. */
-function describeRefusedTrade(trade: SentTrade): string {
-  return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} was not made: the price moved before it went through.`
+ *  made, which trade it was (#589), and how far past its limit (#644).
+ *  Nothing about what to do next — the re-quote may have failed, and the
+ *  preview's own error says why. */
+function describeRefusedTrade({ trade, limitMiss }: RefusedTrade): string {
+  const refusal = `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} was not made: the price moved before it went through.`
+  if (!limitMiss) return refusal
+  return `${refusal} It now comes to ${formatCreditsPrecise(limitMiss.currentTotal)} credits, past your limit of ${formatCreditsPrecise(limitMiss.limit)}.`
 }
 
 /** The alert above the tickets about a trade already sent, or '' for none. A
  *  refusal still on screen in place, under the button, is not said twice. */
-function describePastTrade(unconfirmedTrade: SentTrade | null, refusedTrade: SentTrade | null, isRefusalShownInPlace: boolean): string {
+function describePastTrade(unconfirmedTrade: SentTrade | null, refusedTrade: RefusedTrade | null, isRefusalShownInPlace: boolean): string {
   if (unconfirmedTrade) return describeUnconfirmedTrade(unconfirmedTrade)
   if (refusedTrade && !isRefusalShownInPlace) return describeRefusedTrade(refusedTrade)
   return ''
@@ -266,7 +276,7 @@ export default function TradingPanel({
   // now shows, until the next trade is sent (#580).
   const [unconfirmedTrade, setUnconfirmedTrade] = useState<SentTrade | null>(null)
   // The trade refused because its price moved, until the next trade is sent (#589).
-  const [refusedTrade, setRefusedTrade] = useState<SentTrade | null>(null)
+  const [refusedTrade, setRefusedTrade] = useState<RefusedTrade | null>(null)
   const quantityInputRef = useRef<HTMLInputElement>(null)
 
   const visibleSubmitError = submitErrorFor === inputKey ? submitError : ''
@@ -364,7 +374,7 @@ export default function TradingPanel({
         // uses, so if it fails too, previewError already shows why — clear
         // submitError rather than leaving "Getting a fresh quote…" frozen
         // on screen regardless of how the re-quote turns out.
-        setRefusedTrade(trade)
+        setRefusedTrade({ trade, limitMiss: priceLimitMissOf(err) })
         setSubmitError(describeTradeError(err))
         const freshQuote = await refetchNow()
         setSubmitError(freshQuote ? 'Prices moved. Check the new quote and confirm again.' : '')
