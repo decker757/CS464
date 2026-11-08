@@ -21,8 +21,10 @@
     crossed book"). Accepted. #26 and #27 were edited to match on 2026-10-17.
 - **Date:** 2026-10-17
 - **Affects:** [T-6] #26, [T-7] #27, [T-8] #28, [FE][T-6] #61, [4.2] #14, [T-5] #25, [4.1] #13, [X-4] #37, [BE] #221, ADR 0005, ADR 0009, ADR 0010, ADR 0015, ADR 0017, ADR 0018, ADR 0021, ADR 0022
-- **Implemented in:** nothing yet. This record precedes the limit-order stack
-  for #26, #27 and #28, which is the first code that has to obey it.
+- **Implemented in:** the limit-order stack for #26, #27 and #28, in
+  `backend/ledger_service/service/`: `orders.py`, the cascade in
+  `trading.py`, `cancellation.py`, and the reservation floor in
+  `posting.py` and `reservations.py`. This record preceded it.
 
 ## Context
 
