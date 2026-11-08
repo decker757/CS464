@@ -186,7 +186,7 @@ The run goes red and says where. What state it left behind:
 | rolling a server, which "could not go back" | the failed server serves nothing and stays drained; the ones before it stay on the new release, serving. Fix forward, or `roll.sh` the failed one by hand once you know why |
 | the public check | the new release, every one of them, all healthy behind the load balancer; look at DNS, the certificate and the load balancer |
 
-"Every one of them" has three exceptions, and the run's log names the server
+The "rolling a server" row has three exceptions, and the run's log names the server
 in each. A server on its first release has none to go back to, so it stays
 on the new one. A server that cannot be asked which release it is on is
 left as it is. And a server that fails to be sent back is only logged.
@@ -730,4 +730,5 @@ checks both.
 - **Re-measuring the series budget.** Around 2026-11-11, a week after
   monitoring went live with #632, read the real series count off Grafana
   Cloud's *Usage* page and update the estimate above and the README.
-- **Load test numbers:** #20, against this deployment.
+- **The one-, two- and three-server load test:** #668, for ADR 0031's
+  capacity table. #20's runs against this deployment are in docs/load-test.md.
