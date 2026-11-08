@@ -167,9 +167,10 @@ time that includes setup.
   84 ms, and 50 traders queued on it wait about 4.2 s at the tail, which is
   the p95. The lock-free snapshot read had a p95 of 2.81 s on one market and
   1.77 s on five, so the servers' CPU is also saturated, which is what makes
-  each of the 13 statements under the lock take as long as it does. ADR 0031
-  names 12 to 20 trades a second on one market as the trigger for a
-  per-market engine; it fired.
+  each of the 13 statements under the lock take as long as it does. ADR 0031's
+  trigger for a per-market engine is a one-market lock wait above 200 ms at
+  the p95, or more than about 20 trades a second on one market; the first
+  fired.
 - **Behind the pooler, the lock queue holds the ledger's connections.** During
   the one-market run, `ledger on app-1: database` showed DOWN on the dashboard:
   the ledger's pool has 14 server connections for both servers, every
@@ -177,11 +178,187 @@ time that includes setup.
   `SELECT 1` waited behind them. The five-market run never did this. The
   ledger's pool should be sized above its client pools' total (two servers at
   10 + 5 each), inside the connection budget in `docs/deployment.md`.
-- **Next measurements:** the one, two and three server runs ([5.4] #640,
-  Task 6.3), which say how far the five-market figure moves with CPU, and
-  the capacity section (#645).
+- **Next measurements:** the one, two and three server runs (#668), which
+  say how far the five-market figure moves with CPU. What each fix changed
+  is under "Capacity and its limits", below.
 - **Production is much slower than a laptop.** With 50 traders for five
   minutes, the same script committed 126 trades on one market and 738 on five,
   against 1,137 in one minute on a laptop. Both app servers sat at 100% CPU,
   and most attempts were refused as stale and retried. #640 is the ticket that
   acts on it.
+
+## Capacity and its limits
+
+[5.4] #640, #645. What the 7 November release changed and by how much, where
+the ceilings are now, and what comes next. The design past the last ceiling is
+[ADR 0031](adr/0031-a-per-market-trading-engine.md), proposed and not built.
+A figure from a laptop or a test database says so. Every other figure is
+production's.
+
+### Before and after
+
+The before is production at `73566c42`, `main` after #632, deployed on
+2026-11-04: the 4 November rows above. The after is production at `003e3ab1`,
+`main` after #663, deployed on 2026-11-07: the 7 November rows. The same
+script and shape both times: two 1-vCPU app servers, 50 traders, 5 minutes.
+
+| Production, 50 traders, 5 min | 2026-11-04, `73566c42` | 2026-11-07, `003e3ab1` |
+|---|---|---|
+| One market: trades committed | 126 (0.4 a second) | 3,568 (12 a second) |
+| One market: trade p95, p99 | 5.45 s, 6.59 s | 4.72 s, 5.71 s |
+| One market: refused at the price, given up | 4,427 stale quotes, 692 | 38 beyond the limit, 0 |
+| Five markets: trades committed | 738 (2.5 a second) | 6,394 (21 a second) |
+| Five markets: trade p95, p99 | 4.52 s, 5.93 s | 2.60 s, 3.59 s |
+| Five markets: errors | 0.8% | 0% |
+
+#640's target was a five-market p95 under 500 ms. **It was not met:** the
+p95 is 2.60 s.
+
+**Every fix shipped in that one release, so production has one before and one
+after, not one per fix.** Below is what each fix is measured to have changed,
+and where. Each was merged into `dev` as the commit named, and reached `main`
+in `003e3ab1`.
+
+| Fix | Merged as | Before | After | Measured |
+|---|---|---|---|---|
+| Tracing samples one request in ten | #647, `7e275dec` | every request traced: 12–16% of self time in the profile below | one in ten | not on its own; the before is the profile |
+| Price limits instead of exact quotes ([ADR 0029](adr/0029-price-limits-replace-exact-quotes.md)) | #651, `ba208cef`; the script sends limits, #654, `11b5802a` | one market: 4,427 refused as stale and 692 given up, for 126 committed, about 35 refusals per trade | one market: 38 refused beyond the 5% limit, all retried, none given up, for 3,568 | production, the rows above |
+| The ledger keeps a local copy and calls nobody ([ADR 0030](adr/0030-the-ledger-keeps-a-local-copy.md)) | #650, `20ecf9eb`; #656, `345ee355` | two HTTP calls per trade, to auth and market. The five-market run's 0.8% errors were 6 of 744 trades: three `503 auth_unavailable` and three `503 market_terms_unavailable` | no call on a market with a book; 0% errors | production; the error breakdown is from that run's saved k6 summary, as ADR 0030 records |
+| The locked section is budgeted at 13 statements (#641) | #661, `9147d5ce` | 22 statements under the book lock on a buy, 21 on a sell. A round trip took 20 to 75 ms under the 4 November load | 13, held by `test_trade.py::test_a_warm_trade_stays_within_its_statement_budget`. The hold is about 84 ms, about 6.5 ms per statement with the Python between them | statements counted by the suite's `capture_sql`; the hold from the one-market row; DECISIONS.md, "The locked section of a trade is budgeted at 13 statements" |
+| Connection pools, one per service role | #660, `be4f6a37` | two servers' pools used about 40 of the database's 47 or so connections, so a third server could not start | the four pools hold 28 server connections, however many servers run. A 25-statement transaction through a transaction-mode pooler: median 6.8 ms, against 5.4 ms direct | the connections from #640 and `docs/deployment.md`, "Connection budget"; the timings on a laptop (DECISIONS.md, "asyncpg's statement cache is off in every engine"); the server runs are #668, below |
+| The balance sum reads only the index (#642) | #648, `611fe4e7` | 1,315 buffers to sum an account of about 5,000 entries (bitmap heap scan, 1,250 heap blocks) | 45 buffers after a VACUUM (index-only scan, no heap fetches); 1,326 on entries no VACUUM has reached yet | a test database (#648) |
+| The week-ago price is stored, not replayed (#643) | #655, `afb9d1c7` | every trade of every listed market read and replayed: 10,000 rows for 20 books of 500 trades | 20 index probes of one row each, 141 buffers, 0.18 ms | a test database (#655) |
+
+### The profile, 2026-11-04
+
+From #640: py-spy on the scaled stack, two of every service on a laptop,
+during the load test. Self time:
+
+| Where | Share |
+|---|---|
+| asyncio and uvicorn | 19–40% |
+| SQLAlchemy | 19–28% |
+| tracing | 12–16% |
+| asyncpg | 10% |
+| pricing, pydantic, logging | under 5% each |
+
+#640 puts each trade attempt at about 130 ms of CPU across the ledger and its
+two calls to auth and market. The profile's raw output is not in the
+repository: these ranges are as #640 records them. No profile has been taken
+since the release.
+
+What it says: the time went on the database round trips and the Python around
+them, not on the maths. That is why the fixes cut calls and statements, and
+why the next step does too.
+
+### The ceilings now
+
+- **One market is one lock.** Every trade on a market holds that market's
+  book row `FOR UPDATE` for 13 statements, on purpose: the money has to
+  serialise ([ADR 0015](adr/0015-locking-the-read-that-decides-a-write.md)).
+  3,568 trades in 300 s is 12 a second, about 84 ms per hold, so the last of
+  50 traders queued waits about 50 × 84 ms = 4.2 s. That is the p95. More
+  servers do not raise it, except for whatever part of the 84 ms is CPU
+  starvation, which #668's runs will show. The dashboard's book-lock wait
+  p95 was 4.5 s on 4 November (#640). For 7 November it was not written
+  down.
+- **Nothing bounds that wait.** There is no `lock_timeout` or statement
+  timeout on a trade, so the tail grows by about 84 ms for every trader
+  queued ahead. #669 asked for one and was closed as not planned.
+- **One vCPU per server, shared.** Each app server is a 1-vCPU droplet
+  running auth, market, ledger, audit, realtime, the gateway and Grafana
+  Alloy. The five-market run had two servers for 300 s, 600 vCPU-seconds,
+  for 6,394 trades: **at most 94 ms of app-server CPU per committed trade**,
+  everything included, the snapshot read before each buy among it. The
+  snapshot read takes no lock, and its p95 was 1.77 s on five markets, so
+  the servers were queueing for CPU. On one market it was 2.81 s, but that
+  includes waiting for a pooled connection (the last item here), so it is
+  not a clean CPU figure. Server CPU was not sampled during the 7 November
+  runs. Bigger servers are the lever not pulled; `docs/deployment.md`,
+  "What it costs", has the prices.
+- **One primary database.** One managed Postgres node (1 vCPU, 2 GB, no
+  standby), with about 47 connections, of which the pools use 28. Every
+  trade, lock and balance is there, so adding app servers adds no database.
+  It ran at 45% CPU on 4 November. On 7 November it was not recorded. The
+  lever is a bigger plan: the app servers scale out and the database scales
+  up ([ADR 0026](adr/0026-production-on-digitalocean.md)). The audit log
+  needs every service on that one database
+  ([ADR 0006](adr/0006-audit-log-write-path.md)).
+- **The ledger's pool is smaller than its clients (#667).** The ledger's
+  pool has 14 server connections for both servers, and each ledger process
+  has 10 + 5 client connections, 30 in all. A trade waiting for the book lock
+  keeps its server connection while it waits, so on one busy market the 14
+  fill with waiting trades and every other ledger read waits behind them.
+  During the one-market run, app-1's readiness check, a `SELECT 1`, timed out
+  and the dashboard showed `ledger on app-1: database` DOWN while trades
+  still committed. The five-market run never did. #667's fix is to make the
+  two agree, for example a pool of 24 with 8 + 4 per server, inside the
+  budget in `docs/deployment.md`. It is not done yet.
+
+### Reads that grow without bound
+
+Fixed in this release:
+
+- **The balance sum** (#648). A balance is `SUM(amount)` over the account's
+  entries, read under the account lock on every trade (ADR 0009). It now
+  reads only the index. It still reads every entry the account has, so it
+  still grows with the account's history, at 45 buffers for 5,000 entries
+  rather than 1,315. Entries newer than the last VACUUM still cost a heap
+  fetch each.
+- **The week-ago price on the browse list** (#655). One index probe per
+  market, for the newest trade before the mark, priced from the `after_q` it
+  stored. A market whose newest trade before the mark predates `after_q` is
+  still replayed, and logged at INFO, until those trades are more than a week
+  old.
+
+Not fixed:
+
+- **The price history endpoint**, `GET /ledger/markets/{id}/price-history`.
+  It replays every trade the market has ever had, oldest first, on every
+  read, and cuts the window afterwards
+  (`service/price_history.py::price_history_of_market`). It grows with the
+  market's trades: the one-market run left a market with 3,568 of them.
+- **The leaderboard refresh.** Every 60 seconds, on the first server, one
+  statement values every holder from all USER accounts' entries and
+  positions, and auth is asked for their names
+  (`service/leaderboard.py::_list_net_worths`). It grows with users and
+  their entries. It is off the trade path, but on the same vCPU and the same
+  database.
+
+### Scale-out: one, two and three servers
+
+> **Not measured yet. This table is #668's**, and its empty cells are filled
+> in by those runs. Nothing in it is an estimate.
+
+| App servers | Five markets, 50 traders, 5 min: trades committed | Trade p95 | Errors | Server CPU |
+|---|---|---|---|---|
+| 1, the other drained | not run (#668) | | | |
+| 2 | 6,394, on 2026-11-07, the baseline; #668 runs it again | 2.60 s | 0% | not recorded |
+| 3, a temporary third droplet | not run (#668) | | | |
+
+What it has to answer: how far the five-market figure moves with CPU, and
+whether the one-market figure moves at all. It should not move much, because
+the book lock is the ceiling there. If it does, that part of the 84 ms hold
+was CPU starvation.
+
+### What comes next, in order
+
+Two things first, which change no design: #667's pool sizes (one number in
+Terraform and two in the production compose file) and #668's runs.
+
+1. **A single-statement write path.** Everything a trade writes, as one
+   data-modifying statement after the account locks, so the locked section
+   goes from 13 statements to about 5: the book lock, the context, one lock
+   per account, and the write
+   ([ADR 0031](adr/0031-a-per-market-trading-engine.md), "The step before
+   it"). If the hold shrank in proportion, it would go from 84 ms to about
+   32 ms, about 30 trades a second on one market. That is an estimate, and
+   the real figure will be worse, because the pricing and the Python around
+   the statements stay. It will not bring the one-market run under 200 ms of
+   lock wait: 50 traders queued at 32 ms each is still about 1.6 s.
+2. **The per-market engine,** [ADR 0031](adr/0031-a-per-market-trading-engine.md).
+   Each market's book in memory in one ledger process, behind a fenced lease
+   on the book row, with trades committed in batches and the overdraft check
+   still in Postgres. Its trigger, a one-market lock wait above 200 ms at the
+   p95, fired on 7 November. It stays proposed until step 1 is built and
+   measured.
