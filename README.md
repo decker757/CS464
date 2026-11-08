@@ -17,14 +17,14 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | Voiding | #221, UI #526 | shipped, both sides: an admin voids a flawed market and every holder is refunded at cost (ADR 0025) |
 | Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60, #479 | shipped, both sides, including the suspend control and a users list that filters by role and by status; promoting an admin is an API call and has no screen yet |
 | Credits | [B-1] #32, [B-2] #33, [F-1] #41, UI #376, #443, #410 | shipped; every balance is derived from append-only entries, and the portfolio shows profit and loss and how many shares a live sell order holds back |
-| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61, #429, #495, #566, #580, #592 | shipped, both sides: the price is the control that picks an outcome, a live price chart, and limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024). A trade's confirmation, or the warning that it could not be confirmed, shows even after the trader picks another outcome, and a trade sent again after no answer is made once and says so |
+| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61, #429, #495, #566, #580, #592 | shipped, both sides: the price is the control that picks an outcome, a live price chart, and limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024). A trade's confirmation, or the warning that it could not be confirmed, shows even after the trader picks another outcome, and a trade sent again after no answer is made once and says so. A trade may name a price limit and executes within it at the current price (ADR 0029); the panel sends one of its own in #652 |
 | Discovery | [X-1]–[X-4] #34–#37, #446, #447, UI #54, #126, #209, #441, #444, #448, #450, #564 | shipped: search and filters, live prices, the trader's own holdings, bands for closing soon, trending and biggest movers, and cards that show the odds as a split bar and each outcome's change over the week |
 | Leaderboard | [L-1]–[L-3] #38–#40, UI #58 | shipped, both sides |
 | Layout and accessibility | #380, #437, #438, #452, #574 | every signed-in page fits a phone, with the navigation behind a menu button, and every text colour pair passes WCAG AA, including a browse chip's label while its price flashes |
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot, the ledger's price producer and its order frames |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
-| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440, #609 | live at **https://predictsmu.xyz**: every push to `main` deploys to DigitalOcean, two app servers behind a load balancer (ADR 0026), and `npm run seed:production` seeds it with the demo markets; monitoring (#599) ships to Grafana Cloud from each server; staging (#19) and the load test [5.4] #20 are open |
+| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440, #609, #20, #640 | live at **https://predictsmu.xyz**: every push to `main` deploys to DigitalOcean, two app servers behind a load balancer (ADR 0026), and `npm run seed:production` seeds it with the demo markets; monitoring (#599) ships to Grafana Cloud from each server; the load test [5.4] #20 ran on 2026-11-04 (a trade's p95 was 5.45 s at 50 users, both servers at 100% CPU) and #640's answer ships in this release: a trade names a price limit (ADR 0029), the ledger keeps a one-second copy of who and what may trade and calls no other service on a trade (ADR 0030), a trade holds the book lock for 13 statements instead of 22 (#641), and DigitalOcean's connection pooler lets a third server start (#660); the after figures follow the release; staging (#19) is open |
 
 ## Running it
 
@@ -229,6 +229,48 @@ deploy does, rollback, scaling and the cost breakdown.
 deploy/production/test/stack-test.sh   # the production stack on this machine; needs only Docker
 ```
 
+## Load testing and scaling
+
+[5.4] #20 and #640. The production stack is built to scale sideways: every
+service is stateless, so the load balancer can send any request to any
+server; one managed Postgres holds the data, behind DigitalOcean's
+connection pooler so a third server fits inside the database's connection
+limit (#660); live prices travel over Redis rather than between servers
+(ADR 0010). `loadtest/run.sh` drives it with k6: 50 traders, each logging
+in, quoting and trading on real markets through the public API for five
+minutes. Every run is recorded in
+[`docs/load-test.md`](docs/load-test.md).
+
+| Production, 50 traders, 5 min | 4 November | 7 November, after #640 |
+|---|---|---|
+| One market: trades committed, p95, errors | 126, 5.45 s, 0% | 3,568, 4.72 s, 0% |
+| Five markets: trades committed, p95, errors | 738, 4.52 s, 0.8% | 6,394, 2.60 s, 0% |
+
+What changed between the columns, all measured first and acted on second:
+
+- **Price limits instead of exact quotes** ([ADR 0029](docs/adr/0029-price-limits-replace-exact-quotes.md)).
+  A trade names the most it will pay and executes within that at the current
+  price. Before, about 35 attempts were refused as stale for every trade that
+  committed; after, none.
+- **The ledger calls nobody on a trade** ([ADR 0030](docs/adr/0030-the-ledger-keeps-a-local-copy.md)).
+  It keeps a one-second copy of who may trade and what may be traded, and a
+  copy older than five seconds refuses rather than trusts. The two HTTP calls
+  per trade were about half the CPU per trade.
+- **The locked section of a trade is 13 statements, from 22** (#641), guarded
+  by a test that fails above the budget.
+- **Two unbounded reads bounded:** the balance sum reads only an index (#642),
+  and the browse list's week-ago price is stored, not replayed (#643).
+
+What the numbers say. Across markets, throughput grows with servers, and the
+pooler is what lets the next server start. On one market it does not: every
+trade on a market takes the same lock, on purpose, because the money has to
+serialise ([ADR 0015](docs/adr/0015-locking-the-read-that-decides-a-write.md)), and
+3,568 trades in 300 s is 12 a second, about 84 ms per hold, so 50 traders
+queued on one market wait about 4 s at the tail. That is the documented
+ceiling. The step past it, a per-market engine, is written up as a proposed
+ADR under #645, and the one, two and three server runs that put a number on
+the sideways scaling are the next measurement.
+
 ## Monitoring
 
 [5.5] #599. Each production server runs Grafana Alloy, which sends metrics,
@@ -309,6 +351,96 @@ npm run lint                  # oxlint, type-aware, as CI runs it
 docker compose up -d --build --wait   # from the repo root, then:
 npm run e2e                   # end to end
 ```
+
+## Guarantees, and the tests that hold them
+
+Each line is a rule the code keeps and the test that goes red if it stops
+keeping it. Paths are under `backend/ledger_service/unit_test/` unless
+another service is named.
+
+- **Every trade on a market serialises on that market's book row, and every
+  read that decides a write is issued after the lock returns**
+  ([ADR 0015](docs/adr/0015-locking-the-read-that-decides-a-write.md)).
+  `service/test_concurrency.py::test_two_batches_racing_for_one_balance_debit_it_once`,
+  `service/test_cascade_concurrency.py::test_a_trade_queued_behind_a_placement_fills_the_order_it_rested`,
+  and `market_service/unit_test/service/test_publishing.py::test_publish_reads_the_clock_after_it_has_the_lock`.
+  A race test holds both sessions on a barrier, and is kept only if it fails
+  with the lock removed.
+- **A trade sent twice is made once.** The idempotency key is re-checked
+  under the lock; a retry returns the original and writes nothing.
+  `service/test_trade_replay.py::test_a_retry_returns_the_original_trade`,
+  `::test_a_retry_executes_nothing`,
+  `service/test_trade_concurrency.py::test_a_duplicate_arriving_after_the_pre_gate_lookup_is_replayed_under_the_lock`,
+  `service/test_settlement_concurrency.py::test_a_trade_retried_behind_a_settlement_replays_its_original`.
+- **The books balance.** No balance is stored; every movement writes legs that
+  sum to zero; the platform account's negative balance is the credits in
+  circulation ([ADR 0009](docs/adr/0009-the-ledger-write-path.md)).
+  `service/test_concurrency.py::test_every_transaction_balances_on_its_own`,
+  `::test_the_ledger_still_balances_afterwards`,
+  `::test_no_balance_ever_goes_negative`.
+- **Entries are append-only, by a database trigger.**
+  `service/test_append_only.py::test_an_entry_cannot_be_updated`,
+  `::test_an_entry_cannot_be_deleted`.
+- **A trade names its slippage tolerance and executes within it at the
+  current price, or is refused with the figures**
+  ([ADR 0029](docs/adr/0029-price-limits-replace-exact-quotes.md)).
+  `service/test_trade_limits.py::test_a_buy_within_its_limit_executes_at_the_current_price_after_the_book_moved`,
+  `::test_a_buy_beyond_its_limit_is_refused_with_the_current_total_and_nothing_moves`.
+- **When a dependency is unknown, the ledger refuses rather than guesses.**
+  Its one-second copy of who may trade and what may be traded fails closed
+  past five seconds ([ADR 0030](docs/adr/0030-the-ledger-keeps-a-local-copy.md)).
+  `service/test_local_copy.py::test_a_copy_older_than_the_max_age_refuses_with_the_dependency_s_unavailable_code`,
+  `::test_a_copy_never_loaded_refuses_with_the_dependency_s_unavailable_code`.
+- **The database's clock decides a close, read after the lock, so every
+  replica agrees.**
+  `service/test_trade.py::test_a_market_whose_close_time_passed_under_the_lock_is_refused_by_the_database_clock`.
+- **A warm trade holds the lock for at most 13 statements.**
+  `service/test_trade.py::test_a_warm_trade_stays_within_its_statement_budget`.
+- **The starting grant is minted once, and changing the setting re-grants
+  nobody.**
+  `service/test_portfolio_reads.py::test_the_first_read_mints_the_grant_once_and_the_second_does_not`,
+  `service/test_portfolio.py::test_starting_credits_is_what_the_grant_minted_not_the_current_setting`.
+- **Each service owns one schema and connects as its own role; the only
+  cross grant is INSERT on the audit log**
+  ([ADR 0006](docs/adr/0006-audit-log-write-path.md)). In market_service:
+  `service/test_schema_boundary.py::test_it_cannot_read_the_auth_schema`,
+  `::test_the_audit_grant_is_exactly_insert`. The auth service does not know
+  that credits exist:
+  `auth_service/unit_test/service/test_registration.py::test_register_takes_no_ledger_dependency`.
+- **A model change without its migration fails the suite.** `test_migrations.py`
+  in auth, market and ledger compares the Alembic head with the models and
+  with the Postgres catalogue ([ADR 0020](docs/adr/0020-migrations-by-alembic.md)).
+- **A websocket from an unlisted origin is refused**, because CORS does not
+  apply to sockets.
+  `realtime_service/unit_test/controller/test_ws_routes.py::test_a_socket_from_an_unlisted_origin_is_refused`.
+
+## Known limits
+
+Measured or decided, with the record that says so.
+
+- **One market is one lock.** About 84 ms per hold under load, so about 12
+  trades a second on one market, and 50 traders on it wait about 4 s at the
+  tail ([`docs/load-test.md`](docs/load-test.md), 7 November). That is the
+  cost of serialising money through Postgres. The step past it, a single
+  writer per market, is the proposed engine under #645.
+- **Behind the pooler, a hot market's lock queue holds the ledger's
+  connections.** During the one-market run, one server's readiness check
+  reported its database down while trades still committed: the ledger's
+  pool (14 connections) is smaller than its two servers' client pools
+  together (30). The fix is one number in Terraform, inside the connection
+  budget in [`docs/deployment.md`](docs/deployment.md).
+- **A price is published after the trade commits, and a crash between the
+  two loses that frame** ([ADR 0010](docs/adr/0010-realtime-price-broadcast.md)).
+  A client that reconnects fetches a snapshot, which is the recovery path it
+  needs anyway.
+- **Logout cannot revoke an issued access token.** The 15-minute lifetime
+  bounds the window ([ADR 0002](docs/adr/0002-auth-token-transport.md)).
+- **The audit log is atomic with the action only while every service shares
+  one database** ([ADR 0006](docs/adr/0006-audit-log-write-path.md)).
+- **One managed Postgres, one region, and no staging environment.** #19's
+  staging is not built; it needs a registrable domain of its own.
+- **The trade panel does not yet send its own slippage tolerance.** The
+  backend accepts one; #652 is the frontend half.
 
 ## Architecture
 
@@ -419,7 +551,8 @@ to make and would be expensive to reverse.
 - [0016](docs/adr/0016-deciding-a-proposal.md) deciding a proposal, by any
   admin but the proposer, with APPROVED as a status
 - [0017](docs/adr/0017-the-ledger-and-a-stopped-market.md) the ledger asks
-  market_service whether a market is still trading, once per trade
+  market_service whether a market is still trading, once per trade (amended
+  by 0030: the answer now comes from the ledger's own one-second copy)
 - [0018](docs/adr/0018-positions-are-valued-at-liquidation.md) positions are
   valued at liquidation, not at the marginal price
 - [0019](docs/adr/0019-settlement-across-services.md) settlement is the
@@ -431,7 +564,8 @@ to make and would be expensive to reverse.
   leaderboard is a snapshot on the ledger, and auth names its users through
   the first service credential
 - [0022](docs/adr/0022-the-ledger-and-a-suspended-trader.md) the ledger asks
-  auth whether a trader is still active, once per trade
+  auth whether a trader is still active, once per trade (amended by 0030: the
+  answer now comes from the ledger's own one-second copy)
 - [0023](docs/adr/0023-sending-an-approved-outcome-back.md) sending an approved
   outcome back inside its stored dispute window, by any admin
 - [0024](docs/adr/0024-resting-orders-fill-inside-the-trade.md) resting orders
@@ -441,3 +575,14 @@ to make and would be expensive to reverse.
 - [0026](docs/adr/0026-production-on-digitalocean.md) production on
   DigitalOcean, two or more app servers behind a load balancer, deployed from
   `main`
+- [0027](docs/adr/0027-login-rate-limits-in-redis-failing-open.md) login and
+  registration limits in Redis, per username or email and address, failing
+  open
+- [0028](docs/adr/0028-liveness-for-the-balancer-readiness-for-alerts.md)
+  `/health` is liveness for the balancer, `/ready` is readiness for dashboards
+  and alerts
+- [0029](docs/adr/0029-price-limits-replace-exact-quotes.md) price limits
+  replace exact quotes on the trade route, shipped expand then contract
+- [0030](docs/adr/0030-the-ledger-keeps-a-local-copy.md) the ledger keeps a
+  one-second local copy of suspensions and trading terms, and calls nobody on
+  a trade; a stale copy refuses
