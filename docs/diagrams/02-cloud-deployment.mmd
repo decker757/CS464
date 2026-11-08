@@ -19,8 +19,8 @@
 %% it, reaching a server on stdin (release.sh). DigitalOcean makes the doadmin password
 %% and the Valkey URL, which Terraform reads; REGISTRY_TOKEN is the run's GITHUB_TOKEN.
 %% Connections: the apps reach Postgres through four PgBouncer pools in transaction
-%% mode, auth 6, market 6, ledger 14, audit 2 = 28 of about 47 on the 2 GB plan
-%% (databases.tf), however many servers run; each server opens 26 clients onto them
+%% mode, auth 6, market 6, ledger 24, audit 2 = 38 of about 47 on the 2 GB plan
+%% (databases.tf), however many servers run; each server opens 19 clients onto them
 %% (compose.yml). The migrate steps connect directly, one after another (migrate.sh).
 %% The VPC title has right padding so the browser arrow misses it. ELK lays
 %% siblings out in reverse source order here, so app-2 is written before app-1.
@@ -56,7 +56,7 @@ flowchart TB
         end
 
         valkey[("Managed Valkey 8, 1 GB, 1 node:<br/>prices, login limits")]
-        pg[("Managed Postgres 17, 2 GB, 1 node, daily backups;<br/>4 PgBouncer pools hold 28 of about 47 connections")]
+        pg[("Managed Postgres 17, 2 GB, 1 node, daily backups;<br/>4 PgBouncer pools hold 38 of about 47 connections")]
         standby[("not built:<br/>Postgres standby")]
     end
 
