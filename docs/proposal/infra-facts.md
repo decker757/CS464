@@ -26,7 +26,7 @@ DigitalOcean's list prices when `docs/deployment.md` was written. That page says
 
 | Other cost | Fact | Source |
 |---|---|---|
-| Domain | About US$10 a year, or a free one from the Student Pack | `docs/deployment.md:52-53` |
+| Domain | About US$10 a year, or a free one from the Student Pack | `docs/deployment.md:53-54` |
 | Images on GHCR | Free for a public repository | `docs/deployment.md:704-705` |
 | A database standby | Double the database's cost; not bought | ADR 0026:108-110 |
 
@@ -34,8 +34,8 @@ DigitalOcean's list prices when `docs/deployment.md` was written. That page says
 
 | Fact | Source |
 |---|---|
-| The GitHub Student Developer Pack includes DigitalOcean credit | `docs/deployment.md:50-51`; ADR 0026:37-38 |
-| Claim it first, so the first bill comes out of it | `docs/deployment.md:50-51` |
+| The GitHub Student Developer Pack includes DigitalOcean credit | `docs/deployment.md:51-52`; ADR 0026:37-38 |
+| Claim it first, so the first bill comes out of it | `docs/deployment.md:51-52` |
 | The amount, and whether it was claimed, are not recorded in the repository | a search of `docs/` and `infra/` finds no figure |
 
 ## Server and database sizes
@@ -74,7 +74,7 @@ DigitalOcean's list prices when `docs/deployment.md` was written. That page says
 | Fact | Source |
 |---|---|
 | Every service serves `/health` (liveness: the process is up) and `/ready` (readiness: its database, or Redis for realtime). The ledger's `/ready` also reports whether its two local copies are fresh | ADR 0028, Decision; `backend/shared/readiness.py`; `backend/ledger_service/main.py:177-187` |
-| Every service serves `/metrics` for Prometheus | `backend/shared/http_metrics.py:90-103` |
+| Every service serves `/metrics` for Prometheus | `backend/shared/http_metrics.py:92-105` |
 | Grafana Alloy on each server ships metrics, logs and traces to Grafana Cloud's free tier, when the deploy is given a Grafana token. It runs under a Compose profile and cannot fail a deploy | `deploy/production/compose.yml:183-208`; `docs/deployment.md`, "Alloy cannot break a deploy" |
 | A dashboard and five alerts, imported into Grafana Cloud on 2026-11-04: 5xx ratio, p95 over 1 s, the close sweep behind, a service down or not ready per server, and the login limiter off. Alerts go by email | `deploy/grafana/alerts.yaml`; `deploy/grafana/dashboard.json`; `docs/deployment.md`, "Monitoring: dashboard and alerts" |
 | The gateway answers 404 to the internet for `/ready`, `/metrics` and every `/internal/` path | `deploy/production/gateway/private-paths.inc` |
@@ -119,7 +119,7 @@ DigitalOcean's list prices when `docs/deployment.md` was written. That page says
 | It also admits port 22 from anywhere, keys only, because GitHub's runners have no fixed address | `infra/terraform/servers.tf:29-30,41-45`; `infra/terraform/cloud-init.yaml.tftpl:27-31` |
 | Postgres and Valkey accept only servers tagged `cs464-app`, over the private network | `infra/terraform/databases.tf:1-2,19-25,39-45`; `infra/terraform/outputs.tf:13,20,121` |
 | Terraform generates the application's secrets: the role passwords, `JWT_SECRET`, the service key, and the SSH keys | `infra/terraform/secrets.tf:6-36` |
-| DigitalOcean makes the `doadmin` password and the Valkey URL, and Terraform reads them | `infra/terraform/outputs.tf:55-59,120-123` |
+| DigitalOcean makes the `doadmin` password and the Valkey URL, and Terraform reads them | `infra/terraform/outputs.tf:55-59,121-124` |
 | `infra/push-secrets.sh` copies them to the GitHub `production` environment, which accepts `main` only | `infra/push-secrets.sh:34-43` |
 | The deploy logs in to GHCR with the run's own `GITHUB_TOKEN`, which is not in the environment | `.github/workflows/deploy.yml:113`; `deploy/production/release.sh:181-182` |
 | `release.sh` writes one `app.env` per server on every deploy, under `umask 077` | `deploy/production/release.sh:114-148,180` |
