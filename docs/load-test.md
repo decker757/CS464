@@ -137,6 +137,10 @@ trip gained or lost stays, a few credits at most.
 | 2026-11-04 | production, two 1-vCPU app servers behind the load balancer, 5 markets | 50, 5 min | 738 (2.5 a second) | 4.52 s | 5.93 s | 0.8% | 5,091 | 633 |
 | 2026-11-07 | production after #640's release (price limits, the ledger's local copy, 13 statements under the lock, DigitalOcean's pooler), two 1-vCPU app servers, 1 market | 50, 5 min | 3,568 (12 a second) | 4.72 s | 5.71 s | 0% | — (38 limit refusals, all retried) | 0 |
 | 2026-11-07 | the same, 5 markets | 50, 5 min | 6,394 (21 a second) | 2.60 s | 3.59 s | 0% | — (no limit refusals) | 0 |
+| 2026-11-08 | production after #667's release (`e88d4ffc`: the ledger's pool holds its clients, two trades per market per ledger hold a connection), **one** 1-vCPU app server, the other drained, 5 markets | 50, 5 min | 4,190 (14 a second) | 5.83 s | 6.99 s | 0% | — (no limit refusals) | 0 |
+| 2026-11-08 | the same release, two 1-vCPU app servers, 5 markets | 50, 5 min | 7,300 (24 a second) | 2.85 s | 3.77 s | 0% | — (no limit refusals) | 0 |
+| 2026-11-08 | the same release, **three** 1-vCPU app servers (a temporary third), 5 markets | 50, 5 min | 8,582 (29 a second) | 2.45 s | 3.11 s | 0% | — (no limit refusals) | 0 |
+| 2026-11-08 | the same release, two 1-vCPU app servers, 1 market | 50, 5 min | 4,106 (14 a second) | 4.68 s | 5.45 s | 0% | — (12 limit refusals, all retried) | 0 |
 
 "A second" is over the trading time alone. k6's own `/s` figure divides by a
 time that includes setup.
@@ -150,6 +154,18 @@ ignores and which are kept on the machine that ran them:
 |---|---|---|---|
 | 1 market | 2.85 s, 2.69 s | 1.68 s, 1.6 s | 1,784, 8.49 s |
 | 5 markets | 1.42 s, 1.28 s | 897 ms, 799 ms | 3,197, 4.75 s |
+
+Means for the four 8 November runs (#668), from
+`loadtest/results/20261108T150049Z.txt` (one server),
+`20261108T151403Z.txt` (two), `20261108T153353Z.txt` (three) and
+`20261108T155006Z.txt` (one market), kept the same way:
+
+| 2026-11-08 run | Trade avg, med | Snapshot avg, med, p95 | Iterations, avg |
+|---|---|---|---|
+| 1 server, 5 markets | 2.96 s, 2.57 s | 306 ms, 202 ms, 1.05 s | 2,095, 7.23 s |
+| 2 servers, 5 markets | 1.47 s, 1.36 s | 176 ms, 141 ms, 461 ms | 3,650, 4.13 s |
+| 3 servers, 5 markets | 1.17 s, 1.03 s | 150 ms, 117 ms, 348 ms | 4,291, 3.51 s |
+| 2 servers, 1 market | 3.12 s, 2.98 s | 102 ms, 58 ms, 288 ms | 2,053, 7.37 s |
 
 An iteration is one trader's loop: a snapshot, a buy, a sell and a
 one-second sleep.
@@ -184,13 +200,14 @@ one-second sleep.
   measured 2.85 s mean trade latency). 50 × 84 ms = 4.2 s is the wait if all
   50 queued at once, an upper bound, not the measured 4.72 s p95. The
   lock-free snapshot read had a p95 of 2.81 s on one market and 1.77 s on
-  five, so the servers' CPU was saturated too, and part of the trade's tail
-  is that queue, not the lock. ADR 0031's trigger for a per-market engine is
+  five, so the servers were very likely short of CPU too (inferred: CPU was
+  not sampled that day), and part of the trade's tail is that queue, not
+  the lock. ADR 0031's trigger for a per-market engine is
   a one-market lock wait above 200 ms at the p95, or more than about 20
-  trades a second on one market. The lock-wait criterion is very likely met,
-  but not yet measured: the dashboard's lock-wait panel was not written down
-  for this run, and #668 records it. ADR 0031, "When to take it", has the
-  arithmetic.
+  trades a second on one market. The lock-wait criterion was very likely met
+  but not measured for this run, since the dashboard's lock-wait panel was
+  not written down; #668 measured it on 8 November at 0.43 s, so it is met.
+  ADR 0031, "When to take it", has the arithmetic.
 - **Behind the pooler, the lock queue holds the ledger's connections.** During
   the one-market run, `ledger on app-1: database` showed DOWN on the dashboard:
   the ledger's pool then had 14 server connections for both servers, every
@@ -198,10 +215,18 @@ one-second sleep.
   `SELECT 1` waited behind them. The five-market run never did this. The
   ledger's pool should be sized above its client pools' total (two servers at
   10 + 5 each), inside the connection budget in `docs/deployment.md`. #667
-  does: 24, with 6 + 2 on each of up to three servers.
-- **Next measurements:** the one, two and three server runs (#668), which
-  say how far the five-market figure moves with CPU. What each fix changed
-  is under "Capacity and its limits", below.
+  does: 24, with 6 + 2 on each of up to three servers. On 8 November, after
+  it, no readiness dependency on any server read DOWN in any of the four
+  runs, the one-market run included (Grafana's `service_dependency_ready`;
+  for the one-server run sampled every 20 s and checked with
+  `min_over_time`, for the other three read after the run).
+- **The one, two and three server runs (#668, 8 November)** are under
+  "Capacity and its limits", "Scale-out: one, two and three servers",
+  below. In short: a second server took the five-market figure from 14 to
+  24 trades a second and halved the p95, and a third added 18% more; what
+  limited the third is not shown. On the same two servers and the new
+  release, one market went from 12 to 14 trades a second (15% more), with
+  the p95 at 4.68 s against 4.72 s and CPU to spare.
 - **Production is much slower than a laptop.** With 50 traders for five
   minutes, the same script committed 126 trades on one market and 738 on five,
   against 1,137 in one minute on a laptop. Both app servers sat at 100% CPU,
@@ -279,9 +304,20 @@ why the next step does too.
   traders queued at once, the last would wait 50 × 84 ms = 4.2 s; that is an
   upper bound, since about 34 trades were in flight on average (above). More
   servers do not raise the throughput, except for whatever part of the 84 ms
-  is CPU starvation, which #668's runs will show. The dashboard's book-lock
-  wait p95 was 4.5 s on 4 November (#640). For 7 November it was not written
-  down, and #668's runs should record it.
+  is CPU starvation. #668's one-market run on 8 November suggests that part
+  is small, without measuring it: 4,106 trades in 300 s, 14 a second, about
+  73 ms per hold (derived, one over the throughput), with the services on
+  the two servers using 0.45 and 0.31 of their one vCPU, and the p95 at
+  4.68 s against 4.72 s. CPU was not sampled on 7 November, and the release
+  changed in between, so the two holds are not a controlled comparison. The
+  dashboard's book-lock wait p95 was 4.5 s on
+  4 November (#640), not written down on 7 November, and 0.43 s on
+  8 November. That 0.43 s counts only the wait at the row lock. Since #667,
+  at most two trades per market per ledger hold a connection, so on two
+  servers at most four reach the database, at most three of them wait
+  behind the one holding the lock, and the rest of the queue waits in each
+  ledger's memory, which the panel does not see. The trade p95 of
+  4.68 s is the whole queue.
 - **Nothing bounds that wait.** There is no `lock_timeout` or statement
   timeout on a trade, so the tail grows by about 84 ms for every trader
   queued ahead. #669 asked for one and was closed as not planned.
@@ -294,7 +330,15 @@ why the next step does too.
   the servers were queueing for CPU. On one market it was 2.81 s, but that
   includes waiting for a pooled connection (the last item here), so it is
   not a clean CPU figure. Server CPU was not sampled during the 7 November
-  runs. Before the release, #640 put each trade attempt at about 130 ms of
+  runs. On 8 November it was, as the services' own CPU in Grafana
+  (`process_cpu_seconds_total`, every service on the server, averaged over
+  the five trading minutes): 0.78 of the lone server's one vCPU, 0.64 and
+  0.54 with two, 0.45 to 0.57 with three, and 0.45 and 0.31 on one market.
+  That leaves out the gateway, Alloy and the system, so the whole server
+  was busier. DigitalOcean's whole-droplet figures were read too, but each
+  run got only two or three of its samples, and in three of the four runs
+  they read a server below its own services' figure, which a whole server
+  cannot be, so they are not used. Before the release, #640 put each trade attempt at about 130 ms of
   app-server CPU, across the ledger and its two calls to auth and market.
   That is a production figure from 4 November, and #640 shows no working; it
   matches 600 vCPU-seconds over that one-market run's 4,553 attempts (126
@@ -304,7 +348,8 @@ why the next step does too.
 - **One primary database.** One managed Postgres node (1 vCPU, 2 GB, no
   standby), with about 47 connections, of which the pools use 38. Every
   trade, lock and balance is there, so adding app servers adds no database.
-  It ran at 45% CPU on 4 November. On 7 November it was not recorded. The
+  It ran at 45% CPU on 4 November. On 7 and 8 November it was not
+  recorded. The
   lever is a bigger plan: the app servers scale out and the database scales
   up ([ADR 0026](adr/0026-production-on-digitalocean.md)). The audit log
   needs every service on that one database
@@ -324,8 +369,9 @@ why the next step does too.
   still fill. So each ledger also lets only two trades per market, and six
   in all, hold a connection at once. The rest wait in memory, and two
   connections are kept from trades, for reads, the readiness check, cancels,
-  settlement, void and the leaderboard refresher. Both go live before #668's
-  runs.
+  settlement, void and the leaderboard refresher. Both went live on
+  8 November, before #668's runs, and in those four runs no readiness check
+  read DOWN on any server, the one-market run included.
 
 ### Reads that grow without bound
 
@@ -359,25 +405,71 @@ Not fixed:
 
 ### Scale-out: one, two and three servers
 
-> **Not measured yet. This table is #668's**, and its empty cells are filled
-> in by those runs. Nothing in it is an estimate.
+#668, measured on 2026-11-08 at `e88d4ffc` (#667's release), from the main
+checkout on the same machine as 7 November. Each run had fresh throwaway
+markets, five or, for the one-market run, one, so no run inherited another's
+book. One server was the
+pair with app-2 drained (its `/lb-health` answered 503 and it committed no
+trade); three was a third droplet added by Terraform, given the release by
+the deploy, and destroyed after the run.
 
-| App servers | Five markets, 50 traders, 5 min: trades committed | Trade p95 | Errors | Server CPU |
-|---|---|---|---|---|
-| 1, the other drained | not run (#668) | | | |
-| 2 | 6,394, on 2026-11-07, the baseline; #668 runs it again | 2.60 s | 0% | not recorded |
-| 3, a temporary third droplet | not run (#668) | | | |
+| App servers | Five markets, 50 traders, 5 min: trades committed | Trade p95, p99 | Errors | Book-lock wait p95 | Services' CPU, vCPU of 1, mean per server |
+|---|---|---|---|---|---|
+| 1, the other drained | 4,190 (14 a second) | 5.83 s, 6.99 s | 0% | 0.10 s | 0.78 |
+| 2 | 7,300 (24 a second); 6,394 on 2026-11-07 | 2.85 s, 3.77 s; 2.60 s, 3.59 s on 2026-11-07 | 0% | 0.56 s | 0.64, 0.54 |
+| 3, a temporary third droplet | 8,582 (29 a second) | 2.45 s, 3.11 s | 0% | 0.96 s | 0.57, 0.45, 0.56 |
+| 2, one market (Run A) | 4,106 (14 a second); 3,568 on 2026-11-07 | 4.68 s, 5.45 s; 4.72 s, 5.71 s on 2026-11-07 | 0% | 0.43 s | 0.45, 0.31 |
 
-What it has to answer: how far the five-market figure moves with CPU, and
-whether the one-market figure moves at all. It should not move much, because
-the book lock is the ceiling there. If it does, that part of the 84 ms hold
-was CPU starvation.
+How each column was read. Trades, latency and errors are k6's summaries
+(the means are in "Results", above). The book-lock wait is the dashboard
+panel's query over five minutes, read 14 to 30 s after the end of trading,
+so a window can miss up to the first 30 s of it. Every figure is
+interpolated inside a histogram bucket (the bounds are 0.05, 0.1, 0.25, 0.5
+and 1 s), so it is a bucket and a guess within it. That does not weaken the
+one-market figure: 0.43 s lies in the 0.25 to 0.5 s bucket, so the true p95
+was above 0.25 s, and so above ADR 0031's 200 ms, whatever the
+interpolation did. CPU is the services' own, from Grafana, as under "One
+vCPU" above. No readiness dependency read DOWN in any run, and no request
+answered 5xx.
+
+**What it answers.**
+- **On five markets, a second server helped most and a third less.** The
+  second added 74% (14 to 24 trades a second) and halved the p95; the lone
+  server's services had used 0.78 of its vCPU. The third added 18% (24 to
+  29), with each server's services at 0.45 to 0.57.
+- **What limited the third is not shown.** The 50 traders each wait for
+  their answer, so throughput follows the trade's latency: a loop is a
+  snapshot, two trades and a one-second sleep, and 4,291 loops averaging
+  3.51 s is the 29 a second. The trade's mean fell from 2.96 s to 1.47 s to
+  1.17 s. The book-lock wait p95 rose from 0.10 s to 0.56 s to 0.96 s, but
+  that rise is partly #667's limit: two trades per market per ledger hold a
+  connection, so on one, two and three servers at most one, three and five
+  trades per market can wait at the row lock, and the panel sees more of
+  the queue as servers are added. On three servers each of the five
+  markets did about 5.7 trades a second, well below one market's 14, yet
+  its p95 wait was above 0.5 s with at most five waiting, which means holds
+  above about 100 ms, longer than one market's 73 ms (derived). That points
+  at something the five markets share: the one database, whose CPU was not
+  recorded, or the app servers' CPU. These runs do not separate the two.
+- **One market, the same two servers, a new release.** Against 7 November,
+  4,106 trades instead of 3,568 (15% more), and the p95 went from 4.72 s to
+  4.68 s, with the services at 0.45 and 0.31 vCPU. About 73 ms per hold
+  (derived) instead of 84 ms. With CPU to spare, one market still stopped
+  at 14 a second, so its lock is its ceiling. How much of the 84 ms was CPU
+  starvation is not measured: CPU was not sampled on 7 November, and #667
+  changed where the queue waits.
+- **#667 held.** The one-market shape is the one that took
+  `ledger on app-1: database` DOWN on 7 November. It did not on 8 November,
+  nor did anything in the other three runs.
+- **Not measured:** the database's CPU (not recorded in any of the four),
+  which is the reading that would say what limited the third server; a
+  one-market run on three servers; and anything past three servers, which
+  the ledger's pool of 24 does not allow.
 
 ### What comes next, in order
 
-Two things first, which change no design: #667's pool sizes (one number in
-Terraform and two in the production compose file, live before the runs) and
-#668's runs.
+Two things came first, which change no design, and both are done: #667's
+pool sizes and per-market limit, live on 8 November, and #668's runs, above.
 
 1. **A single-statement write path.** Everything a trade writes, as one
    data-modifying statement after the account locks, so the locked section
@@ -397,6 +489,6 @@ Terraform and two in the production compose file, live before the runs) and
    Each market's book in memory in one ledger process, behind a fenced lease
    on the book row, with trades committed in batches and the overdraft check
    still in Postgres. Its trigger, a one-market lock wait above 200 ms at the
-   p95, was very likely met on 7 November, but is not yet measured; #668
-   records the book-lock wait panel. It stays proposed until step 1 is built
+   p95, is met: #668 measured 0.43 s on 8 November, and since #667 that panel
+   undercounts the queue (above). It stays proposed until step 1 is built
    and measured.
