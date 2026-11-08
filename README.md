@@ -461,6 +461,13 @@ nobody notices.
 - [**The schemas**](docs/architecture.md#the-schemas): `market` and `ledger` as
   ERDs, including the balance column `ledger.accounts` does not have.
 
+After them, [**the diagram set**](docs/architecture.md#the-diagram-set):
+twelve more drawn for the final proposal, with shorter labels that print at
+A4 width, and the parts the three do not draw — production, CI/CD, security,
+the market lifecycle, settlement, scaling, the live-price fan-out and a
+delivery timeline. Their sources are in `docs/diagrams/`, rendered to SVG and
+PNG by `docs/diagrams/render.py`.
+
 They live in their own file rather than inline so that each exists once.
 
 ## How it is put together
@@ -485,7 +492,9 @@ sql/migrations/           0002 only: a login role, and 02-schemas.sql re-run
 deploy/                   nginx.conf for the replicated stack below
 docs/adr/                 decisions and why they were made
 docs/api/                 endpoint contracts for the frontend
-docs/architecture.md      the three diagrams above, each citing its ADR
+docs/architecture.md      the three diagrams above, each citing its ADR,
+                          and the diagram set
+docs/diagrams/            the diagram set's sources, renders and render.py
 docs/horizontal-scaling.md  two of every service behind a proxy, and the run
                           that showed it works
 scripts/                  weekly sprint digest to Telegram
