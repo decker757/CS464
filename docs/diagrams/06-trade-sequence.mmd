@@ -48,7 +48,7 @@ sequenceDiagram
         alt beyond the limit
             L-->>B: 409 price_beyond_limit, nothing written
         else within it
-            L->>DB: write q,<br/>position, entries,<br/>fills, COMMIT
+            L->>DB: write q,<br/>position,<br/>entries, fills,<br/>COMMIT
             L-)R: PUBLISH market.price<br/>(failure logged)
             L-->>B: 201, the trade result
             R-)RT: price frame

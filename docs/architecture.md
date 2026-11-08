@@ -467,8 +467,8 @@ foreign key: across schemas because no service holds a grant on another's,
 and for `proposed_outcome_id` by choice. On solid lines the crow's-foot ends
 show what the constraints enforce, on dotted lines what the writing code
 does; Mermaid's identifying/non-identifying distinction is not used. In
-print it needs a landscape page: its text is about 5.3 pt at the portrait text
-width and 7.4 pt at 22.3 cm wide, where it still fits the page's height.
+print it needs a landscape page: its text is about 5.2 pt at the portrait text
+width and 7.3 pt at 22.3 cm wide, where it still fits the page's height.
 **Drawn from:** `backend/*/model/entities.py`, each service's
 `migrations/versions/`, `sql/02-schemas.sql`, ADR 0003.
 [Source](diagrams/04-erd-overview.mmd)

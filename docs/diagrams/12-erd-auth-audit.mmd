@@ -40,7 +40,7 @@ erDiagram
         uuid user_id FK "ON DELETE CASCADE"
         varchar(64) token_hash UK "SHA‑256 of an opaque random token"
         timestamptz expires_at "issued plus 14 days"
-        timestamptz revoked_at "set on use or logout; reuse revokes all"
+        timestamptz revoked_at "on use or logout; reuse revokes all"
         timestamptz created_at
     }
 
