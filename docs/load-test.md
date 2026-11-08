@@ -323,8 +323,9 @@ why the next step does too.
   queue into each ledger process, whose 8 connections waiting trades could
   still fill. So each ledger also lets only two trades per market, and six
   in all, hold a connection at once. The rest wait in memory, and two
-  connections always stay free for reads and the readiness check. Both go
-  live before #668's runs.
+  connections are kept from trades, for reads, the readiness check, cancels,
+  settlement, void and the leaderboard refresher. Both go live before #668's
+  runs.
 
 ### Reads that grow without bound
 

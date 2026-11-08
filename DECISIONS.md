@@ -11344,7 +11344,8 @@ clients, since 30 for the ledger leaves too little of the 47 for the
 direct connections. The pools now hold 38. This ends the queue at the
 pooler only: on one busy market, waiting trades can still fill one ledger
 process's own 6 + 2, and its reads and readiness check then queue inside
-that process. #667's second part limits that.
+that process. "Only a few trades per market hold a ledger connection at
+once" limits that.
 
 ---
 
@@ -11793,7 +11794,8 @@ read 31.
 
 **Decision.** Before its first statement, a trade (`trading.execute`) or a
 placement (`orders.place`) waits in memory for two slots, holding no database
-connection, and keeps them until its transaction has ended:
+connection, and keeps them until its transaction has ended. It publishes its
+price and order frames only after giving them back:
 
 1. one of its market's, at most `DATABASE_CONNECTIONS_PER_MARKET` (default 2)
    per market in each ledger process;
@@ -11802,8 +11804,10 @@ connection, and keeps them until its transaction has ended:
    6 + 2 − 2 = 6.
 
 So whatever the trades are doing, at least two of each ledger's eight
-connections are free for snapshots, balances, history and the readiness
-check's `SELECT 1`. The primitive is `core/connection_slots.py`; the one
+connections are kept from trades and placements. Everything that takes no
+slot shares those two: snapshots, balances, history, the readiness check's
+`SELECT 1`, cancels, settlement, void and the leaderboard refresher on the
+one server that runs it. The primitive is `core/connection_slots.py`; the one
 instance, and the rollback before a slot is given back, are in
 `service/connection_slots.py`. The settings refuse a reserve that leaves
 trades no connection. The book lock in Postgres is still the only authority
@@ -11839,12 +11843,22 @@ or a refusal it is the rollback the session's close would send anyway, only
 earlier, so the next trade's checkout never overlaps this one's. The trade's
 statement budget is unchanged.
 
-**Not gated: cancel, admin cancel, settlement and void.** They are rare and
-done by people at human speed. Settlement and void run once per market. A
-cancel learns its market only by reading the order, so a slot before its
-first statement would mean giving the connection back and taking it again.
-Each of them still waits for the book lock holding a connection, so a burst
-of cancels on a hot market can use up the reserve for as long as it lasts.
+**The publish is outside the slot.** The price frame and the order frames go
+out after the slot is given back, on the trade path and for a placement that
+fills alike. Inside it, a stalled Redis (a 5 s socket timeout) would hold
+each slot for up to 5 s after the commit, and a slow Redis would then
+throttle trades, which ADR 0010 forbids: the publish never gets in a trade's
+way. A failed publish is still logged and never raised.
+
+**Not gated: cancel, admin cancel, settlement, void and the leaderboard
+refresher.** The first four are rare and done by people at human speed.
+Settlement and void run once per market. A cancel learns its market only by
+reading the order, so a slot before its first statement would mean giving the
+connection back and taking it again. Each of them still waits for the book
+lock holding a connection, so a burst of cancels on a hot market can use up
+the reserve for as long as it lasts. The refresher takes no book lock; it runs
+on one server, once a minute, and uses one of that server's reserve while it
+runs.
 
 **No timeout.** A waiting request costs memory, not a connection, and the
 client's own timeout still applies. A timeout here would turn a slow market
@@ -11884,6 +11898,8 @@ most two hold a connection and `/ready` answers at once. Remove the market's
 limit and six do; remove both limits and all eight do, and `/ready` times
 out. Three trades on each of four held books: the reserve stays free. Remove
 the process-wide limit and eight hold a connection, and `/ready` times out.
+Two requests on one market that stall in their publish leave a third free
+to commit; put the publish back inside the slot and the third waits.
 `unit_test/core/test_connection_slots.py` holds the order of the two limits
 and that a market nobody waits for is forgotten, so the map stays as small as
 the markets in flight.

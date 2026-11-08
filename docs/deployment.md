@@ -577,9 +577,12 @@ ledger also limits who may hold one. A trade or a placement waits in memory,
 holding no connection, until it has one of its market's slots
 (`DATABASE_CONNECTIONS_PER_MARKET`, default 2) and one of the process's (the
 pool at full overflow less `DATABASE_CONNECTIONS_FOR_READS`, default 2:
-6 + 2 − 2 = 6). However many markets are busy, at least 2 of the 8 stay free
-for snapshots, balances, history and the readiness check. Cancels,
-settlement and void are rare and take no slot. The slots are worked out from
+6 + 2 − 2 = 6). However many markets are busy, at least 2 of the 8 are kept
+from trades and placements. Everything that takes no slot shares those 2:
+snapshots, balances, history, the readiness check, cancels, settlement, void
+and the leaderboard refresher on the one server that runs it. A trade
+publishes its price only after giving its slot back, so a slow Redis holds no
+slot. The slots are worked out from
 the pool sizes, so they follow any change to them. DECISIONS.md, "Only a few
 trades per market hold a ledger connection at once".
 

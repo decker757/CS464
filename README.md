@@ -439,9 +439,10 @@ Measured or decided, with the record that says so.
   [`docs/deployment.md`](docs/deployment.md), "Connection budget"), so the
   pooler never queues the ledger. Inside each ledger, only two trades per
   market, and six in all, hold a connection at once. The rest wait in
-  memory, so two of its 8 connections stay free for reads and the readiness
-  check. Cancels, settlement and void take no slot, so a burst of them on a
-  hot market can still use up those two while it lasts.
+  memory, so two of its 8 connections are kept from trades and placements.
+  Reads and the readiness check share those two with everything else that
+  takes no slot: cancels, settlement, void and the leaderboard refresher. A
+  burst of cancels on a hot market can still use them up while it lasts.
 - **A price is published after the trade commits, and a crash between the
   two loses that frame** ([ADR 0010](docs/adr/0010-realtime-price-broadcast.md)).
   A client that reconnects fetches a snapshot, which is the recovery path it
