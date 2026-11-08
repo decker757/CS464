@@ -140,6 +140,7 @@ import tempfile
 import textwrap
 from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 PROPOSAL_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PROPOSAL_DIR.parent.parent
@@ -756,8 +757,16 @@ def _ambiguous_statuses(row: dict, error_codes: dict) -> set[str]:
     return ambiguous
 
 
-def _error_groups(row: dict, error_codes: dict) -> list[tuple[str, list[str], bool]]:
-    """The error column as (status label, codes, is ‡) groups, in status order.
+class ErrorGroup(NamedTuple):
+    """One status in the error column: its label, its codes, and whether it is ‡."""
+
+    label: str
+    codes: list[str]
+    is_ambiguous: bool
+
+
+def _error_groups(row: dict, error_codes: dict) -> list[ErrorGroup]:
+    """The error column as one group per status, in status order.
 
     A ‡ status comes with no codes: the walk cannot tell which of its codes
     the route really returns, and a shorter list that is true beats a longer
@@ -769,9 +778,9 @@ def _error_groups(row: dict, error_codes: dict) -> list[tuple[str, list[str], bo
     for status in sorted(shown, key=_status_order):
         label = "error frame" if status == "frame" else status
         if status in ambiguous:
-            groups.append((label, [], True))
+            groups.append(ErrorGroup(label, [], True))
         else:
-            groups.append((label, sorted(shown[status]), False))
+            groups.append(ErrorGroup(label, sorted(shown[status]), False))
     return groups
 
 
@@ -782,36 +791,36 @@ def _group_text(label: str, codes: list[str]) -> str:
     return f"{label} " + ", ".join(f"`{code}`" for code in codes)
 
 
-def _full_errors(groups: list[tuple[str, list[str], bool]]) -> str:
+def _full_errors(groups: list[ErrorGroup]) -> str:
     """`404 `x`; 409 ‡`, for the full table."""
     parts = []
-    for label, codes, is_ambiguous in groups:
-        if is_ambiguous:
-            parts.append(f"{label} ‡")
+    for group in groups:
+        if group.is_ambiguous:
+            parts.append(f"{group.label} ‡")
         else:
-            parts.append(_group_text(label, codes))
+            parts.append(_group_text(group.label, group.codes))
     return "; ".join(parts) or "—"
 
 
 # --- Tables -------------------------------------------------------------------
 
 
-def _statuses_only(groups: list[tuple[str, list[str], bool]]) -> str:
+def _statuses_only(groups: list[ErrorGroup]) -> str:
     """`404, 409`, for the one-page appendix."""
-    return ", ".join(label for label, _codes, _is_ambiguous in groups) or "—"
+    return ", ".join(group.label for group in groups) or "—"
 
 
-def _first_codes(groups: list[tuple[str, list[str], bool]]) -> str:
+def _first_codes(groups: list[ErrorGroup]) -> str:
     """Every status, with its codes while BODY_ERRORS_LIMIT lasts, for the body."""
     shown = []
     used = 0
-    for label, codes, _is_ambiguous in groups:
-        section = _group_text(label, codes)
+    for group in groups:
+        section = _group_text(group.label, group.codes)
         if used + len(section) <= BODY_ERRORS_LIMIT:
             shown.append(section)
             used += len(section)
         else:
-            shown.append(f"{label} …")
+            shown.append(f"{group.label} …")
     return "; ".join(shown) or "—"
 
 
@@ -819,7 +828,7 @@ def _table_lines(
     rows: list[dict],
     error_codes_by_service: dict,
     *,
-    render_errors: Callable[[list[tuple[str, list[str], bool]]], str],
+    render_errors: Callable[[list[ErrorGroup]], str],
     with_footnotes: bool,
 ) -> list[str]:
     lines = [
