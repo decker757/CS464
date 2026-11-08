@@ -24,7 +24,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot, the ledger's price producer and its order frames |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
-| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440, #609, #20, #640, #667 | live at **https://predictsmu.xyz**: every push to `main` deploys to DigitalOcean, two app servers behind a load balancer (ADR 0026), and `npm run seed:production` seeds it with the demo markets; monitoring (#599) ships to Grafana Cloud from each server; the load test [5.4] #20 ran on 2026-11-04 (a trade's p95 was 5.45 s at 50 users, both servers at 100% CPU) and #640's answer shipped on 2026-11-07: a trade names a price limit (ADR 0029), the ledger keeps a one-second copy of who and what may trade and calls no other service on a trade (ADR 0030), a trade holds the book lock for 13 statements instead of 22 (#641), and DigitalOcean's connection pooler lets a third server start (#660); the after figures, measured on 2026-11-07, are under "Load testing and scaling" below; this release ships #667, so that one hot market's lock queue no longer holds the ledger's connections away from its reads and readiness check (the ledger's pool holds all its clients, and only two trades per market hold a connection; a burst of cancels can still use up the rest while it lasts); staging is dropped from scope (ADR 0026) |
+| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440, #609, #20, #640, #667 | live at **https://predictsmu.xyz**: every push to `main` deploys to DigitalOcean, two app servers behind a load balancer (ADR 0026), and `npm run seed:production` seeds it with the demo markets; monitoring (#599) ships to Grafana Cloud from each server; the load test [5.4] #20 ran on 2026-11-04 (a trade's p95 was 5.45 s at 50 users, both servers at 100% CPU) and #640's answer shipped on 2026-11-07: a trade names a price limit (ADR 0029), the ledger keeps a one-second copy of who and what may trade and calls no other service on a trade (ADR 0030), a trade holds the book lock for 13 statements instead of 22 (#641), and DigitalOcean's connection pooler lets a third server start (#660); the after figures, measured on 2026-11-07, and the one, two and three server runs of 2026-11-08 (#668) are under "Load testing and scaling" below; this release ships #667, so that one hot market's lock queue no longer holds the ledger's connections away from its reads and readiness check (the ledger's pool holds all its clients, and only two trades per market hold a connection; a burst of cancels can still use up the rest while it lasts); staging is dropped from scope (ADR 0026) |
 
 ## Running it
 
@@ -267,18 +267,31 @@ pooler is what lets the next server start. On one market it does not: every
 trade on a market takes the same lock, on purpose, because the money has to
 serialise ([ADR 0015](docs/adr/0015-locking-the-read-that-decides-a-write.md)), and
 3,568 trades in 300 s is 12 a second, about 84 ms per hold. That is the
-documented ceiling. The trade p95 on one market was 4.72 s, measured. How
-much of it was the lock queue, and how much the saturated CPU, was not
-measured: the dashboard's lock-wait panel was not recorded for that run.
-That run also showed one server's ledger reporting its database down while
-trades still committed, because trades waiting for the lock held its
-connections. #667 fixed that after the run, and #668's runs are the first to
-measure it.
-The step past it, a per-market engine, is written up as a proposed ADR,
-[ADR 0031](docs/adr/0031-a-per-market-trading-engine.md), and the one, two
-and three server runs that put a number on the sideways scaling are the
-next measurement (#668). What each fix changed, the ceilings and the next
-steps are in
+documented ceiling. That run also showed one server's ledger reporting its
+database down while trades still committed, because trades waiting for the
+lock held its connections. #667 fixed that after the run.
+
+**One, two and three servers, measured on 8 November** (#668, after #667's
+release; fresh markets per run, 50 traders, 5 minutes):
+
+| App servers | Markets | Trades committed | Trade p95 | Errors | Book-lock wait p95 | Services' CPU, vCPU of 1 |
+|---|---|---|---|---|---|---|
+| 1, the other drained | 5 | 4,190 (14 a second) | 5.83 s | 0% | 0.10 s | 0.78 |
+| 2 | 5 | 7,300 (24 a second) | 2.85 s | 0% | 0.56 s | 0.64, 0.54 |
+| 3, a temporary third | 5 | 8,582 (29 a second) | 2.45 s | 0% | 0.96 s | 0.57, 0.45, 0.56 |
+| 2 | 1 | 4,106 (14 a second) | 4.68 s | 0% | 0.43 s | 0.45, 0.31 |
+
+On five markets the second server added 74% and halved the p95, and the
+third added 18%. What limited the third is not shown: on three servers each
+market did under 6 trades a second, well below one market's 14, and the
+database's CPU, which all five share, was not recorded. On the same two
+servers, one market went from 12 to 14 trades a second (15% more, p95
+4.72 s to 4.68 s) with CPU to spare, so its book lock is its ceiling. In
+none of the four runs did a readiness check read DOWN. The step past the
+lock, a per-market engine, is written up as a proposed ADR,
+[ADR 0031](docs/adr/0031-a-per-market-trading-engine.md), whose trigger
+(a one-market lock wait above 200 ms) these runs measured as met. What each
+fix changed, the ceilings and the next steps are in
 [`docs/load-test.md`, "Capacity and its limits"](docs/load-test.md#capacity-and-its-limits).
 
 ## Monitoring

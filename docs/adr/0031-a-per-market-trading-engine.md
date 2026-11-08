@@ -1,15 +1,17 @@
 # ADR 0031: A per-market trading engine: one owner per book, a fenced lease, group commits
 
 - **Status:** Proposed, 2026-11-05. Not accepted and not built. Its trigger
-  (under "When to take it") was very likely met on 2026-11-07, but it has
-  not been measured: #668 records the book-lock wait panel. It stays
-  Proposed until the single-statement write path below has been built and
-  measured, and the engine's work is planned.
+  (under "When to take it") is met: #668 measured the one-market lock-wait
+  p95 at 0.43 s on 2026-11-08. It stays Proposed until the single-statement
+  write path below has been built and measured, and the engine's work is
+  planned.
 - **Date:** 2026-11-05. The 2026-11-07 measurements and the trigger's
   reading added 2026-11-08. Edited in place the same day after its review:
   the fence also checks `state_version`, the rollout is expand then
   contract, idempotency keeps today's request match, and every capacity
   figure says whether it is measured, derived or estimated.
+  #668's measurement of the trigger added 2026-11-09, in the status and
+  under "When to take it".
 - **Decided by:** Ernest, on 2026-11-05, approving #640's design: build the
   trade-path fixes, and write this step down rather than take it.
 - **Affects:** [5.4] #640, #641, #642, #643, #645, #667, #668, [5.4] #20,
@@ -485,17 +487,24 @@ When either of these is measured under #20's script, after #641 has landed:
   script's k6 summary, or
 - the one-market lock-wait p95 above **200 ms**, from the dashboard's
   "Book-lock wait p95" panel (`ledger_book_lock_wait_seconds`). The script
-  does not report it. #668's runs should write that panel down for every
-  run.
+  does not report it. #668 wrote that panel down for each of its four
+  runs (`docs/load-test.md`, "Scale-out: one, two and three servers").
 
 Below both, more vCPU and the single-statement write path are cheaper answers
 to the same load.
 
-**The second is very likely met, but not yet measured.** #641 landed on
-2026-11-07. The panel was not written down for the one-market run after it,
-so the lock wait is not measured, and by the rule above the trigger has not
-fired. #668 records the book-lock wait panel. The run before the fixes
-measured 4.5 s on it.
+**The second is met, measured on 2026-11-08.** #641 landed on 2026-11-07,
+and the panel was not written down for the one-market run after it. #668's
+one-market run on 2026-11-08, after #641 and #667, read it at **0.43 s**,
+above 200 ms, so by the rule above the trigger has fired. It lies in the
+histogram's 0.25 to 0.5 s bucket, so the true p95 was above 0.25 s whatever
+the interpolation. The first criterion is not shown: that run committed 14
+trades a second, and the lock caps what one market can show (below). The
+0.43 s understates the queue. Since #667 each ledger lets only two trades
+per market hold a database connection, so on two servers at most four
+reach the database and at most three wait at the row lock, and the rest
+of the queue waits in the ledger's memory, where the panel does not see it (`docs/load-test.md`, "The ceilings now"). The run before
+the fixes measured 4.5 s on it.
 
 What the measured figures say, by Little's law on the lock. A p95 lock wait
 under 200 ms would mean a mean under 200 ms too, unless the slowest 5% of
@@ -518,8 +527,12 @@ market at 12 trades a second, so demand above 20 shows up as wait, not as
 throughput, which is why the second criterion exists.
 
 It stays Proposed. The single-statement write path is cheaper and comes
-first, and #668's one-, two- and three-server runs will say how much of the
-84 ms hold is CPU starvation rather than round trips.
+first. #668's one-market run suggests that little of the 84 ms hold was
+CPU starvation, without measuring it: with the services on the two servers
+using 0.45 and 0.31 of their vCPU, one market still committed only 14
+trades a second, about 73 ms a hold (derived, one over the throughput).
+CPU was not sampled on 2026-11-07 and the release changed in between, so
+the two holds are not a controlled comparison.
 
 ## Size
 
