@@ -571,11 +571,20 @@ servers. A fourth server needs a bigger pool or smaller client pools; keep
 services hold no lock while they wait, so their pools stay smaller than
 their clients.
 
-This keeps the queue out of the pooler, not out of the ledger. A trade
-waiting for the book lock still holds one of its process's 8 connections,
-so on one hot market waiting trades could fill all 8 and leave the
-readiness check and other reads queued inside the process. #667's second
-part limits how many trades for one market may hold a connection at once.
+That keeps the queue out of the pooler. Inside each ledger, a trade waiting
+for the book lock still holds one of its process's 8 connections, so the
+ledger also limits who may hold one. A trade or a placement waits in memory,
+holding no connection, until it has one of its market's slots
+(`DATABASE_CONNECTIONS_PER_MARKET`, default 2) and one of the process's (the
+pool at full overflow less `DATABASE_CONNECTIONS_FOR_READS`, default 2:
+6 + 2 − 2 = 6). However many markets are busy, at least 2 of the 8 are kept
+from trades and placements. Everything that takes no slot shares those 2:
+snapshots, balances, history, the readiness check, cancels, settlement, void
+and the leaderboard refresher on the one server that runs it. A trade
+publishes its price only after giving its slot back, so a slow Redis holds no
+slot. The slots are worked out from
+the pool sizes, so they follow any change to them. DECISIONS.md, "Only a few
+trades per market hold a ledger connection at once".
 
 **Changing a pool's size replaces the pool.** The DigitalOcean provider
 (2.106.0) has no update for a connection pool, so a new `size` in

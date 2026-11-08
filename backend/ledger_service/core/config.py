@@ -4,10 +4,12 @@ Extends `shared.config.ServiceSettings`, the settings every service must read
 identically (ADR 0012). What stays here is what only this service has.
 """
 
+from __future__ import annotations
+
 from decimal import Decimal
 from functools import lru_cache
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 
 from shared.config import ServiceSettings
 
@@ -26,6 +28,14 @@ class Settings(ServiceSettings):
     # service's connection pool is a setting, sized to the database's ceiling".
     database_pool_size: int = Field(default=10, ge=1)
     database_max_overflow: int = Field(default=10, ge=0)
+
+    # How many trades and placements on one market may hold a connection at
+    # once in this process, and how many of the pool's connections they may
+    # never take, kept for reads and the readiness check. The rest wait in
+    # memory, holding none. DECISIONS.md, "Only a few trades per market hold
+    # a ledger connection at once".
+    database_connections_per_market: int = Field(default=2, ge=1)
+    database_connections_for_reads: int = Field(default=2, ge=1)
 
     # --- The starting grant ------------------------------------------------
     # [B-1] #32's starting amount, minted lazily on a user's first read
@@ -80,6 +90,26 @@ class Settings(ServiceSettings):
     # the copy fails closed with the dependency's unavailable code.
     local_copy_refresh_seconds: float = Field(default=1.0, gt=0)
     local_copy_max_age_seconds: float = Field(default=5.0, gt=0)
+
+    @property
+    def trade_connections(self) -> int:
+        """How many connections trades and placements may hold at once, in
+        all markets together: the pool at full overflow, less the reserve."""
+        return (
+            self.database_pool_size
+            + self.database_max_overflow
+            - self.database_connections_for_reads
+        )
+
+    @model_validator(mode="after")
+    def _refuse_a_reserve_of_the_whole_pool(self) -> Settings:
+        # With none left, every trade would wait in memory forever.
+        if self.trade_connections < 1:
+            raise ValueError(
+                "database_connections_for_reads leaves trades no connection: "
+                "it must be less than database_pool_size + database_max_overflow"
+            )
+        return self
 
 
 @lru_cache

@@ -230,6 +230,38 @@ def test_the_copy_s_max_age_must_exceed_zero(monkeypatch: pytest.MonkeyPatch) ->
 
 
 # =========================================================================
+# DATABASE_CONNECTIONS_FOR_READS — what trades may never take. #667
+# =========================================================================
+@pytest.mark.parametrize("for_reads", [8, 9])
+def test_a_reserve_that_leaves_trades_no_connection_is_refused(for_reads: int) -> None:
+    """Trades may hold the pool less the reserve. A reserve of the whole pool
+    or more leaves them none, and every trade would wait in memory forever
+    rather than fail, so the ledger refuses to boot instead. Catches: no
+    check, or one that allows zero."""
+    with pytest.raises(ValidationError):
+        Settings(
+            **_REQUIRED,
+            database_pool_size=6,
+            database_max_overflow=2,
+            database_connections_for_reads=for_reads,
+            _env_file=None,
+        )
+
+
+def test_trades_may_hold_the_pool_less_the_reserve() -> None:
+    """The production sizes: 6 + 2, less the 2 kept for reads, is 6."""
+    settings = Settings(
+        **_REQUIRED,
+        database_pool_size=6,
+        database_max_overflow=2,
+        database_connections_for_reads=2,
+        _env_file=None,
+    )
+
+    assert settings.trade_connections == 6
+
+
+# =========================================================================
 # #307 — a printed Settings carries no credential
 # =========================================================================
 def test_no_secret_appears_when_the_settings_are_printed() -> None:

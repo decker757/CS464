@@ -9,6 +9,12 @@ commits.
 here; ADR 0030 answers both of their checks from the ledger's local copy, so a
 trade on a warm market calls no other service.**
 
+0. The market's connection slot, `service/connection_slots.py`, waited for
+   in memory before the first statement and held until the transaction has
+   ended, so only a few trades per market hold a connection while they queue
+   for the book lock (#667). Steps 1 to 12, and building step 13's frames,
+   run inside it; the publish runs after it. It decides nothing about the
+   trade.
 1. The idempotency lookup, unlocked. A hit is compared against the request
    and returned — no status check, no HTTP call, no lock. "The replay lookup
    is unlocked, and that is safe because it can only ever short-circuit": a
@@ -163,6 +169,7 @@ from service import (
     book_prices,
     books,
     bus,
+    connection_slots,
     grants,
     posting,
     reservations,
@@ -812,26 +819,37 @@ def price_event_of(
     )
 
 
-async def publish_order_updates(
-    redis_client: redis.Redis,
-    filled: Sequence[tuple[Order, Transaction]],
-    *,
-    now: datetime,
-) -> None:
+def order_events_of(
+    filled: Sequence[tuple[Order, Transaction]], *, now: datetime
+) -> list[OrderEvent]:
     """One order frame per fill, in fill order, for each order's owner: each
-    pair is an order and the transaction of its fill. Call it after the
-    commit, and after that commit's price frame (D-NEW "Order frames pass no
-    version gate on the relay").
+    pair is an order and the transaction of its fill.
 
-    An order fills at most once per commit (ADR 0024), so its row as committed
-    is its state after that fill. Only the Redis call is guarded:
-    `bus.publish_order` swallows a failed publish, so one stops none of the
-    rest. Building a frame is not: if it raised, the request would fail after
-    its commit and skip the frames after it.
+    Build them inside the slot, before its rollback: they read the ORM rows,
+    and every instance is dead after a rollback (bug journal, 2026-09-15). An
+    order fills at most once per commit (ADR 0024), so its row as committed
+    is its state after that fill.
     """
-    for order, transaction in filled:
-        event = _order_event_of(order, result_of(transaction), now=now)
-        await bus.publish_order(redis_client, event, transaction_id=transaction.id)
+    return [
+        _order_event_of(order, result_of(transaction), now=now)
+        for order, transaction in filled
+    ]
+
+
+async def publish_order_updates(
+    redis_client: redis.Redis, events: Sequence[OrderEvent]
+) -> None:
+    """Publish `order_events_of`'s frames, in order. Call it after the commit,
+    after the slot, and after that commit's price frame (D-NEW "Order frames
+    pass no version gate on the relay").
+
+    `bus.publish_order` swallows a failed publish, so one stops none of the
+    rest.
+    """
+    for event in events:
+        await bus.publish_order(
+            redis_client, event, transaction_id=event.fill.transaction_id
+        )
 
 
 async def execute(
@@ -852,6 +870,11 @@ async def execute(
 ) -> TradeResult:
     """Trade `quantity` of `outcome_id` in `market_id`, or replay a trade this
     key already named.
+
+    Waits first, holding no connection, for one of the market's connection
+    slots, ends the transaction before giving it back, and publishes only
+    after that (#667). Call it with a session that has issued no statement
+    yet.
 
     `local_copy` answers the account check and the gate; `terms_client` is
     called only on a cold market's first touch. `access_token` is the
@@ -874,192 +897,206 @@ async def execute(
     if limit is None and state_version is None:
         raise ValueError("a trade names a limit or a state_version")
 
-    key = trade_key(user_id, market_id, idempotency_key)
+    # 0. The market's slot, before the replay lookup, the first statement:
+    # from it until the commit, the trade holds a connection. Given back
+    # before step 13, so a stalled publish holds no slot (ADR 0010).
+    # DECISIONS.md, "Only a few trades per market hold a ledger connection
+    # at once".
+    async with connection_slots.hold_a_slot(session, market_id):
+        key = trade_key(user_id, market_id, idempotency_key)
 
-    # 1. The unlocked replay lookup, before anything else — no status check,
-    # no HTTP call, no lock (ADR 0017).
-    pre_gate = await _replay_if_present(
-        session, key, outcome_id=outcome_id, side=side, quantity=quantity
-    )
-    if pre_gate is not None:
-        return pre_gate
-
-    # 1b. The account check, from the copy. Raises `AccountSuspended` or
-    # `AuthUnavailable` before anything below runs. Before the gate, so a
-    # suspended trader on a closed market is told about the suspension
-    # (ADR 0022).
-    refuse_if_suspended(local_copy, user_id)
-
-    # 2. The gate, from the copy. Refuses `MarketClosed`,
-    # `MarketTermsUnavailable` or `MarketNotFound` before anything below
-    # writes a thing. On a miss it rolls the session back (D-043), which
-    # expires what step 1 loaded: a miss loaded nothing, and nothing read
-    # above this line may be reused below it. Keep every read after it.
-    terms = await ensure_trading(
-        session, local_copy, market_id, now=datetime.now(UTC)
-    )
-
-    # 3. The book, opened and funded on a market's first touch only. Commits
-    # internally when it writes, so it must finish before the lock below.
-    await books.ensure_open(
-        session, market_id, access_token=access_token, terms_client=terms_client
-    )
-
-    # 4. The trader's starting grant, same shape, same reason.
-    user_account = await grants.ensure_granted(session, user_id)
-
-    # 5. The book row, locked — the wider lock, ahead of the account locks
-    # `posting.post_all` takes inside it.
-    book = await books.lock_book(session, market_id)
-
-    # Everything steps 6 to 9 decide from, in one statement issued after the
-    # lock returned, never inside it (ADR 0015's snapshot rule). The outcomes
-    # are entities rather than `book_prices.read_or_open`'s projection: the
-    # trade writes `q` through them, and that read's empty fallback would call
-    # `books.ensure_open` under this lock.
-    context = await read_trade_context(
-        session, book, user_id=user_id, outcome_id=outcome_id, key=key
-    )
-
-    # 6. The re-check. Nothing below this line has written anything yet, so a
-    # hit here still costs nothing to return. The transaction itself is read
-    # only on a hit.
-    if context.key_taken:
-        under_lock = await _replay_if_present(
+        # 1. The unlocked replay lookup, before anything else — no status check,
+        # no HTTP call, no lock (ADR 0017).
+        pre_gate = await _replay_if_present(
             session, key, outcome_id=outcome_id, side=side, quantity=quantity
         )
-        assert under_lock is not None  # transactions are append-only
-        return under_lock
+        if pre_gate is not None:
+            return pre_gate
 
-    # The latch: a market that has ended refuses here, under the book lock, a
-    # trade the gate let through or that queued behind a settlement. After the
-    # re-check, so a charged trade's retry still replays; before the staleness
-    # check, so a settled market is never `quote_stale`. DECISIONS.md, "The
-    # trade latch sits after the key re-check under the book lock".
-    if context.has_result:
-        raise MarketClosed
-    # The deciding close check, on Postgres's clock after the lock: the copy's
-    # was the early refusal, and this trade may have queued past `close_time`.
-    books.refuse_if_closed_under_lock(terms, db_now=context.db_now)
+        # 1b. The account check, from the copy. Raises `AccountSuspended` or
+        # `AuthUnavailable` before anything below runs. Before the gate, so a
+        # suspended trader on a closed market is told about the suspension
+        # (ADR 0022).
+        refuse_if_suspended(local_copy, user_id)
 
-    # 7. The guard is the shared one, so the trade refuses exactly the books
-    # the preview does.
-    outcomes = context.outcomes
-    book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)
-    q = [outcome.q for outcome in outcomes]
-    b = book.liquidity_b
-    ids = [outcome.outcome_id for outcome in outcomes]
-
-    # 8. Staleness, for a trade with no limit only. Strict equality, either
-    # direction. A trade with a limit is decided by it after step 9 instead.
-    if limit is None and state_version != book.state_version:
-        raise QuoteStale(quoted=state_version, current=book.state_version)
-
-    if outcome_id not in ids:
-        raise UnknownOutcome
-    index = ids.index(outcome_id)
-
-    # The holding check, after the book lock and before the outstanding check
-    # and any pricing. This user's position in this outcome less what their
-    # sell orders reserve, not the market's shares outstanding.
-    position = context.position
-    if side is Side.SELL:
-        refuse_if_short_of_shares(
-            position, reserved=context.reserved_shares, quantity=quantity
+        # 2. The gate, from the copy. Refuses `MarketClosed`,
+        # `MarketTermsUnavailable` or `MarketNotFound` before anything below
+        # writes a thing. On a miss it rolls the session back (D-043), which
+        # expires what step 1 loaded: a miss loaded nothing, and nothing read
+        # above this line may be reused below it. Keep every read after it.
+        terms = await ensure_trading(
+            session, local_copy, market_id, now=datetime.now(UTC)
         )
 
-    # 9. The price, through `trade_cost_of` like the preview, so the two code
-    # paths cannot disagree about what this trade costs. Its outstanding
-    # check is a backstop here: `q` equals the sum of positions, so the
-    # holding check above always refuses first. It is what stands between a
-    # hand-repaired book and a negative `q`.
-    cost = trade_cost_of(q, b, index=index, side=side, quantity=quantity)
-    if limit is not None:
-        refuse_if_beyond_limit(
-            cost, side=side, limit=limit, state_version=book.state_version
+        # 3. The book, opened and funded on a market's first touch only. Commits
+        # internally when it writes, so it must finish before the lock below.
+        await books.ensure_open(
+            session, market_id, access_token=access_token, terms_client=terms_client
         )
 
-    # 10. The writes. Pending, not yet committed — `posting.post_all` below is
-    # the one statement that commits them.
-    now = datetime.now(UTC)
-    trade = PricedTrade(
-        user_id=user_id,
-        market_id=market_id,
-        outcome_id=outcome_id,
-        side=side,
-        quantity=quantity,
-        cost=cost,
-    )
-    write_trade(
-        session,
-        book,
-        outcomes=outcomes,
-        index=index,
-        position=position,
-        trade=trade,
-        now=now,
-    )
-    trade_version = book.state_version
-    pool_account = context.pool_account
+        # 4. The trader's starting grant, same shape, same reason.
+        user_account = await grants.ensure_granted(session, user_id)
 
-    # 10b. The cascade, after the trade's own writes, on the price they left,
-    # whenever the market has an open order (ADR 0024). The context read that
-    # under the book lock, which every writer of an order row takes first, so
-    # no order can open before this commits; with none, there is nothing to
-    # read the orders for.
-    fills: list[WrittenFill] = []
-    if context.has_open_orders:
-        fills = await write_cascade(
-            session, book, outcomes=outcomes, pool_account=pool_account, now=now
+        # 5. The book row, locked — the wider lock, ahead of the account locks
+        # `posting.post_all` takes inside it.
+        book = await books.lock_book(session, market_id)
+
+        # Everything steps 6 to 9 decide from, in one statement issued after the
+        # lock returned, never inside it (ADR 0015's snapshot rule). The outcomes
+        # are entities rather than `book_prices.read_or_open`'s projection: the
+        # trade writes `q` through them, and that read's empty fallback would call
+        # `books.ensure_open` under this lock.
+        context = await read_trade_context(
+            session, book, user_id=user_id, outcome_id=outcome_id, key=key
         )
 
-    # After every write, so the context carries the trade's own version and
-    # the book's after the cascade.
-    movement = trade_movement_of(
-        trade,
-        user_account=user_account,
-        pool_account=pool_account,
-        idempotency_key=key,
-        state_version=trade_version,
-        book_state_version=book.state_version,
-    )
-    # `post_all` reads the reservation under the account locks, and it has to
-    # see the fills' order rows (ADR 0024, "Where the figure before the batch
-    # comes from"). Only a fill writes one.
-    if fills:
-        await session.flush()
-    after_q = [outcome.q for outcome in outcomes]
+        # 6. The re-check. Nothing below this line has written anything yet, so a
+        # hit here still costs nothing to return. The transaction itself is read
+        # only on a hit.
+        if context.key_taken:
+            under_lock = await _replay_if_present(
+                session, key, outcome_id=outcome_id, side=side, quantity=quantity
+            )
+            assert under_lock is not None  # transactions are append-only
+            return under_lock
 
-    # 11. `post_all`, the trade first: it has to be affordable before any
-    # resting order fills (ADR 0024). Commits everything pending above, with
-    # every movement's legs, or none of it if this raises.
-    transactions = await _post_trade_batch(
-        session, [movement, *(fill.movement for fill in fills)], trade_key=key, now=now
-    )
-    # After `post_all`'s commit: a refusal has raised by here, and a replay
-    # returned at step 1 or 6.
-    TRADES_COMMITTED.labels(side=side.value).inc()
-    ORDER_FILLS.inc(len(fills))
+        # The latch: a market that has ended refuses here, under the book lock, a
+        # trade the gate let through or that queued behind a settlement. After the
+        # re-check, so a charged trade's retry still replays; before the staleness
+        # check, so a settled market is never `quote_stale`. DECISIONS.md, "The
+        # trade latch sits after the key re-check under the book lock".
+        if context.has_result:
+            raise MarketClosed
+        # The deciding close check, on Postgres's clock after the lock: the copy's
+        # was the early refusal, and this trade may have queued past `close_time`.
+        books.refuse_if_closed_under_lock(terms, db_now=context.db_now)
 
-    # 12. The response, from the trade's transaction `post_all` committed.
-    result = result_of(transactions[0])
+        # 7. The guard is the shared one, so the trade refuses exactly the books
+        # the preview does.
+        outcomes = context.outcomes
+        book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)
+        q = [outcome.q for outcome in outcomes]
+        b = book.liquidity_b
+        ids = [outcome.outcome_id for outcome in outcomes]
 
-    # 13. The publish: one frame, at the counter after the cascade (D-NEW "One
-    # price frame per commit, at the final `state_version`"). After the
-    # commit, never before it, and never on a rejection or a replay — both of
-    # which have already returned by this point. A publish failure is
-    # swallowed inside `bus.publish` and never reaches here.
-    event = price_event_of(
-        market_id,
-        state_version=result.book_state_version,
-        outcomes=outcomes,
-        after_q=after_q,
-        b=b,
-        now=now,
-    )
-    await bus.publish(redis_client, event, transaction_id=result.transaction_id)
-    # The trade's own transaction is first; the fills' follow, in fill order.
-    filled = list(zip([fill.order for fill in fills], transactions[1:], strict=True))
-    await publish_order_updates(redis_client, filled, now=now)
+        # 8. Staleness, for a trade with no limit only. Strict equality, either
+        # direction. A trade with a limit is decided by it after step 9 instead.
+        if limit is None and state_version != book.state_version:
+            raise QuoteStale(quoted=state_version, current=book.state_version)
+
+        if outcome_id not in ids:
+            raise UnknownOutcome
+        index = ids.index(outcome_id)
+
+        # The holding check, after the book lock and before the outstanding check
+        # and any pricing. This user's position in this outcome less what their
+        # sell orders reserve, not the market's shares outstanding.
+        position = context.position
+        if side is Side.SELL:
+            refuse_if_short_of_shares(
+                position, reserved=context.reserved_shares, quantity=quantity
+            )
+
+        # 9. The price, through `trade_cost_of` like the preview, so the two code
+        # paths cannot disagree about what this trade costs. Its outstanding
+        # check is a backstop here: `q` equals the sum of positions, so the
+        # holding check above always refuses first. It is what stands between a
+        # hand-repaired book and a negative `q`.
+        cost = trade_cost_of(q, b, index=index, side=side, quantity=quantity)
+        if limit is not None:
+            refuse_if_beyond_limit(
+                cost, side=side, limit=limit, state_version=book.state_version
+            )
+
+        # 10. The writes. Pending, not yet committed — `posting.post_all` below is
+        # the one statement that commits them.
+        now = datetime.now(UTC)
+        trade = PricedTrade(
+            user_id=user_id,
+            market_id=market_id,
+            outcome_id=outcome_id,
+            side=side,
+            quantity=quantity,
+            cost=cost,
+        )
+        write_trade(
+            session,
+            book,
+            outcomes=outcomes,
+            index=index,
+            position=position,
+            trade=trade,
+            now=now,
+        )
+        trade_version = book.state_version
+        pool_account = context.pool_account
+
+        # 10b. The cascade, after the trade's own writes, on the price they left,
+        # whenever the market has an open order (ADR 0024). The context read that
+        # under the book lock, which every writer of an order row takes first, so
+        # no order can open before this commits; with none, there is nothing to
+        # read the orders for.
+        fills: list[WrittenFill] = []
+        if context.has_open_orders:
+            fills = await write_cascade(
+                session, book, outcomes=outcomes, pool_account=pool_account, now=now
+            )
+
+        # After every write, so the context carries the trade's own version and
+        # the book's after the cascade.
+        movement = trade_movement_of(
+            trade,
+            user_account=user_account,
+            pool_account=pool_account,
+            idempotency_key=key,
+            state_version=trade_version,
+            book_state_version=book.state_version,
+        )
+        # `post_all` reads the reservation under the account locks, and it has to
+        # see the fills' order rows (ADR 0024, "Where the figure before the batch
+        # comes from"). Only a fill writes one.
+        if fills:
+            await session.flush()
+        after_q = [outcome.q for outcome in outcomes]
+
+        # 11. `post_all`, the trade first: it has to be affordable before any
+        # resting order fills (ADR 0024). Commits everything pending above, with
+        # every movement's legs, or none of it if this raises.
+        transactions = await _post_trade_batch(
+            session,
+            [movement, *(fill.movement for fill in fills)],
+            trade_key=key,
+            now=now,
+        )
+        # After `post_all`'s commit: a refusal has raised by here, and a replay
+        # returned at step 1 or 6.
+        TRADES_COMMITTED.labels(side=side.value).inc()
+        ORDER_FILLS.inc(len(fills))
+
+        # 12. The response, from the trade's transaction `post_all` committed.
+        result = result_of(transactions[0])
+
+        # 13's frames: one price frame, at the counter after the cascade
+        # (D-NEW "One price frame per commit, at the final `state_version`"),
+        # then one order frame per fill. Built here, from the ORM rows, before
+        # the slot's rollback can expire them; only plain frames leave.
+        price_frame = price_event_of(
+            market_id,
+            state_version=result.book_state_version,
+            outcomes=outcomes,
+            after_q=after_q,
+            b=b,
+            now=now,
+        )
+        # The trade's own transaction is first; the fills' follow, in fill order.
+        filled = list(zip([fill.order for fill in fills], transactions[1:], strict=True))
+        order_frames = order_events_of(filled, now=now)
+
+    # 13. The publish. After the commit and after the slot, never before
+    # either, and never on a rejection or a replay — both of which have
+    # already returned by this point. A publish failure is swallowed inside
+    # `bus` and never reaches here.
+    await bus.publish(redis_client, price_frame, transaction_id=result.transaction_id)
+    await publish_order_updates(redis_client, order_frames)
 
     return result

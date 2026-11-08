@@ -321,8 +321,11 @@ why the next step does too.
   its clients (24, and 6 + 2 per server), so the pooler never queues the
   ledger (`docs/deployment.md`, "Connection budget"). That alone moves the
   queue into each ledger process, whose 8 connections waiting trades could
-  still fill, so #667's second part limits how many trades for one market
-  hold a connection at once. Both go live before #668's runs.
+  still fill. So each ledger also lets only two trades per market, and six
+  in all, hold a connection at once. The rest wait in memory, and two
+  connections are kept from trades, for reads, the readiness check, cancels,
+  settlement, void and the leaderboard refresher. Both go live before #668's
+  runs.
 
 ### Reads that grow without bound
 

@@ -62,11 +62,13 @@ from model.entities import (
     Transaction,
     TransactionKind,
 )
+from model.schemas import OrderEvent, PriceEvent
 from service import (
     accounts,
     book_prices,
     books,
     bus,
+    connection_slots,
     grants,
     posting,
     reservations,
@@ -80,6 +82,7 @@ from service.trading import (
     fill_key,
     list_open_orders,
     log_refused_fill,
+    order_events_of,
     price_event_of,
     publish_order_updates,
     read_trade_context,
@@ -143,6 +146,17 @@ class Placement:
     order: OrderView
     fills: list[Fill]
     book_state_version: int
+
+
+@dataclass(frozen=True)
+class _FillFrames:
+    """What a placement that filled publishes once its slot is given back:
+    one price frame, then an order frame per fill, this order's first."""
+
+    price: PriceEvent
+    # The placed order's own fill, the id a failed price publish is logged with.
+    transaction_id: uuid.UUID
+    orders: list[OrderEvent]
 
 
 def _fill_of(transaction: Transaction) -> Fill:
@@ -342,11 +356,10 @@ async def _commit_fill(
     outcomes: Sequence[MarketOutcome],
     outcome_position: int,
     now: datetime,
-    redis_client: redis.Redis,
-) -> Placement:
+) -> tuple[Placement, _FillFrames]:
     """Run the cascade after the fill's pending writes, insert the order beside
-    them, commit it all through `post_all`, then publish one price frame and an
-    order frame per fill, this order's first.
+    them, and commit it all through `post_all`. Returns the placement and the
+    frames `place` publishes after it has given its slot back.
 
     A refusal of the placer's own account is their `insufficient_funds`; one
     of any other account is `CascadeFillRefused`, as on the trade path (D-NEW
@@ -390,7 +403,8 @@ async def _commit_fill(
     # After `post_all`'s commit: the order's own fill and the cascade's.
     ORDER_FILLS.inc(1 + len(cascade))
 
-    # After the commit, never before it, as on the trade path (ADR 0010).
+    # Published after the commit and the slot, never before either, as on
+    # the trade path (ADR 0010).
     event = price_event_of(
         order.market_id,
         state_version=order.book_state_version,
@@ -399,13 +413,11 @@ async def _commit_fill(
         b=book.liquidity_b,
         now=now,
     )
-    await bus.publish(redis_client, event, transaction_id=transactions[0].id)
     # The placed order's own fill is the first transaction; the cascade's follow.
     filled_orders = [order, *(fill.order for fill in cascade)]
     filled = list(zip(filled_orders, transactions, strict=True))
-    await publish_order_updates(redis_client, filled, now=now)
 
-    return Placement(
+    placement = Placement(
         order=order_view_of(
             order,
             outcome_position=outcome_position,
@@ -414,6 +426,12 @@ async def _commit_fill(
         fills=[_fill_of(transactions[0])],
         book_state_version=order.book_state_version,
     )
+    frames = _FillFrames(
+        price=event,
+        transaction_id=transactions[0].id,
+        orders=order_events_of(filled, now=now),
+    )
+    return placement, frames
 
 
 def order_key(user_id: uuid.UUID, market_id: uuid.UUID, client_key: str) -> str:
@@ -489,131 +507,149 @@ async def place(
 ) -> Placement:
     """Place a limit order in `market_id`, or replay the one this key named.
 
-    Commits. Locks the book row, then the placer's account by one of the two
-    paths in the module docstring. Raises `ValueError` on a limit outside
-    `(0, 1)` or a quantity that is not positive, before anything else, as
-    `trading.execute` does: the route is not the only possible caller, and a
-    limit of 1 has no finite fill. Every refusal raises before the commit.
+    Commits. Waits first, holding no connection, for one of the market's
+    connection slots, and publishes a fill only after giving it back, as
+    `trading.execute` does (#667), so call it with a session that has
+    issued no statement yet. Locks the book row, then the placer's account
+    by one of the two paths in the module docstring. Raises
+    `ValueError` on a limit outside `(0, 1)` or a quantity that is not
+    positive, before anything else, as `trading.execute` does: the route is
+    not the only possible caller, and a limit of 1 has no finite fill. Every
+    refusal raises before the commit.
     """
     if quantity <= 0:
         raise ValueError(f"quantity must be positive, got {quantity}")
     if not ZERO < limit_price < 1:
         raise ValueError(f"limit_price must be between 0 and 1, got {limit_price}")
 
-    key = order_key(user_id, market_id, idempotency_key)
-    request = {
-        "outcome_id": outcome_id,
-        "side": side,
-        "limit_price": limit_price,
-        "quantity": quantity,
-    }
+    # The slot before the retry lookup, the first statement, and the publish
+    # after it, as on the trade path.
+    async with connection_slots.hold_a_slot(session, market_id):
+        key = order_key(user_id, market_id, idempotency_key)
+        request = {
+            "outcome_id": outcome_id,
+            "side": side,
+            "limit_price": limit_price,
+            "quantity": quantity,
+        }
 
-    # The unlocked retry lookup, before anything else (ADR 0017's order).
-    pre_gate = await _replay_if_present(session, key, **request)
-    if pre_gate is not None:
-        return pre_gate
+        # The unlocked retry lookup, before anything else (ADR 0017's order).
+        pre_gate = await _replay_if_present(session, key, **request)
+        if pre_gate is not None:
+            return pre_gate
 
-    # The trade's middle steps, in its order and for its reasons: the gate may
-    # roll the session back on a miss, and the book's first touch and the
-    # grant can commit, so all four run before the book lock. Nothing the
-    # retry lookup loaded is reused below the gate; keep every read after it.
-    refuse_if_suspended(local_copy, user_id)
-    terms = await ensure_trading(session, local_copy, market_id, now=datetime.now(UTC))
-    await books.ensure_open(
-        session, market_id, access_token=access_token, terms_client=terms_client
-    )
-    user_account = await grants.ensure_granted(session, user_id)
+        # The trade's middle steps, in its order and for its reasons: the gate may
+        # roll the session back on a miss, and the book's first touch and the
+        # grant can commit, so all four run before the book lock. Nothing the
+        # retry lookup loaded is reused below the gate; keep every read after it.
+        refuse_if_suspended(local_copy, user_id)
+        terms = await ensure_trading(
+            session, local_copy, market_id, now=datetime.now(UTC)
+        )
+        await books.ensure_open(
+            session, market_id, access_token=access_token, terms_client=terms_client
+        )
+        user_account = await grants.ensure_granted(session, user_id)
 
-    # The book row, then the re-check, still first. A placement's record is its
-    # order row, not a transaction, so it reads that row itself rather than
-    # asking the context, whose `key_taken` names the transactions a trade's
-    # key writes.
-    book = await books.lock_book(session, market_id)
-    under_lock = await _replay_if_present(session, key, **request)
-    if under_lock is not None:
-        return under_lock
-    # Everything below decides from one statement issued after the lock
-    # returned, never inside it, as on the trade path (ADR 0015). A book with
-    # no outcome rows is refused by it, `MarketBookIncomplete`, before the
-    # latch and the close check, as the trade's is.
-    context = await read_trade_context(
-        session, book, user_id=user_id, outcome_id=outcome_id, key=key
-    )
-    # The latch, then the deciding close check on Postgres's clock after the
-    # lock, as the trade's step 6 makes them.
-    if context.has_result:
-        raise MarketClosed
-    books.refuse_if_closed_under_lock(terms, db_now=context.db_now)
+        # The book row, then the re-check, still first. A placement's record is its
+        # order row, not a transaction, so it reads that row itself rather than
+        # asking the context, whose `key_taken` names the transactions a trade's
+        # key writes.
+        book = await books.lock_book(session, market_id)
+        under_lock = await _replay_if_present(session, key, **request)
+        if under_lock is not None:
+            return under_lock
+        # Everything below decides from one statement issued after the lock
+        # returned, never inside it, as on the trade path (ADR 0015). A book with
+        # no outcome rows is refused by it, `MarketBookIncomplete`, before the
+        # latch and the close check, as the trade's is.
+        context = await read_trade_context(
+            session, book, user_id=user_id, outcome_id=outcome_id, key=key
+        )
+        # The latch, then the deciding close check on Postgres's clock after the
+        # lock, as the trade's step 6 makes them.
+        if context.has_result:
+            raise MarketClosed
+        books.refuse_if_closed_under_lock(terms, db_now=context.db_now)
 
-    outcomes = context.outcomes
-    book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)
-    if len(outcomes) != _BINARY_OUTCOMES:
-        raise MarketNotBinary
-    outcome_ids = [outcome.outcome_id for outcome in outcomes]
-    if outcome_id not in outcome_ids:
-        raise UnknownOutcome
-    index = outcome_ids.index(outcome_id)
-    # The column a retry and the order list report, not the list index.
-    outcome_position = outcomes[index].position
+        outcomes = context.outcomes
+        book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)
+        if len(outcomes) != _BINARY_OUTCOMES:
+            raise MarketNotBinary
+        outcome_ids = [outcome.outcome_id for outcome in outcomes]
+        if outcome_id not in outcome_ids:
+            raise UnknownOutcome
+        index = outcome_ids.index(outcome_id)
+        # The column a retry and the order list report, not the list index.
+        outcome_position = outcomes[index].position
 
-    open_orders = await list_open_orders(session, market_id)
-    refuse_if_crosses_book(
-        [resting_order_of(open_order, outcome_ids) for open_order in open_orders],
-        outcome_index=index,
-        side=side,
-        limit_price=limit_price,
-    )
-    position = context.position
-    if side is Side.SELL:
-        refuse_if_short_of_shares(
-            position, reserved=context.reserved_shares, quantity=quantity
+        open_orders = await list_open_orders(session, market_id)
+        refuse_if_crosses_book(
+            [resting_order_of(open_order, outcome_ids) for open_order in open_orders],
+            outcome_index=index,
+            side=side,
+            limit_price=limit_price,
+        )
+        position = context.position
+        if side is Side.SELL:
+            refuse_if_short_of_shares(
+                position, reserved=context.reserved_shares, quantity=quantity
+            )
+
+        # The new order has no `seq` until it is inserted, and the fill on
+        # arrival does not read one.
+        arriving = RestingOrder(
+            seq=0,
+            outcome_index=index,
+            side=side,
+            limit_price=limit_price,
+            remaining=quantity,
+        )
+        fill = executable_fill_of([o.q for o in outcomes], book.liquidity_b, arriving)
+        order = _new_order(
+            user_id=user_id, market_id=market_id, key=key, fill=fill, **request
         )
 
-    # The new order has no `seq` until it is inserted, and the fill on
-    # arrival does not read one.
-    arriving = RestingOrder(
-        seq=0, outcome_index=index, side=side, limit_price=limit_price, remaining=quantity
-    )
-    fill = executable_fill_of([o.q for o in outcomes], book.liquidity_b, arriving)
-    order = _new_order(user_id=user_id, market_id=market_id, key=key, fill=fill, **request)
+        if fill is None:
+            # The book's counter after this request: the one it was placed against.
+            order.book_state_version = book.state_version
+            return await _rest(
+                session, order, account=user_account, outcome_position=outcome_position
+            )
 
-    if fill is None:
-        # The book's counter after this request: the one it was placed against.
-        order.book_state_version = book.state_version
-        return await _rest(
-            session, order, account=user_account, outcome_position=outcome_position
+        now = datetime.now(UTC)
+        trade = PricedTrade(
+            user_id=user_id,
+            market_id=market_id,
+            outcome_id=outcome_id,
+            side=side,
+            quantity=fill.quantity,
+            cost=fill.cost,
+        )
+        write_trade(
+            session,
+            book,
+            outcomes=outcomes,
+            index=index,
+            position=position,
+            trade=trade,
+            now=now,
+        )
+        placement, frames = await _commit_fill(
+            session,
+            order,
+            book=book,
+            account=user_account,
+            pool_account=context.pool_account,
+            trade=trade,
+            outcomes=outcomes,
+            outcome_position=outcome_position,
+            now=now,
         )
 
-    now = datetime.now(UTC)
-    trade = PricedTrade(
-        user_id=user_id,
-        market_id=market_id,
-        outcome_id=outcome_id,
-        side=side,
-        quantity=fill.quantity,
-        cost=fill.cost,
-    )
-    write_trade(
-        session,
-        book,
-        outcomes=outcomes,
-        index=index,
-        position=position,
-        trade=trade,
-        now=now,
-    )
-    return await _commit_fill(
-        session,
-        order,
-        book=book,
-        account=user_account,
-        pool_account=context.pool_account,
-        trade=trade,
-        outcomes=outcomes,
-        outcome_position=outcome_position,
-        now=now,
-        redis_client=redis_client,
-    )
+    await bus.publish(redis_client, frames.price, transaction_id=frames.transaction_id)
+    await publish_order_updates(redis_client, frames.orders)
+    return placement
 
 
 async def list_live(session: AsyncSession, user_id: uuid.UUID) -> list[OrderView]:

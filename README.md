@@ -437,9 +437,12 @@ Measured or decided, with the record that says so.
   lock held the ledger's 14 pooled connections. The pool now holds every
   ledger client (24, for 6 + 2 on up to three servers;
   [`docs/deployment.md`](docs/deployment.md), "Connection budget"), so the
-  pooler never queues the ledger. Inside each ledger, waiting trades can
-  still fill its 8 connections until #667's second part, a limit on how many
-  trades for one market hold a connection, lands.
+  pooler never queues the ledger. Inside each ledger, only two trades per
+  market, and six in all, hold a connection at once. The rest wait in
+  memory, so two of its 8 connections are kept from trades and placements.
+  Reads and the readiness check share those two with everything else that
+  takes no slot: cancels, settlement, void and the leaderboard refresher. A
+  burst of cancels on a hot market can still use them up while it lasts.
 - **A price is published after the trade commits, and a crash between the
   two loses that frame** ([ADR 0010](docs/adr/0010-realtime-price-broadcast.md)).
   A client that reconnects fetches a snapshot, which is the recovery path it

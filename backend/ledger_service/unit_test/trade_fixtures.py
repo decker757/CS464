@@ -974,7 +974,7 @@ async def race_on_one_key(
     return won, lost
 
 
-_BOOK_LOCK_WAITERS = text(
+BOOK_LOCK_WAITERS = text(
     "SELECT count(*) FROM pg_stat_activity "
     "WHERE datname = current_database() "
     "AND usename = current_user "
@@ -988,7 +988,7 @@ async def _until_one_waits_on_the_book(tasks: Sequence[asyncio.Task]) -> None:
     """Wait until `pg_stat_activity` shows one backend queued on a book row."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + PROBE_TIMEOUT
-    while await lock_waiters(_BOOK_LOCK_WAITERS) != 1:
+    while await lock_waiters(BOOK_LOCK_WAITERS) != 1:
         _raise_if_failed(tasks)
         if loop.time() > deadline:
             pytest.fail("timed out: nothing ever queued on the held book row")

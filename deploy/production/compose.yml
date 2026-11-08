@@ -89,9 +89,12 @@ services:
   # client connections onto those 38. The ledger's clients on three servers
   # (3 x 8 = 24) fit its pool of 24, so the pooler never queues the ledger
   # (#667). A trade waiting for a book lock still keeps its connection while
-  # it waits, so on one hot market waiting trades could fill a ledger's own
-  # 8; the ledger limits how many trades per market hold one (#667's second
-  # part). docs/deployment.md, "Connection budget".
+  # it waits, so the ledger lets only 2 trades per market, and 6 + 2 - 2 = 6
+  # in all, hold one; the rest wait in memory, and 2 are kept from trades for
+  # reads and /ready. The 6 is worked out from the ledger's DATABASE_POOL_SIZE
+  # and DATABASE_MAX_OVERFLOW below, less DATABASE_CONNECTIONS_FOR_READS; that
+  # and DATABASE_CONNECTIONS_PER_MARKET are not set here, so both are their
+  # default, 2. docs/deployment.md, "Connection budget".
   auth:
     <<: *app
     image: ${IMAGE_REGISTRY:?}/cs464-auth:${IMAGE_TAG:?}
