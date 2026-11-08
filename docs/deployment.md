@@ -714,6 +714,26 @@ rebuild from nothing.
 - **More app servers:** raise `app_server_count` in
   `infra/terraform/variables.tf`, `infra/tf apply`, `infra/push-secrets.sh`,
   then deploy. The load balancer picks the new server up by its tag.
+  Before the deploy, wait for the new server's first boot: on it,
+  `cloud-init status` says `done` and `docker version` answers (about two
+  minutes on 2026-11-08). The plan also updates `digitalocean_project.cs464`
+  in place, because its list of resources includes every droplet; that
+  touches nothing else. For a short-lived server, such as #668's third,
+  pass `-var app_server_count=3` to both `infra/tf plan` and
+  `infra/tf apply` instead of changing the file. Then any later plain
+  `infra/tf apply` plans that server's removal, so read every plan.
+- **Fewer app servers:** the server that goes is always the
+  highest-numbered, `cs464-app-N`; you cannot choose another. Drain it: on
+  it, `touch /opt/cs464/drain/on` and wait 15 seconds, so the load balancer
+  stops sending it requests. Then lower `app_server_count` (or drop the
+  `-var`), and `infra/tf plan`: it must destroy only
+  `digitalocean_droplet.app[N]` and its `tls_private_key.host[N]`, and update
+  the project's list. `infra/tf apply`, then `infra/push-secrets.sh`, so the
+  next deploy does not try to reach the removed server. Expect
+  `cs464-service-down` to fire for every service on the removed server, and
+  to keep firing for up to an hour: it also alerts on a server seen in the
+  last hour that has stopped reporting. Never `infra/tf destroy`: that removes
+  everything, the database too. #668 did this on 2026-11-08.
 - **Postgres's connections no longer limit the number of servers.** Every
   server shares the four connection pools, which hold 38 of the 2 GB plan's
   47 or so, however many servers run ("Connection budget" above). What a
@@ -781,6 +801,3 @@ checks both.
 - **Re-measuring the series budget.** Around 2026-11-11, a week after
   monitoring went live with #632, read the real series count off Grafana
   Cloud's *Usage* page and update the estimate above and the README.
-- **The one-, two- and three-server load test:** #668, for
-  docs/load-test.md's "Capacity and its limits" and ADR 0031. #20's runs
-  against this deployment are in docs/load-test.md.
