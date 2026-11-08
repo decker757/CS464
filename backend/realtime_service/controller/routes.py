@@ -31,6 +31,7 @@ from core.errors import (
     SessionExpired,
     UnknownAction,
 )
+from core.metrics import OPEN_WEBSOCKETS
 from core.security import TokenClaims
 from model.schemas import (
     ClientCommand,
@@ -248,10 +249,14 @@ async def prices(websocket: WebSocket) -> None:
     connection = Connection(websocket, queue_size=settings.send_queue_size)
 
     try:
+        # First in the try and undone first in the finally, so a socket that
+        # ends any way at all is counted out. Refusals above never reach here.
+        OPEN_WEBSOCKETS.inc()
         # Inside the try, so the `forget` below detaches it on every ending.
         hub.attach_user(connection, claims.user_id)
         ending = await _serve(websocket, connection, claims, hub)
     finally:
+        OPEN_WEBSOCKETS.dec()
         # In a finally and before the close: a connection left in the hub is
         # one the next broadcast writes to. Every ending passes through here.
         hub.forget(connection)

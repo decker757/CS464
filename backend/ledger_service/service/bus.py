@@ -4,10 +4,10 @@ The producer's half of `realtime_service/service/bus.py`: copied, not shared
 (below ADR 0012's bar), and pinned by `test_price_publish.py`. The trade path
 and a placement that fills call it after their commit, on a fresh request only.
 
-A failed publish is logged with the transaction id and never raised: the
-trade has committed and is correct (D-049). Only the Redis call is guarded;
-serialising the event is not. `CancelledError` is not caught; it means
-shutdown.
+A failed publish is logged with the transaction id, counted by channel
+(#599) and never raised: the trade has committed and is correct (D-049).
+Only the Redis call is guarded; serialising the event is not.
+`CancelledError` is not caught; it means shutdown.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import uuid
 
 import redis.asyncio as redis
 
+from core.metrics import PUBLISH_FAILURES
 from model.schemas import OrderEvent, PriceEvent
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ async def _publish(
             "failed to publish on %s for transaction %s", channel, transaction_id,
             exc_info=True,
         )
+        PUBLISH_FAILURES.labels(channel=channel).inc()
 
 
 async def publish(

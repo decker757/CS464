@@ -1,6 +1,8 @@
 # ADR 0026: Production on DigitalOcean, two or more app servers behind a load balancer, deployed from main
 
 - **Status:** Proposed, 2026-11-01. Accepted when the #19 stack merges.
+  Superseded in part by [ADR 0028](0028-liveness-for-the-balancer-readiness-for-alerts.md):
+  `/health` stays liveness, and `/ready` is what the alerts watch.
 - **Date:** 2026-11-01
 - **Decided by:** Ernest, on 2026-11-01: DigitalOcean, more than one app
   server rather than one, and deploys from `main` only for now. The details
@@ -85,6 +87,16 @@ every replica of every service, about 47 on the 2 GB plan. Each service's
 pool is a setting (DECISIONS.md, "Each service's connection pool is a
 setting, sized to the database's ceiling"), sized so that two servers fit
 with room left for the migrate steps.
+
+> **Amended 2026-11-07 by #640.** The connection pooler named under
+> Consequences is now in place. Each service role has a DigitalOcean
+> connection pool in transaction mode (`infra/terraform/databases.tf`). The
+> pools hold 28 server connections in all, however many app servers run, and
+> the apps connect to the pools. The three migrate steps keep a direct
+> address of their own, `<SVC>_DIRECT_DATABASE_URL`. The services' pool sizes
+> now count clients of the pooler rather than Postgres connections, so a
+> third server no longer needs them lowered. `docs/deployment.md`,
+> "Connection budget".
 
 ## Consequences
 

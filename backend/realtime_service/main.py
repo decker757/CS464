@@ -7,7 +7,6 @@ nothing in `sql/`. ADR 0010.
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
@@ -15,12 +14,13 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from controller.routes import router as realtime_router
+from core import observability
 from core.config import get_settings
 from service.bus import FrameBus
 from service.ordering import get_gate
 from service.subscriptions import get_hub
 
-logging.basicConfig(level=logging.INFO)
+observability.configure_logging()
 
 
 @asynccontextmanager
@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+        await app.state.redis.aclose()
 
 
 def create_app() -> FastAPI:
@@ -75,8 +76,9 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(realtime_router)
+    app.state.redis = observability.open_ping_client(settings)
 
-    @app.get("/health", tags=["ops"], summary="Liveness and readiness probe")
+    @app.get("/health", tags=["ops"], summary="Liveness: the process is up")
     async def health(request: Request) -> dict[str, str]:
         """Green even when the bus is down, and says so in the same breath.
 
@@ -91,6 +93,13 @@ def create_app() -> FastAPI:
             "status": "ok",
             "bus": "connected" if bus is not None and bus.connected else "disconnected",
         }
+
+    observability.install(
+        app,
+        ready_checks={
+            "redis": lambda: observability.is_redis_reachable(app.state.redis)
+        },
+    )
 
     return app
 

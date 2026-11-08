@@ -290,3 +290,92 @@ def test_the_documented_preview_example_is_a_trade_that_could_happen() -> None:
     assert [
         quantize_price(p) for p in prices([q[0] + quantity, q[1]], b)
     ] == after
+
+
+# --- TradeIn: a limit for its side, or a quote. #640 ---------------------------
+def _trade(**fields: object) -> dict[str, object]:
+    return {
+        "outcome_id": str(uuid.uuid4()),
+        "quantity": "10",
+        "idempotency_key": "k-1",
+        **fields,
+    }
+
+
+def _refusal_type_of(body: dict[str, object]) -> str:
+    from model.schemas import TradeIn  # noqa: PLC0415
+
+    with pytest.raises(ValidationError) as refused:
+        TradeIn.model_validate(body)
+    (error,) = refused.value.errors()
+    return error["type"]
+
+
+def test_a_buy_with_a_max_cost_needs_no_state_version() -> None:
+    from model.schemas import TradeIn  # noqa: PLC0415
+
+    trade = TradeIn.model_validate(_trade(side="buy", max_cost="6.5000"))
+
+    assert (trade.max_cost, trade.state_version) == (Decimal("6.5000"), None)
+
+
+@pytest.mark.parametrize("min_proceeds", ["0", "4.5"])
+def test_a_sell_with_a_min_proceeds_needs_no_state_version(min_proceeds: str) -> None:
+    """`0` too: a sell that accepts any price still names its limit, and a
+    truthiness check would mistake it for no limit at all.
+    """
+    from model.schemas import TradeIn  # noqa: PLC0415
+
+    trade = TradeIn.model_validate(_trade(side="sell", min_proceeds=min_proceeds))
+
+    assert (trade.min_proceeds, trade.state_version) == (Decimal(min_proceeds), None)
+
+
+@pytest.mark.parametrize("side", ["buy", "sell"])
+def test_a_trade_with_no_limit_still_requires_a_state_version(side: str) -> None:
+    """The expand release's promise: a body from today's frontend, which
+    names no limit, keeps today's rule until that frontend is changed.
+    """
+    from model.schemas import TradeIn  # noqa: PLC0415
+
+    assert _refusal_type_of(_trade(side=side)) == "value_error"
+    assert TradeIn.model_validate(_trade(side=side, state_version=7)).state_version == 7
+
+
+def test_a_min_proceeds_on_a_buy_is_refused() -> None:
+    # `state_version` is sent, so only the side rule can refuse it.
+    body = _trade(side="buy", min_proceeds="4.5", state_version=7)
+
+    assert _refusal_type_of(body) == "value_error"
+
+
+def test_a_max_cost_on_a_sell_is_refused() -> None:
+    body = _trade(side="sell", max_cost="6.5", state_version=7)
+
+    assert _refusal_type_of(body) == "value_error"
+
+
+@pytest.mark.parametrize(
+    ("side", "field"), [("buy", "max_cost"), ("sell", "min_proceeds")]
+)
+def test_a_limit_at_five_decimal_places_is_refused(side: str, field: str) -> None:
+    """Four places, as `quantity` (D-038): a fifth is 422, not rounded."""
+    body = _trade(side=side, **{field: "6.50001"})
+
+    assert _refusal_type_of(body) == "decimal_max_places"
+
+
+@pytest.mark.parametrize(
+    ("side", "fields", "limit"),
+    [
+        ("buy", {"max_cost": "6.5"}, Decimal("6.5")),
+        ("sell", {"min_proceeds": "0"}, Decimal("0")),
+        ("buy", {"state_version": 7}, None),
+    ],
+)
+def test_the_limit_property_picks_the_field_for_the_side(
+    side: str, fields: dict[str, object], limit: Decimal | None
+) -> None:
+    from model.schemas import TradeIn  # noqa: PLC0415
+
+    assert TradeIn.model_validate(_trade(side=side, **fields)).limit == limit

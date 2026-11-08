@@ -40,11 +40,11 @@ erDiagram
         uuid user_id FK "ON DELETE CASCADE"
         varchar(64) token_hash UK "SHA‑256 of an opaque random token"
         timestamptz expires_at "issued plus 14 days"
-        timestamptz revoked_at "set on use or logout; reuse revokes all"
+        timestamptz revoked_at "on use or logout; reuse revokes all"
         timestamptz created_at
     }
 
-    audit_admin_actions["audit.admin_actions (append‑only; writers INSERT, only audit_svc SELECTs)"] {
+    audit_admin_actions["audit.admin_actions (append‑only; only audit_svc SELECTs)"] {
         uuid id PK "generated by the writer"
         timestamptz occurred_at "writer's clock; now() only as fallback"
         uuid actor_id "token sub; no FK"

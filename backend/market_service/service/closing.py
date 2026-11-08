@@ -68,6 +68,24 @@ def was_open_for_trading_at(as_of: datetime) -> ColumnElement[bool]:
     )
 
 
+async def read_sweep_lag_seconds(session: AsyncSession) -> float:
+    """How long the oldest still-open market has been past its close time. #599.
+
+    The same `status = OPEN AND close_time <= now()` as `close_due_markets`, so
+    `ix_markets_due_close` answers it: `min(close_time)` over that partial
+    index reads its first entry. 0.0 when nothing is due. Writes nothing, and
+    the caller ends the transaction.
+    """
+    lag = await session.scalar(
+        select(
+            func.greatest(
+                0, func.extract("epoch", func.now() - func.min(Market.close_time))
+            )
+        ).where(Market.status == MarketStatus.OPEN, Market.close_time <= func.now())
+    )
+    return float(lag or 0.0)
+
+
 async def close_due_markets(session: AsyncSession, *, limit: int) -> list[uuid.UUID]:
     """Close up to `limit` due markets, commit, and return the ids this call closed.
 

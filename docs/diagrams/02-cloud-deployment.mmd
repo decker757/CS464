@@ -1,10 +1,16 @@
 %% 02 — Production on DigitalOcean, as built ([5.3] #19)
-%% Drawn from: ADR 0026, ADR 0002, ADR 0010, ADR 0011, ADR 0020, ADR 0021,
+%% Drawn from: ADR 0026 (and its connection-pool amendment), ADR 0002, ADR 0010,
+%%   ADR 0011, ADR 0020, ADR 0021, ADR 0027, ADR 0028,
 %%   docs/deployment.md, infra/terraform/{network,load_balancer,servers,databases,dns,secrets,outputs}.tf,
 %%   infra/terraform/variables.tf, infra/push-secrets.sh,
 %%   deploy/production/{compose.yml,release.sh}, deploy/production/gateway/default.conf.template,
-%%   .github/workflows/deploy.yml
-%% Solid: built. Dashed and "not built": what ADR 0026's Consequences say is missing.
+%%   deploy/production/alloy/config.alloy, .github/workflows/deploy.yml
+%% Solid: built and running. Dashed and "not built": the Postgres standby ADR 0026
+%% declines to buy. Staging is not drawn: the team dropped it on 2026-11-08.
+%% The login and registration limits (#600, ADR 0027) run in auth against the same
+%% Valkey (compose.yml REDIS_URL). Monitoring (#599, ADR 0028) is Grafana Alloy on
+%% each server, under the observability profile release.sh switches on when
+%% GRAFANA_CLOUD_TOKEN is set; it went live with #632 on 2026-11-04 (deployment.md).
 %% The firewall (servers.tf) admits :80 from the load balancer only, and :22 from
 %% anywhere, keys only, because GitHub's runners have no fixed address. The gateway
 %% is the only container publishing a port (compose.yml).
@@ -12,9 +18,10 @@
 %% LEDGER_SERVICE_KEY and REDIS_URL, under umask 077. Only the admin URL stays out of
 %% it, reaching a server on stdin (release.sh). DigitalOcean makes the doadmin password
 %% and the Valkey URL, which Terraform reads; REGISTRY_TOKEN is the run's GITHUB_TOKEN.
-%% Connections: 20 per server at full overflow (compose.yml), 40 for two, against about
-%% 47 on the 2 GB plan (ADR 0026), which leaves room for the migrate steps. Those run
-%% one after another (migrate.sh), so the 3 in deployment.md is a budget, not a peak.
+%% Connections: the apps reach Postgres through four PgBouncer pools in transaction
+%% mode, auth 6, market 6, ledger 14, audit 2 = 28 of about 47 on the 2 GB plan
+%% (databases.tf), however many servers run; each server opens 26 clients onto them
+%% (compose.yml). The migrate steps connect directly, one after another (migrate.sh).
 %% The VPC title has right padding so the browser arrow misses it. ELK lays
 %% siblings out in reverse source order here, so app-2 is written before app-1.
 %% Mermaid 12 redraws a dashed edge solid where it hops another line; no dashed edges here.
@@ -30,14 +37,7 @@ flowchart TB
     end
 
     browser["Browser"]
-
-    subgraph gaps["Not built (ADR 0026)"]
-        staging["staging: own domain,<br/>own database; no open issue"]
-        limit["login rate<br/>limit (#600)"]
-        mon["monitoring, alerts<br/>(#599)"]
-        staging ~~~ limit
-        limit ~~~ mon
-    end
+    grafana["Grafana Cloud, outside DigitalOcean:<br/>metrics, logs, traces, 5 alerts"]
 
     subgraph do["<span style='padding-right:330px'>DigitalOcean sgp1: VPC 10.64.0.0/20</span>"]
         lb["Load balancer: ends TLS with Let's Encrypt,<br/>sends only to servers whose /lb-health answers 200"]
@@ -55,8 +55,8 @@ flowchart TB
             end
         end
 
-        valkey[("Managed Valkey 8,<br/>1 GB, 1 node")]
-        pg[("Managed Postgres 17, 2 GB, 1 node, daily backups;<br/>20 connections a server, 40 of about 47")]
+        valkey[("Managed Valkey 8, 1 GB, 1 node:<br/>prices, login limits")]
+        pg[("Managed Postgres 17, 2 GB, 1 node, daily backups;<br/>4 PgBouncer pools hold 28 of about 47 connections")]
         standby[("not built:<br/>Postgres standby")]
     end
 
@@ -72,6 +72,7 @@ flowchart TB
 
     env -->|"release.sh, SSH:<br/>release dir, app.env"| fw
     ghcr -->|"servers pull"| fw
+    fw -->|"Alloy on each server"| grafana
 
     classDef browser  fill:#F2F2F2,stroke:#555555,color:#1A202C
     classDef edge     fill:#FFF4CC,stroke:#9A7B00,color:#1A202C
@@ -85,6 +86,5 @@ flowchart TB
     class svc1,svc2 ext
     class pg pg
     class valkey redis
-    class tf,env,images,ghcr ext
-    class standby,staging,mon,limit planned
-    style gaps stroke-dasharray:6 4,fill:#FFFFFF
+    class tf,env,images,ghcr,grafana ext
+    class standby planned

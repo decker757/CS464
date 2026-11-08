@@ -38,7 +38,7 @@ system in the PDF.
 
 - **Solid**: exists in the code today.
 - **Dashed**, and labelled `not built`, or inside a box that says so: does not
-  exist yet (staging, monitoring and the rest in ADR 0026). In a flowchart
+  exist yet (the Postgres standby in ADR 0026). In a flowchart
   `-.->|"not built: ..."|`.
 - Dotted is reserved for one other meaning, and only where the diagram
   says so in its legend: a cross-schema id that is not a foreign key (ERDs)

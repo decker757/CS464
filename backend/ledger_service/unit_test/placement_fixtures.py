@@ -14,21 +14,15 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 
-import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.pricing import Side
 from model.entities import MarketResult, Order, ResultKind
 from service import books, orders, reservations
-from unit_test.conftest import (
-    active_auth_transport,
-    auth_client_over,
-    mint_token,
-    set_q,
-    terms_client_over,
-)
-from unit_test.trade_fixtures import Recorder, Upstream
+from service.local_copy import LocalCopy
+from unit_test.conftest import mint_token, set_q, terms_client_over
+from unit_test.trade_fixtures import Recorder, Upstream, fresh_copy
 
 # The contract's example market: `b = 100` at `q = [20, 0]`, where outcome 0
 # is priced 0.5498. A buy of outcome 0 at 0.6000 fills 20.5465 shares at once
@@ -73,12 +67,13 @@ async def place(
     client_key: str | None = None,
     access_token: str | None = None,
     redis_client: Recorder | None = None,
-    auth_transport: httpx.MockTransport | None = None,
+    local_copy: LocalCopy | None = None,
 ):
     """One placement through `orders.place`, shaped like `trade_fixtures.buy`:
     session and market id positionally, the rest keyword-only, the caller's
-    token forwarded, and the gate, auth and Redis as seams. `outcome_id`
-    overrides `outcome` for a test that names another market's outcome."""
+    token forwarded, and the copy and Redis as seams, the copy
+    `fresh_copy(upstream)` unless given. `outcome_id` overrides `outcome` for
+    a test that names another market's outcome."""
     return await orders.place(
         session,
         upstream.market_id,
@@ -91,9 +86,7 @@ async def place(
         access_token=access_token if access_token is not None else mint_token(user_id),
         redis_client=redis_client if redis_client is not None else Recorder(),
         terms_client=terms_client_over(upstream.transport),
-        auth_client=auth_client_over(
-            active_auth_transport() if auth_transport is None else auth_transport
-        ),
+        local_copy=local_copy if local_copy is not None else fresh_copy(upstream),
     )
 
 
@@ -112,6 +105,21 @@ async def order_row(session: AsyncSession, order_id: uuid.UUID):
 async def reserved_credits_of(session: AsyncSession, user_id: uuid.UUID) -> Decimal:
     session.expire_all()
     return await reservations.reserved_of(session, user_id)
+
+
+async def reserved_shares_of(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    market_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+) -> Decimal:
+    """What this user's live sell orders of one outcome reserve, read on its
+    own: the figure the context statement reads inside itself."""
+    stmt = reservations.reserved_shares_query_of(
+        user_id, market_id=market_id, outcome_id=outcome_id
+    )
+    return (await session.execute(stmt)).scalar_one()
 
 
 async def record_result(session: AsyncSession, upstream: Upstream) -> None:

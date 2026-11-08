@@ -7,7 +7,8 @@
 # Compared with ../../docker-compose.yml: images come from the registry instead
 # of being built here; there is no db or redis; nothing publishes a port except
 # the gateway; the migrate steps run only when the deploy asks for them (ADR
-# 0020); and the pool sizes are set (see below).
+# 0020); and the pool sizes are set, and the apps reach Postgres through
+# DigitalOcean's connection pools (see below).
 #
 # Each release has its own copy of this file, in /opt/cs464/releases/<tag>/.
 # roll.sh and migrate.sh read it with two env files:
@@ -25,10 +26,14 @@ x-logging: &logging
   options:
     max-size: "10m"
     max-file: "5"
+    # Names the compose service on every line, so Alloy can label the stream.
+    labels: "com.docker.compose.service"
 
 x-migrate: &migrate
   # Run only when named: `docker compose run --rm auth-migrate`. Once per
-  # deploy, on one server, before any app is rolled. ADR 0020.
+  # deploy, on one server, before any app is rolled. ADR 0020. Each connects
+  # to Postgres directly, not through its service's pool. An app.env with no
+  # direct address, from before the pools, falls back to the one it has.
   profiles: ["migrate"]
   command: ["python", "migrate.py"]
   # The image's HEALTHCHECK probes the API, which this container never serves.
@@ -47,32 +52,42 @@ x-app-environment: &app-environment
   FORWARDED_ALLOW_IPS: "*"
   JWT_SECRET: ${JWT_SECRET:?}
   CORS_ORIGINS: https://${DOMAIN:?}
+  # [BE][5.5] #599. Empty means no traces; release.sh sets both when Grafana
+  # Cloud is configured.
+  TRACING_ENDPOINT: ${TRACING_ENDPOINT:-}
+  TRACING_SAMPLE_RATIO: ${TRACING_SAMPLE_RATIO:-1.0}
+
+volumes:
+  # Alloy's read positions in the container logs, so a restart resumes. Above
+  # `services` because test/stack-test.sh appends a service to the file's end.
+  alloy-data: {}
 
 services:
   auth-migrate:
     <<: *migrate
     image: ${IMAGE_REGISTRY:?}/cs464-auth:${IMAGE_TAG:?}
     environment:
-      DATABASE_URL: ${AUTH_DATABASE_URL:?}
+      DATABASE_URL: ${AUTH_DIRECT_DATABASE_URL:-${AUTH_DATABASE_URL:?}}
 
   market-migrate:
     <<: *migrate
     image: ${IMAGE_REGISTRY:?}/cs464-market:${IMAGE_TAG:?}
     environment:
-      DATABASE_URL: ${MARKET_DATABASE_URL:?}
+      DATABASE_URL: ${MARKET_DIRECT_DATABASE_URL:-${MARKET_DATABASE_URL:?}}
 
   ledger-migrate:
     <<: *migrate
     image: ${IMAGE_REGISTRY:?}/cs464-ledger:${IMAGE_TAG:?}
     environment:
-      DATABASE_URL: ${LEDGER_DATABASE_URL:?}
+      DATABASE_URL: ${LEDGER_DIRECT_DATABASE_URL:-${LEDGER_DATABASE_URL:?}}
 
-  # Pool sizes: every replica of every service, at full overflow, plus the
-  # three migrate steps, must fit under the managed database's connection
-  # limit. Per server: auth 3+1, market 3+2, ledger 6+3, audit 1+1 = 20.
-  # Two servers use 40, and the migrate steps add 3. A third server needs
-  # these lowered or a bigger database plan. DECISIONS.md, "Each service's
-  # connection pool is a setting, sized to the database's ceiling".
+  # Pool sizes. Each service connects to its DigitalOcean pool, not to
+  # Postgres, so these count client connections, which are cheap: a pool
+  # takes thousands. The cap on Postgres is the pools' own, 28 in all,
+  # however many servers run (infra/terraform/databases.tf). Per server:
+  # auth 3+1, market 3+2, ledger 10+5, audit 1+1 = 26; three servers make 78
+  # client connections onto those 28. The ledger's is the largest because
+  # the trade path is its. docs/deployment.md, "Connection budget".
   auth:
     <<: *app
     image: ${IMAGE_REGISTRY:?}/cs464-auth:${IMAGE_TAG:?}
@@ -82,6 +97,8 @@ services:
       DATABASE_POOL_SIZE: 3
       DATABASE_MAX_OVERFLOW: 1
       LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
+      # [A-2] #600, ADR 0027. Login and registration limits; fails open.
+      REDIS_URL: ${REDIS_URL:?}
       COOKIE_SECURE: "true"
       # The cookie is set by auth.<domain> and read by market., ledger.,
       # audit. and realtime.<domain>, so it names the parent domain. ADR 0002.
@@ -95,6 +112,7 @@ services:
       DATABASE_URL: ${MARKET_DATABASE_URL:?}
       DATABASE_POOL_SIZE: 3
       DATABASE_MAX_OVERFLOW: 2
+      LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
       # Runs on every server. Two sweeps racing is safe: ADR 0011, and
       # docs/horizontal-scaling.md ran it.
       CLOSE_SWEEP_ENABLED: "true"
@@ -105,8 +123,8 @@ services:
     environment:
       <<: *app-environment
       DATABASE_URL: ${LEDGER_DATABASE_URL:?}
-      DATABASE_POOL_SIZE: 6
-      DATABASE_MAX_OVERFLOW: 3
+      DATABASE_POOL_SIZE: 10
+      DATABASE_MAX_OVERFLOW: 5
       LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
       REDIS_URL: ${REDIS_URL:?}
       # true on one server only, set per server in app.env. ADR 0021.
@@ -161,3 +179,30 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # [BE][5.5] #599. Metrics, logs and traces to Grafana Cloud. Started only
+  # under the `observability` profile, which release.sh switches on when it is
+  # given Grafana settings. Its settings are all optional here (never `:?`):
+  # a server with Grafana off must still read this file.
+  #
+  # No Docker socket: it would hand a third-party container root on the host,
+  # and the container logs are readable from the json-file directory instead.
+  # No healthcheck: roll.sh's `up --wait` must never wait on Grafana, and
+  # Alloy retries a Grafana it cannot reach rather than failing.
+  alloy:
+    <<: *app
+    image: grafana/alloy:v1.21.3
+    profiles: ["observability"]
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - alloy-data:/var/lib/alloy/data
+    environment:
+      SERVER_LABEL: ${SERVER_LABEL:-}
+      GRAFANA_PROMETHEUS_URL: ${GRAFANA_PROMETHEUS_URL:-}
+      GRAFANA_PROMETHEUS_USER: ${GRAFANA_PROMETHEUS_USER:-}
+      GRAFANA_LOKI_URL: ${GRAFANA_LOKI_URL:-}
+      GRAFANA_LOKI_USER: ${GRAFANA_LOKI_USER:-}
+      GRAFANA_OTLP_URL: ${GRAFANA_OTLP_URL:-}
+      GRAFANA_OTLP_USER: ${GRAFANA_OTLP_USER:-}
+      GRAFANA_CLOUD_TOKEN: ${GRAFANA_CLOUD_TOKEN:-}

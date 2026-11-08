@@ -1,18 +1,24 @@
 %% 05 — Trust model: tokens, keys, grants
 %% Drawn from: ADR 0001, ADR 0002, ADR 0003, ADR 0006, ADR 0007, ADR 0010,
-%%   ADR 0021, ADR 0022 (and its ADR 0024 amendment), sql/01-roles.sql,
-%%   sql/02-schemas.sql, backend/shared/security.py, backend/shared/config.py,
-%%   backend/auth_service/core/config.py, backend/auth_service/core/security.py,
+%%   ADR 0021, ADR 0022 (as amended by ADR 0024 and ADR 0030), ADR 0030,
+%%   sql/01-roles.sql, sql/02-schemas.sql, backend/shared/security.py,
+%%   backend/shared/config.py, backend/auth_service/core/config.py,
+%%   backend/auth_service/core/security.py,
 %%   backend/auth_service/controller/transport.py,
-%%   backend/auth_service/controller/dependencies.py,
+%%   backend/auth_service/controller/{dependencies,internal_routes}.py,
+%%   backend/market_service/controller/{dependencies,internal_routes}.py,
 %%   backend/auth_service/service/auth_service.py,
-%%   backend/ledger_service/service/account_status.py,
-%%   backend/ledger_service/service/orders.py,
-%%   backend/ledger_service/service/user_directory.py,
+%%   backend/ledger_service/service/{local_copy,account_status,user_directory}.py,
+%%   backend/ledger_service/service/{trading,orders}.py,
+%%   deploy/production/gateway/private-paths.inc,
 %%   backend/realtime_service/controller/transport.py,
 %%   backend/realtime_service/controller/routes.py,
 %%   backend/ledger_service/model/entities.py,
 %%   backend/ledger_service/migrations/versions/0001_baseline.py
+%% Since ADR 0030 the ledger forwards no trader's token to auth: a trade and an
+%% order read suspensions from its local copy, which LEDGER_SERVICE_KEY refreshes.
+%% auth and market each check that key on their /internal/ routes, and the gateway
+%% answers 404 for /internal/ on every subdomain (private-paths.inc).
 %% The legend is drawn in the figure, inside the Postgres zone. Top to bottom, the
 %% zone titles would sit under the edges, so they are notes in the zones instead.
 %% Some labels join their words with U+00A0 so Mermaid keeps them on one line.
@@ -30,7 +36,7 @@ flowchart TB
         realtime["realtime<br/>Origin allowlist,<br/>no token in URL"]
         market["market<br/>role claim<br/>until expiry"]
         audit["audit<br/>admin claim,<br/>GET only"]
-        ledger["ledger<br/>role claim<br/>+ /auth/me"]
+        ledger["ledger<br/>role claim;<br/>suspensions from<br/>its local copy"]
         auth["auth<br/>only signer,<br/>reads live row"]
     end
 
@@ -49,9 +55,9 @@ flowchart TB
     acc --> ledger
     ref -->|"/auth/refresh: single use,<br/>replay revokes all"| auth
 
-    ledger -->|"GET /auth/me, forwards<br/>trader's own token"| auth
+    ledger -->|"X-Service-Key, only<br/>/internal/users/suspended<br/>and /internal/users/lookup"| auth
     realtime ~~~ jwt
-    ledger -->|"X-Service-Key, only<br/>/internal/users/lookup"| auth
+    ledger -->|"X-Service-Key, only<br/>/internal/markets/published"| market
 
     market --> sMarket
     market -.-> sAudit

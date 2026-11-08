@@ -73,6 +73,14 @@ class Settings(ServiceSettings):
     # two intervals. ADR 0021.
     leaderboard_refresh_enabled: bool = True
 
+    # --- The local copy of suspensions and markets #640, ADR 0030 ------------
+    # How often the ledger refetches who is suspended and what is published,
+    # and how old the copy may be before a trade is refused rather than
+    # trusted. The max age is the bound on acting on a stale answer; past it
+    # the copy fails closed with the dependency's unavailable code.
+    local_copy_refresh_seconds: float = Field(default=1.0, gt=0)
+    local_copy_max_age_seconds: float = Field(default=5.0, gt=0)
+
 
 @lru_cache
 def get_settings() -> Settings:

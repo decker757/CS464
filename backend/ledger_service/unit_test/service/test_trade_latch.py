@@ -31,6 +31,7 @@ from unit_test.trade_fixtures import (
     entry_count,
     errors,
     fund,
+    open_copy,
     pool_balance,
     session_factory,
     trading,
@@ -73,7 +74,7 @@ async def test_a_settled_market_refuses_a_trade_its_gate_let_through(
             quantity=SMALL_QUANTITY,
             state_version=version if quote == "current" else version + 7,
             client_key="after-settlement",
-            transport=upstream.gate_open,
+            local_copy=open_copy(upstream),
         )
 
     key = trading().trade_key(trader, upstream.market_id, "after-settlement")

@@ -12,8 +12,11 @@ its own": every writer of an order row, the placement, the cascade and the
 cancel, takes the market's book row lock first, so the book lock holds the
 rows still and the order read takes no lock of its own. ADR 0024's "Price
 priority, then time" leans on the same lock: `seq` is assigned when the row
-is inserted under it, so the sequence is the lock order. A writer that skipped
-the book lock would break both.
+is inserted under it, so the sequence is the lock order. The trade's cascade
+skip leans on it too: `trading.execute` reads the cascade only when its context
+statement, issued after the book lock, saw an open order, which holds only
+while every writer of an order row takes the book lock first. A writer that
+skipped the book lock would break all three.
 
 When this fails, do not just add the module to `_KNOWN_WRITERS`. Read that
 amendment first. Either the new writer takes the book lock before it reads or

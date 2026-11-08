@@ -35,6 +35,7 @@ from enum import StrEnum
 from core.errors import (
     CostBelowTick,
     InsufficientSharesOutstanding,
+    PriceBeyondLimit,
     ProceedsBelowTick,
     QuantityTooLarge,
 )
@@ -185,6 +186,28 @@ def trade_cost_of(
     magnitude = quantize_cost(raw, side=side)
     total = -magnitude if side is Side.BUY else magnitude
     return TradeCost(after_q=after_q, magnitude=magnitude, total=total)
+
+
+def refuse_if_beyond_limit(
+    cost: TradeCost, *, side: Side | str, limit: Decimal, state_version: int
+) -> None:
+    """Refuse a trade whose price at execution is beyond its limit. #640
+
+    Raises `PriceBeyondLimit` when a buy's `cost.magnitude` is above `limit`
+    or a sell's is below it; a cost exactly at the limit executes.
+
+    Compares `magnitude`, never the signed `total`. `side` is coerced, as in
+    `quantize_cost`, so an unconverted string meets its own comparison.
+    """
+    side = Side(side)
+    if side is Side.BUY:
+        beyond = cost.magnitude > limit
+    else:
+        beyond = cost.magnitude < limit
+    if beyond:
+        raise PriceBeyondLimit(
+            limit=limit, current_total=cost.magnitude, state_version=state_version
+        )
 
 
 def liquidation_values_of(

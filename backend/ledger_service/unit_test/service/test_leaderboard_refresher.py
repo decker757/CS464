@@ -154,3 +154,24 @@ async def test_the_refresher_sleeps_after_each_refresh_not_at_a_fixed_rate(
     ]
     assert len(gaps) == 2
     assert all(gap >= interval_seconds for gap in gaps)
+
+
+async def test_each_refresh_runs_under_its_own_request_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refresh's log lines share one ID, and the next refresh's do not. #599"""
+    from shared.request_ids import current_request_id  # noqa: PLC0415
+
+    ids: list[str | None] = []
+    second_call = asyncio.Event()
+
+    async def recorder(*args, **kwargs) -> None:
+        ids.append(current_request_id())
+        if len(ids) == 2:
+            second_call.set()
+
+    async with _loop_running(monkeypatch, recorder) as task:
+        await reached(second_call, "the loop never refreshed twice", [task])
+
+    assert len(set(ids[:2])) == 2
+    assert None not in ids

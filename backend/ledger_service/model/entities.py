@@ -389,11 +389,17 @@ class Entry(Base):
         # keyset ordering in core/paging.py exactly, and to read the same way
         # as the audit feed indexes in sql/02-schemas.sql — Postgres would scan
         # an ascending index backwards just as happily.
+        #
+        # `amount` rides along so the balance sum, which runs under the account
+        # lock on every trade, can be an index-only scan instead of reading a
+        # heap page per entry. Entries on pages vacuum has not yet marked
+        # all-visible still cost a heap fetch. #642
         Index(
             "ix_ledger_entries_account_feed",
             "account_id",
             text("created_at DESC"),
             text("id DESC"),
+            postgresql_include=["amount"],
         ),
     )
 

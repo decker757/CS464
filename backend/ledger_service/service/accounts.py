@@ -84,7 +84,8 @@ def balance_query_of(
     A single-column SELECT, so a caller can narrow it with `.where()` or turn
     it into a value inside another statement with `.scalar_subquery()`. A
     balance is never stored (ADR 0009); `balance_of`, the history's running
-    balance and the exposure read all sum through this.
+    balance, the exposure read and `posting`'s floors statement all sum
+    through this.
 
     `account_id` is an id, or a column of the enclosing statement
     (`MarketBook.pool_account_id` in the exposure read) that the subquery

@@ -4,10 +4,11 @@ ADR 0024, "Resting orders fill against the AMM inside the trade that moved the
 price", decides the shape, and its "A placement checks in the trade's order"
 the sequence: the retry lookup, the placer's account (ADR 0022), the market
 gate, the book's first touch and the grant, then the book lock and everything
-under it. Under the lock it refuses a
-market that has ended, one that is not binary, an unknown outcome, an order
-that would cross the book and a sell larger than the unreserved shares, and
-then either fills on arrival, as far as the price allows, or rests.
+under it. The account check and the gate read the ledger's local copy, as the
+trade's do (ADR 0030). Under the lock it refuses a market that has ended or
+whose close time has passed, one that is not binary, an unknown outcome, an
+order that would cross the book and a sell larger than the unreserved shares,
+and then either fills on arrival, as far as the price allows, or rests.
 
 **Two commit paths, and one account lock between them, never two.** An order
 that fills writes the fill as a trade does and commits through
@@ -50,6 +51,7 @@ from core.limit_orders import (
     executable_fill_of,
     refuse_if_crosses_book,
 )
+from core.metrics import ORDER_FILLS
 from core.pricing import QUANTUM, Side, per_share, quantize_cost
 from model.entities import (
     Account,
@@ -61,28 +63,26 @@ from model.entities import (
     TransactionKind,
 )
 from service import (
-    account_status,
     accounts,
     book_prices,
     books,
     bus,
     grants,
-    market_status,
     posting,
     reservations,
 )
+from service.local_copy import LocalCopy, ensure_trading, refuse_if_suspended
 
 # The trade path's own steps, shared with the placement's fill so a fill on
 # arrival writes exactly what an instant trade of its size writes.
 from service.trading import (
     PricedTrade,
     fill_key,
-    find_position,
     list_open_orders,
-    list_outcomes,
     log_refused_fill,
     price_event_of,
     publish_order_updates,
+    read_trade_context,
     refuse_if_short_of_shares,
     reservation_drop_of,
     resting_order_of,
@@ -337,6 +337,7 @@ async def _commit_fill(
     *,
     book: MarketBook,
     account: Account,
+    pool_account: Account,
     trade: PricedTrade,
     outcomes: Sequence[MarketOutcome],
     outcome_position: int,
@@ -352,8 +353,6 @@ async def _commit_fill(
     "A fill the running check refuses inside a cascade is `500
     cascade_fill_refused`")."""
     fill_version = book.state_version
-    # Read once for the whole batch; `get_one` for the trade path's reason.
-    pool_account = await session.get_one(Account, book.pool_account_id)
     # Before the order is added, so the cascade never reads the order itself.
     cascade = await write_cascade(
         session, book, outcomes=outcomes, pool_account=pool_account, now=now
@@ -388,6 +387,8 @@ async def _commit_fill(
             log_refused_fill(refusal)
             raise CascadeFillRefused from refusal
         raise _placement_refusal_of(refusal, order.budget) from None
+    # After `post_all`'s commit: the order's own fill and the cascade's.
+    ORDER_FILLS.inc(1 + len(cascade))
 
     # After the commit, never before it, as on the trade path (ADR 0010).
     event = price_event_of(
@@ -484,7 +485,7 @@ async def place(
     access_token: str,
     redis_client: redis.Redis,
     terms_client: httpx.AsyncClient,
-    auth_client: httpx.AsyncClient,
+    local_copy: LocalCopy,
 ) -> Placement:
     """Place a limit order in `market_id`, or replay the one this key named.
 
@@ -512,29 +513,39 @@ async def place(
     if pre_gate is not None:
         return pre_gate
 
-    # The trade's middle steps, in its order and for its reasons: the account
-    # check and the gate call out, and the book's first touch and the grant
-    # can commit, so all four run before the book lock.
-    await account_status.refuse_if_suspended(
-        session, access_token=access_token, auth_client=auth_client
-    )
-    await market_status.ensure_trading(
-        session, market_id, access_token=access_token, terms_client=terms_client
-    )
+    # The trade's middle steps, in its order and for its reasons: the gate may
+    # roll the session back on a miss, and the book's first touch and the
+    # grant can commit, so all four run before the book lock. Nothing the
+    # retry lookup loaded is reused below the gate; keep every read after it.
+    refuse_if_suspended(local_copy, user_id)
+    terms = await ensure_trading(session, local_copy, market_id, now=datetime.now(UTC))
     await books.ensure_open(
         session, market_id, access_token=access_token, terms_client=terms_client
     )
     user_account = await grants.ensure_granted(session, user_id)
 
-    # The book row, then the re-check and the latch, as on the trade path.
+    # The book row, then the re-check, still first. A placement's record is its
+    # order row, not a transaction, so it reads that row itself rather than
+    # asking the context, whose `key_taken` names the transactions a trade's
+    # key writes.
     book = await books.lock_book(session, market_id)
     under_lock = await _replay_if_present(session, key, **request)
     if under_lock is not None:
         return under_lock
-    if await books.find_result(session, market_id) is not None:
+    # Everything below decides from one statement issued after the lock
+    # returned, never inside it, as on the trade path (ADR 0015). A book with
+    # no outcome rows is refused by it, `MarketBookIncomplete`, before the
+    # latch and the close check, as the trade's is.
+    context = await read_trade_context(
+        session, book, user_id=user_id, outcome_id=outcome_id, key=key
+    )
+    # The latch, then the deciding close check on Postgres's clock after the
+    # lock, as the trade's step 6 makes them.
+    if context.has_result:
         raise MarketClosed
+    books.refuse_if_closed_under_lock(terms, db_now=context.db_now)
 
-    outcomes = await list_outcomes(session, market_id)
+    outcomes = context.outcomes
     book_prices.refuse_unpriceable(len(outcomes), book.liquidity_b)
     if len(outcomes) != _BINARY_OUTCOMES:
         raise MarketNotBinary
@@ -552,17 +563,10 @@ async def place(
         side=side,
         limit_price=limit_price,
     )
-    position = await find_position(
-        session, user_id=user_id, market_id=market_id, outcome_id=outcome_id
-    )
+    position = context.position
     if side is Side.SELL:
-        await refuse_if_short_of_shares(
-            session,
-            position,
-            user_id=user_id,
-            market_id=market_id,
-            outcome_id=outcome_id,
-            quantity=quantity,
+        refuse_if_short_of_shares(
+            position, reserved=context.reserved_shares, quantity=quantity
         )
 
     # The new order has no `seq` until it is inserted, and the fill on
@@ -603,6 +607,7 @@ async def place(
         order,
         book=book,
         account=user_account,
+        pool_account=context.pool_account,
         trade=trade,
         outcomes=outcomes,
         outcome_position=outcome_position,

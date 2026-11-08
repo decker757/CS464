@@ -1,0 +1,124 @@
+// [BE][5.5] #599. Grafana Alloy on each app server: it scrapes the five
+// services' /metrics, ships every container's log lines, and relays traces,
+// all to Grafana Cloud. compose.yml starts it only when release.sh was given
+// Grafana settings (the `observability` profile). Every address and
+// credential comes from the environment, so nothing here is a secret.
+// Validated in CI with `alloy validate`; see ci-deploy.yml.
+
+prometheus.scrape "services" {
+  targets = [
+    {"__address__" = "auth:8000", "service" = "auth"},
+    {"__address__" = "market:8000", "service" = "market"},
+    {"__address__" = "ledger:8000", "service" = "ledger"},
+    {"__address__" = "audit:8000", "service" = "audit"},
+    {"__address__" = "realtime:8000", "service" = "realtime"},
+  ]
+  job_name        = "cs464"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  metrics_path    = "/metrics"
+  forward_to      = [prometheus.relabel.server.receiver]
+}
+
+prometheus.relabel "server" {
+  rule {
+    target_label = "server"
+    replacement  = sys.env("SERVER_LABEL")
+  }
+  forward_to = [prometheus.remote_write.grafana.receiver]
+}
+
+prometheus.remote_write "grafana" {
+  endpoint {
+    url = sys.env("GRAFANA_PROMETHEUS_URL")
+    basic_auth {
+      username = sys.env("GRAFANA_PROMETHEUS_USER")
+      password = sys.env("GRAFANA_CLOUD_TOKEN")
+    }
+  }
+}
+
+local.file_match "containers" {
+  path_targets = [{"__path__" = "/var/lib/docker/containers/*/*-json.log"}]
+  // Every roll makes new containers, so new files: look for them each second.
+  sync_period  = "1s"
+}
+
+loki.source.file "containers" {
+  targets    = local.file_match.containers.targets
+  // A file Alloy has no saved position for is read from its end, so a first
+  // start ships new lines, not every log already on disk (50 MB a container).
+  // That holds for every new container's file too: whatever it writes before
+  // the next sync above, about its first second, is never shipped.
+  tail_from_end = true
+  forward_to    = [loki.process.containers.receiver]
+}
+
+loki.process "containers" {
+  stage.json {
+    expressions = {output = "log", time = "time", container = "attrs.\"com.docker.compose.service\""}
+  }
+  stage.timestamp {
+    source = "time"
+    format = "RFC3339Nano"
+  }
+  stage.labels {
+    values = {container = ""}
+  }
+  stage.output {
+    source = "output"
+  }
+  stage.json {
+    expressions = {level = "level", service = "service"}
+  }
+  stage.labels {
+    values = {level = "", service = ""}
+  }
+  stage.static_labels {
+    values = {server = sys.env("SERVER_LABEL")}
+  }
+  forward_to = [loki.write.grafana.receiver]
+}
+
+loki.write "grafana" {
+  endpoint {
+    url = sys.env("GRAFANA_LOKI_URL")
+    basic_auth {
+      username = sys.env("GRAFANA_LOKI_USER")
+      password = sys.env("GRAFANA_CLOUD_TOKEN")
+    }
+  }
+}
+
+// Traces keep the client address and user agent, and the gateway's access
+// lines, which Alloy ships with every other container's, start with the
+// client address: both on purpose (a decision, 2026-11-04). The services'
+// own JSON log lines carry no IP, except realtime's websocket handshakes:
+// uvicorn logs each as `<client ip>:<port> - "WebSocket <path>" [accepted]`
+// (or 403), query string included. The socket takes no token there (docs/api/realtime-service.md).
+otelcol.receiver.otlp "services" {
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+  output {
+    traces = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  output {
+    traces = [otelcol.exporter.otlphttp.grafana.input]
+  }
+}
+
+otelcol.auth.basic "grafana" {
+  username = sys.env("GRAFANA_OTLP_USER")
+  password = sys.env("GRAFANA_CLOUD_TOKEN")
+}
+
+otelcol.exporter.otlphttp "grafana" {
+  client {
+    endpoint = sys.env("GRAFANA_OTLP_URL")
+    auth     = otelcol.auth.basic.grafana.handler
+  }
+}

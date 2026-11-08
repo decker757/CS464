@@ -20,6 +20,8 @@ quantity at five decimal places or an unknown field all answer
 `invalid_request` in the envelope, and `test_validation_envelope.py` owns that
 shape for every route at once.
 
+**The copy is `conftest.py`'s `local_copy`**, which holds every market open
+and nobody suspended; a test about the account check or the gate changes it.
 **The cold path is stubbed at `market_terms.fetch` rather than at a
 transport**, the same way `test_snapshot_routes.py` and
 `test_preview_routes.py` do it: a route cannot be handed an
@@ -42,9 +44,11 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from unit_test.conftest import (
-    auth_client_over,
+    COPY_CLOSE_TIME,
     bearer,
     mint_token,
+    publish_markets,
+    suspend_users,
     terms_client_over,
 )
 from unit_test.trade_fixtures import (
@@ -161,10 +165,10 @@ async def _warm(
 class _Terms:
     """A stub for `market_terms.fetch`, patched onto the module.
 
-    Patched there rather than onto `books` or `market_status`, because both
-    hold the module and resolve `fetch` at call time — so this is the same
-    function the real path calls, reached the same way.
-    `test_snapshot_routes.py` uses the identical shape.
+    Patched there rather than onto `books`, because it holds the module and
+    resolves `fetch` at call time — so this is the same function the real
+    path calls, reached the same way. `test_snapshot_routes.py` uses the
+    identical shape.
     """
 
     def __init__(self, *, raises: Exception | None = None, status: str = "open") -> None:
@@ -423,10 +427,11 @@ async def test_a_body_naming_an_account_or_an_amount_is_refused(
     assert response.status_code == 422
 
 
-async def test_the_state_version_is_required(
+async def test_the_state_version_is_required_when_no_limit_is_sent(
     trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Required, not optional with a default.
+    """Required when the body names no price limit, not optional with a
+    default — the expand release's rule (#640).
 
     An optional staleness field lets a client silently opt out of the only
     staleness protection the trade has — and the client most likely to omit
@@ -525,14 +530,20 @@ async def test_a_quantity_with_five_decimal_places_is_refused(
 # The refusals that carry a code
 # =========================================================================
 async def test_a_closed_market_is_409_market_closed(
-    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch, local_copy
 ) -> None:
     """Spelled the same way market_service spells its own version of the same
     refusal, so a frontend error handler built for one serves both."""
+    from service.local_copy import MarketTradingTerms  # noqa: PLC0415
+
     client, recorder = trade_client
     market = _Market()
     await _warm(session, market)
-    _Terms(status="closed").install(monkeypatch, market)
+    _Terms().install(monkeypatch, market)
+    publish_markets(
+        local_copy,
+        {market.market_id: MarketTradingTerms(status="closed", close_time=COPY_CLOSE_TIME)},
+    )
 
     response = await client.post(
         _path(market.market_id), json=_body(market), headers=bearer(uuid.uuid4())
@@ -569,6 +580,112 @@ async def test_a_stale_quote_is_409_with_the_versions_in_details(
     assert error["code"] == "quote_stale"
     assert error["details"] == {"quoted": 7, "current": 0}
     assert recorder.calls == []
+
+
+# =========================================================================
+# A price limit (#640)
+# =========================================================================
+async def test_a_trade_within_its_limit_is_201_and_total_is_what_was_paid(
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`max_cost` reaches the service: a body quoting a version the book has
+    not reached is a `quote_stale` without it, and with it the trade lands
+    at the book's current price."""
+    client, _ = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms().install(monkeypatch, market)
+    cost = -expected_total(Q)
+
+    response = await client.post(
+        _path(market.market_id),
+        json=_body(market, state_version=7, max_cost=str(cost + 1)),
+        headers=bearer(uuid.uuid4()),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert Decimal(body["total"]) == -cost
+    assert body["state_version"] == 1
+
+
+async def test_a_trade_beyond_its_limit_is_409_with_limit_current_total_and_version_in_details(
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`price_beyond_limit` carries `limit` and `current_total` as decimal
+    strings, because they are money, and `state_version` as a number, the
+    book's own rather than the 7 the body quoted — what a client re-previews
+    against."""
+    client, recorder = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms().install(monkeypatch, market)
+
+    response = await client.post(
+        _path(market.market_id),
+        json=_body(market, state_version=7, max_cost="0.0001"),
+        headers=bearer(uuid.uuid4()),
+    )
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "price_beyond_limit"
+    assert error["details"] == {
+        "limit": "0.0001",
+        "current_total": str(-expected_total(Q)),
+        "state_version": 0,
+    }
+    assert recorder.calls == []
+
+
+@pytest.mark.parametrize(
+    ("side", "limit_field"),
+    [("sell", "max_cost"), ("buy", "min_proceeds")],
+)
+async def test_a_limit_for_the_other_side_is_422_invalid_request(
+    trade_client,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    side: str,
+    limit_field: str,
+) -> None:
+    """Refused rather than ignored: a client that sent it believes it is
+    protected, and a dropped limit would trade it at any price."""
+    client, recorder = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms().install(monkeypatch, market)
+
+    response = await client.post(
+        _path(market.market_id),
+        json=_body(market, side=side, **{limit_field: "1.0000"}),
+        headers=bearer(uuid.uuid4()),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert recorder.calls == []
+
+
+async def test_a_trade_with_a_limit_needs_no_state_version(
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The limit replaces the quote: a body with `max_cost` and no
+    `state_version` trades."""
+    client, _ = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms().install(monkeypatch, market)
+
+    body = _body(market, max_cost="1000000")
+    del body["state_version"]
+
+    response = await client.post(
+        _path(market.market_id), json=body, headers=bearer(uuid.uuid4())
+    )
+
+    assert response.status_code == 201
+    assert Decimal(response.json()["total"]) == expected_total(Q)
 
 
 async def test_an_unaffordable_trade_is_409_insufficient_funds(
@@ -624,15 +741,16 @@ async def test_an_outcome_from_another_market_is_422_unknown_outcome(
 
 
 async def test_an_unreachable_market_service_is_503(
-    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch, local_copy
 ) -> None:
-    """The gate fails closed. A sick dependency is never read as an open
-    market, and 503 says there is no usable answer rather than inventing
-    one."""
+    """The gate fails closed. A copy that never loaded the published markets
+    is never read as an open market, and 503 says there is no usable answer
+    rather than inventing one (ADR 0030)."""
     client, _ = trade_client
     market = _Market()
     await _warm(session, market)
-    _Terms(raises=_errors().MarketTermsUnavailable()).install(monkeypatch, market)
+    _Terms().install(monkeypatch, market)
+    local_copy.markets = None
 
     response = await client.post(
         _path(market.market_id), json=_body(market), headers=bearer(uuid.uuid4())
@@ -643,47 +761,35 @@ async def test_an_unreachable_market_service_is_503(
 
 
 @pytest.mark.parametrize(
-    ("auth_status", "auth_body", "status", "code"),
-    [
-        (
-            403,
-            {"error": {"code": "account_suspended", "message": "Suspended."}},
-            403,
-            "account_suspended",
-        ),
-        (500, {}, 503, "auth_unavailable"),
-    ],
-    ids=["suspended", "auth-down"],
+    ("copy_says", "status", "code"),
+    [("suspended", 403, "account_suspended"), ("never-loaded", 503, "auth_unavailable")],
+    ids=["suspended", "auth-copy-never-loaded"],
 )
 async def test_auth_s_refusal_reaches_the_trader_in_the_envelope(
     trade_client,
-    app_under_test,
+    local_copy,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
-    auth_status: int,
-    auth_body: dict,
+    copy_says: str,
     status: int,
     code: str,
 ) -> None:
-    """ADR 0022's two new answers on this route, in the error envelope the
-    frontend parses. Nothing is published for a refused trade."""
-    import httpx  # noqa: PLC0415
-
-    from controller.dependencies import get_auth_client  # noqa: PLC0415
-
+    """ADR 0022's two answers on this route, from the copy of auth's
+    suspended ids (ADR 0030), in the error envelope the frontend parses.
+    Nothing is published for a refused trade."""
     client, recorder = trade_client
     market = _Market()
     await _warm(session, market)
     _Terms().install(monkeypatch, market)
+    user_id = uuid.uuid4()
+    if copy_says == "suspended":
+        suspend_users(local_copy, {user_id})
+    else:
+        local_copy.suspended = None
 
-    def auth_answers(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(auth_status, json=auth_body)
-
-    async with auth_client_over(httpx.MockTransport(auth_answers)) as auth_client:
-        app_under_test.dependency_overrides[get_auth_client] = lambda: auth_client
-        response = await client.post(
-            _path(market.market_id), json=_body(market), headers=bearer(uuid.uuid4())
-        )
+    response = await client.post(
+        _path(market.market_id), json=_body(market), headers=bearer(user_id)
+    )
 
     assert response.status_code == status
     assert response.json()["error"]["code"] == code
@@ -692,19 +798,22 @@ async def test_auth_s_refusal_reaches_the_trader_in_the_envelope(
 
 async def test_market_terms_unavailable_is_logged_at_warning_not_error(
     trade_client,
+    local_copy,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """DECISIONS.md: `settlement_unconfirmed` and `void_unconfirmed` are the
-    only 503s logged above WARNING. A market_service restart answers every
-    trade with this one, and at ERROR it would bury the 5xx that mean our own
-    data is wrong.
+    only 503s logged above WARNING. A market_service outage ages the copy past
+    its max age and answers every trade with this one, and at ERROR it would
+    bury the 5xx that mean our own data is wrong.
     """
     client, _ = trade_client
     market = _Market()
     await _warm(session, market)
-    _Terms(raises=_errors().MarketTermsUnavailable()).install(monkeypatch, market)
+    _Terms().install(monkeypatch, market)
+    local_copy.clock.now += local_copy.max_age_seconds + 1
+    suspend_users(local_copy, ())
 
     with caplog.at_level(logging.DEBUG):
         response = await client.post(
@@ -721,14 +830,15 @@ async def test_market_terms_unavailable_is_logged_at_warning_not_error(
 
 
 async def test_a_market_that_does_not_exist_is_404(
-    trade_client, monkeypatch: pytest.MonkeyPatch
+    trade_client, local_copy, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A cold market the upstream does not know. Not distinguished from a
-    draft or a submitted one, because `get_published` on the other side makes
-    those three indistinguishable on purpose."""
+    """A market the copy does not hold and the ledger has no book for. Not
+    distinguished from a draft or a submitted one, because the published
+    list on the other side leaves all three out on purpose."""
     client, _ = trade_client
     market = _Market()
     _Terms(raises=_errors().MarketNotFound()).install(monkeypatch, market)
+    publish_markets(local_copy, {})
 
     response = await client.post(
         _path(market.market_id), json=_body(market), headers=bearer(uuid.uuid4())

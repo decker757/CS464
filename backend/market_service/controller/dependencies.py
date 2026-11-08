@@ -1,5 +1,5 @@
 """FastAPI dependencies shared across routes: the session, who the caller is,
-and the paging and search parameters.
+the service key, and the paging and search parameters.
 
 Authentication is a dependency, not middleware: it is opt-in per route, shows
 in /docs, and hands routes typed claims. This service never reads auth.users,
@@ -8,6 +8,7 @@ so a suspended account keeps its authority until its token expires. ADR 0003.
 
 from __future__ import annotations
 
+import hmac
 from typing import Annotated
 
 from fastapi import Depends, Query, Request
@@ -15,8 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from controller import transport
 from core import security
+from core.config import get_settings
 from core.database import get_session
-from core.errors import NotAnAdministrator, NotAuthenticated
+from core.errors import InvalidServiceKey, NotAnAdministrator, NotAuthenticated
 from core.security import TokenClaims
 from model.schemas import MAX_QUESTION_LENGTH
 from service.audit import Actor, actor_of
@@ -64,6 +66,24 @@ async def get_actor(claims: CurrentAdmin) -> Actor:
 
 
 CurrentActor = Annotated[Actor, Depends(get_actor)]
+
+
+# Twin: auth_service/controller/dependencies.py::require_service_key; kept copied under ADR 0012's bar
+async def require_service_key(request: Request) -> None:
+    """Pass if `X-Service-Key` is the ledger's key. #640, ADR 0021
+
+    Raises InvalidServiceKey. A missing header is compared as an empty string,
+    so a missing and a wrong key take one code path and the same time. Guards
+    the `/internal` routes and nothing else; an access token does not pass
+    here, and this key does not pass `get_claims`.
+    """
+    presented = request.headers.get("X-Service-Key") or ""
+    expected = get_settings().ledger_service_key.get_secret_value()
+    if not hmac.compare_digest(presented.encode(), expected.encode()):
+        raise InvalidServiceKey
+
+
+ServiceKeyChecked = Annotated[None, Depends(require_service_key)]
 
 
 # The two parameters of every keyset-paged list here. [X-1] #104, #210.

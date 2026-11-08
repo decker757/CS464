@@ -56,8 +56,8 @@ flowchart LR
     browser --> audit
     browser -->|"WebSocket /ws/prices"| realtime
 
-    ledger -->|"GET /auth/me<br/>POST /internal/users/lookup"| auth
-    ledger -->|"GET /public/markets/{id}<br/>POST /markets/{id}/settle"| market
+    ledger -->|"GET /internal/users/suspended<br/>POST /internal/users/lookup"| auth
+    ledger -->|"GET /internal/markets/published<br/>GET /public/markets/{id}<br/>POST /markets/{id}/settle"| market
 
     auth -->|owns| sAuth
     market -->|owns| sMarket
@@ -91,11 +91,12 @@ other way. What the drawing cannot say for itself:
   `:8002` and the dashed arrows are not calls to it (ADR 0006). `audit_svc`
   also holds INSERT, so its own suite can seed rows; nobody anywhere holds
   UPDATE, DELETE or TRUNCATE.
-- **The three arrows out of the ledger carry two different credentials.**
-  `/auth/me`, `/public/markets/{id}` and `/markets/{id}/settle` forward the
-  caller's own access token unchanged; `/internal/users/lookup` presents
+- **The two arrows from the ledger to auth and market carry five routes and
+  two different credentials.** `/public/markets/{id}` and
+  `/markets/{id}/settle` forward the caller's own access token unchanged;
+  the three `/internal/` routes present
   `LEDGER_SERVICE_KEY`, which is the only service credential in the system and
-  has one caller and one route (ADR 0021).
+  has one caller and three routes (ADR 0021, ADR 0030).
 - **Nothing depends on `audit` or `realtime`**, and compose says so: neither is
   in any other service's `depends_on`. A trade survives both being down.
 - Every image is built from `backend/` so it carries `backend/shared/` beside
@@ -103,13 +104,18 @@ other way. What the drawing cannot say for itself:
 
 ## A trade, end to end
 
-The one path that crosses three services. The two upstream checks happen before
-any lock is taken, and the price frame happens after the commit.
+The trade itself calls no other service: the account check and the market gate
+read the ledger's local copy, which two background refreshers keep within about
+a second of auth and market_service. Both checks happen before any lock is
+taken, a close on `close_time` is checked again under it, and the price frame
+happens after the commit.
 
 **Drawn from:** [ADR 0017](adr/0017-the-ledger-and-a-stopped-market.md) (the
 replay-before-gate and gate-before-lock order),
 [ADR 0022](adr/0022-the-ledger-and-a-suspended-trader.md) (the account check,
 and its place in that order),
+[ADR 0030](adr/0030-the-ledger-keeps-a-local-copy.md) (both checks read a local
+copy, and a stale copy refuses),
 [ADR 0015](adr/0015-locking-the-read-that-decides-a-write.md) (the book lock
 first, the key re-checked under it),
 [ADR 0009](adr/0009-the-ledger-write-path.md) (one commit, legs that sum to
@@ -130,7 +136,15 @@ sequenceDiagram
     participant R as Redis
     participant RT as realtime
 
-    B->>L: POST /ledger/markets/{id}/trades<br/>outcome, side, quantity, state_version, Idempotency-Key
+    loop about every second, in the background on each replica
+        L->>A: GET /internal/users/suspended, LEDGER_SERVICE_KEY
+        A-->>L: every suspended id
+        L->>M: GET /internal/markets/published, LEDGER_SERVICE_KEY
+        M-->>L: every published market's stored status and close_time
+    end
+    Note over L,M: Each answer replaces the copy whole. ADR 0030
+
+    B->>L: POST /ledger/markets/{id}/trades<br/>outcome, side, quantity, limit, Idempotency-Key
     L->>DB: look the derived key up, no lock
 
     alt this key already names a committed transaction
@@ -138,14 +152,11 @@ sequenceDiagram
         L-->>B: 200, the stored result
         Note over L: A replay takes no lock, writes nothing and asks nobody,<br/>so a trade that was charged and whose response was lost<br/>still answers with what it did. ADR 0017
     else first time for this key
-        L->>A: GET /auth/me, the trader's own token
-        A-->>L: 200, or 403 account_suspended
-        L->>M: GET /public/markets/{id}, the same token
-        M-->>L: the derived status, the clock's close and an admin's in one field
-        Note over L,M: Both before the book lock, one after the other, and both fail closed:<br/>403 account_suspended, 409 market_closed, 503 if either is unreachable.<br/>No lock here holds a row in another service still. ADR 0022, ADR 0017
+        L->>L: the copy: is the trader suspended, is the market trading
+        Note over L: In memory, before the book lock, and both fail closed:<br/>403 account_suspended, 409 market_closed,<br/>503 if either copy is older than five seconds. ADR 0022, ADR 0017, ADR 0030
         L->>DB: open and fund the book — once per market<br/>mint the starting grant — once per trader, ever
         L->>DB: SELECT FOR UPDATE on market_books, the wider lock first
-        L->>DB: re-check the key under the lock, then the latch, q, b, state_version, the holding
+        L->>DB: one context statement after the lock: the key, the latch, close_time against<br/>clock_timestamp(), q, the holding; b and state_version from the locked book row (#641)
         L->>L: trade_cost_of(q, b) in core/lmsr.py
         L->>DB: write q, the position, the transaction and its entries — pending
         Note over L,DB: COMMIT. posting.post_all is the one statement that commits,<br/>so everything above it is pending until here and rolls back together.<br/>ADR 0009, ADR 0015
@@ -162,7 +173,7 @@ Two things left off to keep it one path. A commit that moved the price may also
 fill resting limit orders inside the same transaction, which adds `order.update`
 frames after the price frame
 ([ADR 0024](adr/0024-resting-orders-fill-inside-the-trade.md)). And the preview
-deliberately does not make either upstream call, because it decides nothing —
+deliberately does not consult the copy, because it decides nothing —
 so a preview can quote a market whose trade then returns `409 market_closed`
 (ADR 0017).
 
@@ -382,15 +393,20 @@ disagree, the code is right.
 
 In production the browser reaches the load balancer, then the gateway on an app
 server, which serves the frontend and sends each subdomain to its service. Each
-service but realtime connects as its own Postgres role, the ledger calls
-auth and market directly and publishes prices to Valkey after every commit, and
-the close sweeper and leaderboard refresher run inside their services. Locally
+service but realtime connects as its own Postgres role, and the ledger
+publishes prices to Valkey after every commit. A trade calls no other service:
+the ledger keeps a local copy of who is suspended and which markets are
+published, refreshed about every second from auth and market with
+`LEDGER_SERVICE_KEY` (ADR 0030). The ledger still calls market on a market's
+first trade and to read and mark a settlement or a void. The close sweeper,
+the leaderboard refresher and the copy's refresh run inside their services. Locally
 compose publishes one port per service, no gateway runs, and the bus is Redis.
 `audit_svc` holds INSERT as well as SELECT only so that its own suite can seed
 rows; the audit service has no write route.
-**Drawn from:** ADR 0003, 0006, 0010, 0011, 0017, 0019, 0021, 0022, 0025, 0026;
-`deploy/production/`, `infra/terraform/load_balancer.tf`, `docker-compose.yml`,
-`sql/`.
+**Drawn from:** ADR 0003, 0006, 0010, 0011, 0017 and 0022 (as amended by
+0030), 0019, 0021, 0025, 0026, 0030; `deploy/production/`,
+`infra/terraform/load_balancer.tf`, `docker-compose.yml`, `sql/`,
+`backend/ledger_service/service/local_copy.py`.
 [Source](diagrams/01-system-architecture.mmd)
 
 ### 2. Production deployment
@@ -405,15 +421,19 @@ port 22 from anywhere with keys only, because GitHub's runners have no fixed
 address. Each gateway serves the frontend and routes `auth.`, `market.`,
 `ledger.`, `audit.` and `realtime.` to the containers on its own server. Managed
 Postgres and Valkey accept only servers tagged `cs464-app`, over the private
-network. Terraform generates the application's secrets and reads the two that
+network. The apps reach Postgres through four PgBouncer pools, which hold 28 of
+its 47 or so connections however many servers run; auth keeps its login and
+registration limits in the same Valkey that carries prices (ADR 0027). Grafana
+Alloy on each server sends metrics, logs and traces to Grafana Cloud, which
+holds the dashboard and five alerts (ADR 0028). Terraform generates the application's secrets and reads the two that
 DigitalOcean makes, the `doadmin` password and the Valkey URL.
 `infra/push-secrets.sh` copies them to the GitHub `production` environment, and
 `release.sh` writes `app.env` on each server, role passwords included, inside each
-role's URL. Only the admin URL stays out of it, reaching a server on stdin. Dashed
-boxes are what ADR 0026 records as not built.
-**Drawn from:** ADR 0026, 0002, 0010, 0011, 0020, 0021; `infra/terraform/`,
-`infra/push-secrets.sh`, `deploy/production/`, `.github/workflows/deploy.yml`,
-[deployment.md](deployment.md).
+role's URL. Only the admin URL stays out of it, reaching a server on stdin. The
+dashed box is the Postgres standby ADR 0026 does not buy.
+**Drawn from:** ADR 0026, 0002, 0010, 0011, 0020, 0021, 0027, 0028;
+`infra/terraform/`, `infra/push-secrets.sh`, `deploy/production/`,
+`.github/workflows/deploy.yml`, [deployment.md](deployment.md).
 [Source](diagrams/02-cloud-deployment.mmd)
 
 ### 3. CI/CD
@@ -446,7 +466,9 @@ marked "→ auth.users" are ids that name a row in another table without a
 foreign key: across schemas because no service holds a grant on another's,
 and for `proposed_outcome_id` by choice. On solid lines the crow's-foot ends
 show what the constraints enforce, on dotted lines what the writing code
-does; Mermaid's identifying/non-identifying distinction is not used.
+does; Mermaid's identifying/non-identifying distinction is not used. In
+print it needs a landscape page: its text is about 5.2 pt at the portrait text
+width and 7.3 pt at 22.3 cm wide, where it still fits the page's height.
 **Drawn from:** `backend/*/model/entities.py`, each service's
 `migrations/versions/`, `sql/02-schemas.sql`, ADR 0003.
 [Source](diagrams/04-erd-overview.mmd)
@@ -457,39 +479,49 @@ does; Mermaid's identifying/non-identifying distinction is not used.
 
 Browsers hold a 15-minute JWT and a single-use, rotating refresh token in
 httpOnly cookies; every service verifies the token itself; the ledger checks
-the trader with auth on each trade and order, and names leaderboard holders
-with the one service key; Postgres grants confine each service to its own
-schema plus INSERT-only access to the append-only audit log.
-**Drawn from:** ADR 0001, 0002, 0006, 0007, 0021, 0022; `sql/`,
-`backend/shared/security.py`, `backend/auth_service/`.
+a trader against its local copy of suspended accounts and forwards no trader's
+token to auth, and the one service key refreshes that copy, the copy of
+published markets and the leaderboard's names, on `/internal/` routes that auth
+and market check and the gateway hides from the internet; Postgres grants
+confine each service to its own schema plus INSERT-only access to the
+append-only audit log.
+**Drawn from:** ADR 0001, 0002, 0006, 0007, 0021, 0022 (as amended by 0030),
+0030; `sql/`, `backend/shared/security.py`, `backend/auth_service/`,
+`backend/ledger_service/service/local_copy.py`,
+`deploy/production/gateway/private-paths.inc`.
 [Source](diagrams/05-security.mmd)
 
 ### 6. A trade, print version
 
 ![Trade sequence](diagrams/rendered/06-trade-sequence.svg)
 
-A replayed idempotency key is answered at once; otherwise the ledger confirms
-the trader with auth and the market's status with market, prices and commits
-under the `market_books` row lock, and publishes the new price through the bus,
-Redis locally and Valkey in production, to subscribed browsers. The detailed version is
-[above](#a-trade-end-to-end).
-**Drawn from:** ADR 0009, 0010, 0015, 0017, 0022, D-049;
-`backend/ledger_service/service/trading.py`.
+A replayed idempotency key is answered at once. Otherwise the ledger checks
+the trader and the market against its local copy, in memory, with no call to
+auth or market; a copy older than five seconds refuses with 503. It then
+locks the `market_books` row, reads everything the trade decides from in one
+statement after the lock, and prices the trade. A price beyond the request's
+`max_cost` or `min_proceeds` is `409 price_beyond_limit`, with nothing
+written; otherwise it writes and commits, and publishes the new price through
+the bus, Redis locally and Valkey in production, to subscribed browsers. The
+detailed version is [above](#a-trade-end-to-end).
+**Drawn from:** ADR 0009, 0010, 0015, 0017 and 0022 (as amended by 0030),
+0024, 0029, 0030, D-049; `backend/ledger_service/service/trading.py`,
+`service/local_copy.py`, `core/pricing.py`.
 [Source](diagrams/06-trade-sequence.mmd)
 
 ### 7. Delivery timeline
 
 ![Timeline](diagrams/rendered/07-gantt.svg)
 
-297 pull requests merged into `dev` or a stack branch, 13 September to 29 October
-2026: one bar per epic
-from its first to its last merged PR (backend plain, frontend shaded), with the
-releases to `main`. The deploy (#19) shipped on 1 November: #603 to #607 merged
-into `dev` and #613 took them to `main`; the other pull requests merged after 29
-October are not drawn. Staging and the load test (#20) are still to do, with no
-date. #19 is closed and no open issue tracks staging.
+336 pull requests merged into `dev` or a stack branch, 13 September to 7 November
+2026, the chart's cut-off: one bar per epic from its first to its last merged PR
+(backend plain, frontend shaded), and the releases to `main`, the last on
+7 November. Production went live on 1 November with #19, and the trade
+endpoint was load-tested there (#20) on 4 November and again on 7 November,
+after the release that brought price limits, the ledger's local copy and the
+connection pools ([load-test.md](load-test.md)).
 **Drawn from:** `gh pr list --state merged` and each PR's issue's `epic:`
-label. [Source](diagrams/07-gantt.mmd)
+label, and [load-test.md](load-test.md)'s results. [Source](diagrams/07-gantt.mmd)
 
 ### 8. Market lifecycle
 
@@ -498,7 +530,9 @@ label. [Source](diagrams/07-gantt.mmd)
 The creator drafts, submits and publishes; the clock or an administrator
 closes trading; a second administrator approves or rejects the creator's
 proposed outcome; and the ledger settles or voids the market after moving the
-money. Trading stops at `close_time` whatever the status column says.
+money. Trading stops at `close_time` whatever the status column says. In
+print it needs a landscape page: its text is about 5.3 pt at the portrait text
+width and 8.2 pt across a landscape page's 24.6 cm.
 **Drawn from:** `MarketStatus` in `backend/market_service/model/entities.py`,
 `service/market_service.py`; ADR 0008, 0011, 0013, 0014, 0016, 0023, 0025.
 [Source](diagrams/08-market-lifecycle.mmd)
@@ -520,16 +554,19 @@ record.
 ![Horizontal scaling](diagrams/rendered/10-horizontal-scaling.svg)
 
 The two app servers run the same services, so a server can be added or replaced;
-Postgres and Valkey stay at one each. Pool and overflow per service add up to 20
-connections a server, so two servers use 40 of about 47, which leaves room for the
-migrate steps, run one after another. A third server needs smaller pools or a
-bigger plan. The close sweeper runs
+Postgres and Valkey stay at one each. Pool and overflow per service add up to 26
+clients a server, and every server connects through four PgBouncer pools that
+hold 28 of Postgres's 47 or so connections however many servers run, so a third
+server adds clients waiting on the same 28; the migrate steps connect directly,
+one after another, in the room left. The close sweeper runs
 on both servers, safely under SKIP LOCKED, and the leaderboard refresher on the
-first only. A server's ledger calls the auth and market on that same server. The
+first only. Each server's ledger refreshes its local copy from the auth and
+market on that same server, and calls that market for a settlement or a void. The
 same idea was first run locally, two replicas behind one nginx, in
 [horizontal-scaling.md](horizontal-scaling.md).
-**Drawn from:** ADR 0011, 0020, 0021, 0026; `deploy/production/`,
-`infra/terraform/variables.tf`, DECISIONS.md "Each service's connection pool is a
+**Drawn from:** ADR 0011, 0020, 0021, 0026, 0030; `deploy/production/`,
+`infra/terraform/{variables,databases}.tf`, [deployment.md](deployment.md)
+"Connection budget", DECISIONS.md "Each service's connection pool is a
 setting, sized to the database's ceiling".
 [Source](diagrams/10-horizontal-scaling.mmd)
 

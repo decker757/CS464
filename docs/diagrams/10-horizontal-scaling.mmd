@@ -1,13 +1,21 @@
 %% 10 — Two app servers in production: what scales and what does not ([5.3] #19)
-%% Drawn from: ADR 0011, ADR 0020, ADR 0021, ADR 0026, docs/deployment.md,
-%%   deploy/production/{compose.yml,release.sh,migrate.sh}, infra/terraform/{variables,load_balancer}.tf,
-%%   backend/ledger_service/core/config.py, backend/market_service/service/closing.py,
+%% Drawn from: ADR 0011, ADR 0020, ADR 0021, ADR 0026 (and its connection-pool
+%%   amendment), ADR 0030, docs/deployment.md "Connection budget" and "Scaling",
+%%   deploy/production/{compose.yml,release.sh,migrate.sh}, infra/terraform/{variables,load_balancer,databases}.tf,
+%%   backend/ledger_service/core/config.py, backend/ledger_service/main.py,
+%%   backend/ledger_service/service/local_copy.py, backend/market_service/service/closing.py,
 %%   DECISIONS.md "Each service's connection pool is a setting, sized to the database's ceiling"
-%% Pool + overflow per server (compose.yml): auth 3+1, market 3+2, ledger 6+3, audit
-%% 1+1 = 20. Two servers 40, plus 3 migrate steps, against about 47 on the 2 GB plan.
+%% Pool + overflow per server (compose.yml): auth 3+1, market 3+2, ledger 10+5, audit
+%% 1+1 = 26 client connections, onto DigitalOcean's four PgBouncer pools
+%% (databases.tf: auth 6, market 6, ledger 14, audit 2 = 28 of about 47 on the
+%% 2 GB plan), however many servers run. The migrate steps connect directly, one
+%% at a time (migrate.sh), in the room the pools leave.
 %% LEADERBOARD_REFRESH_ENABLED is true on the first server only (release.sh app_env_for).
-%% The ledger's calls reach auth and market on its own server: compose sets no
-%% MARKET_SERVICE_URL or AUTH_SERVICE_URL, so config.py's defaults name those containers.
+%% Both local-copy refreshers run on every ledger, about every second (ADR 0030,
+%% main.py _start_copy_refreshers); a trade calls nobody. They, and the reads and
+%% marks of settle and void, reach auth and market on the ledger's own server:
+%% compose sets no MARKET_SERVICE_URL or AUTH_SERVICE_URL, so config.py's defaults
+%% name those containers.
 %% The local run of the same idea, one host and one nginx, is docs/horizontal-scaling.md.
 %% ELK lays siblings out in reverse source order here, so app-2 is written first.
 %%{init: {"elk": {"lineHops": false, "forceNodeModelOrder": true, "mergeEdges": true}, "flowchart": {"wrappingWidth": 620, "nodeSpacing": 10, "rankSpacing": 30, "padding": 6}, "themeVariables": {"fontSize": "21px"}}}%%
@@ -15,11 +23,11 @@ flowchart LR
     client["Browser"]
     lb["Load balancer:<br/>any server tagged<br/>cs464-app whose<br/>/lb-health answers 200"]
 
-    subgraph s2["cs464-app-2: pool + overflow"]
+    subgraph s2["cs464-app-2: pool + overflow = 26"]
         gw2["gateway"]
         a2["auth 3+1"]
         m2["market 3+2, sweeper"]
-        l2["ledger 6+3;<br/>calls auth, market here"]
+        l2["ledger 10+5;<br/>calls auth, market here:<br/>copy each 1 s, settle, void"]
         u2["audit 1+1"]
         r2["realtime, no database"]
         gw2 --> a2
@@ -29,11 +37,11 @@ flowchart LR
         gw2 --> r2
     end
 
-    subgraph s1["cs464-app-1: pool + overflow"]
+    subgraph s1["cs464-app-1: pool + overflow = 26"]
         gw1["gateway"]
         a1["auth 3+1"]
         m1["market 3+2, sweeper"]
-        l1["ledger 6+3, refresher;<br/>calls auth, market here"]
+        l1["ledger 10+5, leaderboard;<br/>calls auth, market here:<br/>copy each 1 s, settle, void"]
         u1["audit 1+1"]
         r1["realtime, no database"]
         gw1 --> a1
@@ -43,7 +51,7 @@ flowchart LR
         gw1 --> r1
     end
 
-    db[("Postgres × 1<br/>20 + 20 of about 47,<br/>one migrate step at a time.<br/>A third server needs<br/>smaller pools<br/>or a bigger plan")]
+    db[("Postgres × 1, behind<br/>4 PgBouncer pools:<br/>28 of about 47,<br/>for any number<br/>of servers")]
     bus[("Valkey × 1<br/>PUBLISH, SUBSCRIBE")]
 
     client --> lb

@@ -14,13 +14,16 @@ from __future__ import annotations
 import os
 import pathlib
 import re
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 if TYPE_CHECKING:
+    from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
     from sqlalchemy import MetaData
     from sqlalchemy.engine import Connection
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -312,3 +315,46 @@ async def open_audit_reader(*, writer_role: str) -> AsyncIterator[AsyncSession]:
             yield session
     finally:
         await engine.dispose()
+
+
+class ArmedSpanExporter(InMemorySpanExporter):
+    """Keeps a finished span only while a test has it armed. #599
+
+    A suite adds its processor once, to the service's own provider, and that
+    processor then sees every span the process finishes. Unarmed, those spans
+    are dropped instead of being kept in memory for the rest of the run.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.armed = False
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        if not self.armed:
+            return SpanExportResult.SUCCESS
+        return super().export(spans)
+
+
+def attach_span_recorder(provider: TracerProvider) -> ArmedSpanExporter:
+    """An unarmed recorder on `provider`. #599
+
+    Pass the service's own `observability.tracer_provider()`: the app, the
+    engine, the clients and Redis were instrumented with that one, and the
+    SQLAlchemy and Redis instrumentors are process-wide, so a provider of the
+    test's own would see nothing.
+    """
+    recorder = ArmedSpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(recorder))
+    return recorder
+
+
+@contextmanager
+def recording(recorder: ArmedSpanExporter) -> Iterator[ArmedSpanExporter]:
+    """The spans finished inside the block, and none from before or after it. #599"""
+    recorder.clear()
+    recorder.armed = True
+    try:
+        yield recorder
+    finally:
+        recorder.armed = False
+        recorder.clear()

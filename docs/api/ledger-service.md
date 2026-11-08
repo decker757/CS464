@@ -48,7 +48,8 @@ what each share cost: [ADR 0025](../adr/0025-voiding-a-flawed-market.md).
 | GET | `/ledger/orders/me` | My live limit orders (ADR 0024) |
 | POST | `/ledger/orders/{order_id}/cancel` | Cancel one of my limit orders (ADR 0024) |
 | POST | `/ledger/admin/orders/{order_id}/cancel` | Cancel any trader's limit order, with a reason (admin) |
-| GET | `/health` | Liveness and readiness probe |
+| GET | `/health` | Liveness probe: the process is up |
+| GET | `/ready` | Readiness probe: the database answers, and both halves of the ledger's local copy (`suspended_copy`, `market_copy`) loaded within their max age. 503 names each one that is down; a replica whose copy is down refuses every trade 503. Not public: the production gateway returns 404 for it (ADR 0028) |
 
 **Five routes write, and none takes money.** `POST .../trades` takes no
 account, no amount and no leg, so a trader's own token is a safe credential
@@ -801,10 +802,10 @@ is refused as `cost_below_tick` (422). You will essentially never see it in
 practice, but handle it the same way.
 
 **`state_version`** is the quote reference (D-011) — a JSON number, not a
-string, because it is a count and not money — and the only one. [T-2] #22
-compares it, under its own lock, against the version current when a trade is
-confirmed, so a quote taken against a market that has since moved is caught
-there rather than silently honoured here.
+string, because it is a count and not money — and the only one. A trade with
+a limit no longer compares it: it names a price limit worked out from this preview's
+`total`, and a refusal reports the book's `state_version`, so a client can
+tell whether a new preview has caught up (ADR 0029).
 
 **`prices` and `post_trade_prices` carry every outcome**, in the order
 `PriceEvent` uses (`docs/api/realtime-service.md`), not only the one traded —
@@ -1213,24 +1214,30 @@ No `404`, no `503`: the route asks market_service nothing.
 
 ## POST /ledger/markets/{market_id}/trades
 
-[T-2] #22, [T-3] #23. Buy or sell shares in an open market. This service's first write route.
+[T-2] #22, [T-3] #23, #640 ([ADR 0029](../adr/0029-price-limits-replace-exact-quotes.md)). Buy or sell shares in an open market. This service's first write route.
 
 ```jsonc
-// request
+// request, a buy
 {
   "outcome_id": "4f2a...",
   "side": "buy",
   "quantity": "10.0000",
+  "max_cost": "13.5080",
   "state_version": 42,
   "idempotency_key": "a client-generated string, unique to this caller"
 }
 ```
 
+A sell names `min_proceeds` where a buy names `max_cost`.
+
 **Takes no account and no amount.** The request model is `extra="forbid"`
-over exactly these five fields — an `account_id`, an `amount`, a `total` or a
-`legs` array in the body is `422`, not silently dropped. The trader's
-account is `accounts.ensure(USER, claims.sub)`, read from the signed token,
-never from the request, and the other leg is always this market's pool. On
+over exactly these fields: `outcome_id`, `side`, `quantity`, `max_cost` or
+`min_proceeds`, `state_version` and `idempotency_key`. An `account_id`, an
+`amount`, a `total` or a `legs` array in the body is `422`, not silently
+dropped. A limit is not an amount: it can only refuse a trade, and the ledger
+prices the trade itself. The trader's account is
+`accounts.ensure(USER, claims.sub)`, read from the signed token, never from
+the request, and the other leg is always this market's pool. On
 a buy the trader is debited and the pool credited; on a sell, the reverse.
 That is the whole answer ADR 0009's amendment gives to "how does a service
 prove it is a service": this route accepts nothing a trader could use to move
@@ -1251,12 +1258,63 @@ of `Numeric(18, 4)`, the same ceiling the preview's query parameter carries.
 Past validation, a quantity whose cost **or whose resulting shares
 outstanding** would not fit that column is `422 quantity_too_large`: the
 trade writes both, and the preview refuses the same request for the same
-reason. `state_version` is **required** — an
-optional staleness field would let a client silently opt out of the only
-staleness protection a trade has — and is compared for **strict equality**,
-either direction, under the book row's own lock; a mismatch is
-`409 quote_stale` with `quoted` and `current` in `error.details`, so a client
-can re-preview and retry without guessing which way it was wrong.
+reason.
+
+**A trade names a price limit for its side.** A buy names `max_cost`, the
+most it will pay. A sell names `min_proceeds`, the least it will accept. Each
+is a decimal string with at most four decimal places and 18 digits, like
+`quantity`. `max_cost` is `> 0` and `min_proceeds` is `>= 0`. The limit for
+your side is **required**, so no client can trade without price protection by
+leaving a field out. The other side's field is `422 invalid_request`, not
+ignored: a client that sent it believes it is protected.
+
+Under the book row's own lock, the ledger prices the trade at the book as it
+is now.
+
+- A buy whose cost is above `max_cost`, or a sell whose proceeds are below
+  `min_proceeds`, is `409 price_beyond_limit`. Nothing is written.
+- Otherwise the trade executes at the current price. A price exactly at the
+  limit executes. A price that moved in your favour, by any amount, executes
+  at the better price.
+
+`min_proceeds: "0"` is a limit that accepts any price. The trade panel's
+default (#644, ADR 0029) is the quoted total plus 1% on a buy, rounded up to
+the tick, and minus 1% on a sell, rounded down.
+
+`state_version` is **optional**: the version the preview returned. It
+decides nothing.
+
+```jsonc
+// 409, a buy whose price moved past its max_cost
+{
+  "error": {
+    "code": "price_beyond_limit",
+    "message": "This trade would cost 13.6215, beyond the limit of 13.5080. Re-preview and retry.",
+    "details": { "limit": "13.5080", "current_total": "13.6215", "state_version": 45 }
+  }
+}
+```
+
+- `limit` is echoed **exactly as you sent it**. Send `"13.508"` and you get
+  `"13.508"` back.
+- `current_total` is what the trade would cost, or pay, at the current
+  price: unsigned, and quantized to four places, as `total` is.
+- `state_version` is the book's current version, a JSON number. Re-preview,
+  and retry with a new limit once the book is at that `state_version` or
+  later.
+
+The limit is compared after the holding check and the tick checks. A sell
+larger than your position is `insufficient_shares_held`, and a cost that
+rounds to nothing is `cost_below_tick`, whatever the limit says.
+`insufficient_funds` is checked after the limit.
+
+**Rolling out.** Until every client sends a limit, the service still accepts
+a body with `state_version` and no limit, and decides it the old way: the
+`state_version` must equal the book's, under the same lock, and anything
+else, older or newer, is `409 quote_stale` with `quoted` and `current` in
+`error.details`. A body with neither is `422 invalid_request`. Once the trade
+panel sends limits (#644), the limit becomes required and `quote_stale`
+leaves this route.
 
 ```jsonc
 // response, 201
@@ -1273,10 +1331,12 @@ can re-preview and retry without guessing which way it was wrong.
 }
 ```
 
-**`total` is exactly what `GET .../preview` quoted for the same trade** —
-signed negative on a buy, quantized `ROUND_CEILING` against the unsigned
-cost, and positive on a sell, quantized `ROUND_FLOOR` against the unsigned
-proceeds, the same function both routes call. `state_version` is the book's
+**`total` is what the trade cost or paid when it executed**, inside your
+limit. It is priced by the same function `GET .../preview` uses: signed
+negative on a buy, quantized `ROUND_CEILING` against the unsigned cost, and
+positive on a sell, quantized `ROUND_FLOOR` against the unsigned proceeds. If
+nobody traded between your preview and your trade, it is exactly what the
+preview quoted. `state_version` is the book's
 counter **after** this trade, not before it. **The response carries no
 prices.** A replayed price was true once and is a lie afterwards; `total` is
 what the trader was charged, for ever. Render a price from the `price` frame
@@ -1303,8 +1363,9 @@ or from `GET .../snapshot` instead.
   your live sell orders in that outcome reserve. `error.details` gains
   `reserved` beside `held` and `requested`. Built.
 
-The errors table below describes the route as built today. Its
-`insufficient_funds` and `insufficient_shares_held` rows both count
+The errors table below describes the route's contract. Its `quote_stale`
+row holds only until every client sends a limit (see "Rolling out" above).
+Its `insufficient_funds` and `insufficient_shares_held` rows both count
 reservations.
 
 A trade can fill your own resting orders. That is allowed, at each order's
@@ -1332,20 +1393,24 @@ bug that has no symptom until a market closes mid-retry.**
    against the request (`outcome_id`, `side` and `quantity` — `quantity`
    compared numerically, so `10` and `10.0000` are the same trade) and
    returned with the **same `201`** and a byte-identical body; a mismatch is
-   `409 idempotency_key_reused`. `state_version` is **not** part of that
-   comparison — a client that lost its response is expected to re-preview
-   before retrying, and the version it now quotes is newer, for the same
-   trade.
-2. Then: is this account still allowed to trade? Asked of the auth
-   service's `GET /auth/me`, once, forwarding this request's own token
-   ([ADR 0022](../adr/0022-the-ledger-and-a-suspended-trader.md)). A
+   `409 idempotency_key_reused`. `state_version` and the limit are **not**
+   part of that comparison — a client that lost its response is expected to
+   re-preview before retrying, and the version and limit it now sends are
+   new, for the same trade. A replay returns the stored trade whatever limit
+   the retry carries: a trade that cost 12.40, retried with a `max_cost` of
+   `12.00`, still answers 12.40. The trade already happened.
+2. Then: is this account still allowed to trade? Read from the ledger's
+   copy of auth's suspended accounts, refreshed about every second
+   ([ADR 0022](../adr/0022-the-ledger-and-a-suspended-trader.md),
+   [ADR 0030](../adr/0030-the-ledger-keeps-a-local-copy.md)). A
    suspended account is refused `403 account_suspended` here, before the
    market is looked at, so it hears about itself rather than about the
    market.
-3. Only then the gate: is this market still open? Read off
-   `market_service`'s public detail endpoint, once, forwarding this
-   request's own token.
-4. The book row's lock, and a second idempotency check under it, before this
+3. Only then the gate: is this market still open? Read from the ledger's
+   copy of `market_service`'s published markets, refreshed the same way. A
+   trade on a market that already has a book calls no other service.
+4. The book row's lock, a second idempotency check under it, and the
+   market's `close_time` checked again on the database's clock, before this
    request writes anything of its own.
 
 **Why the lookup runs before the gate, not after.** A trade that committed
@@ -1374,7 +1439,8 @@ Errors:
 | 403 | `account_suspended` | An administrator has suspended this account. The same code and message the auth service uses, so one handler covers both: end the session and show the message. Not retryable. A refused trade writes nothing, and the account's balance and positions stay as they were. |
 | 404 | `market_not_found` | No such market. |
 | 409 | `market_closed` | The market's derived status is not `"open"`. Spelled the same way market_service spells its own version of this refusal. |
-| 409 | `quote_stale` | The quoted `state_version` no longer names the book, either direction. `error.details` carries `quoted` and `current`. |
+| 409 | `quote_stale` | For a body that names no limit, until every client sends one (see "Rolling out"): the quoted `state_version` no longer names the book, either direction. `error.details` carries `quoted` and `current`. |
+| 409 | `price_beyond_limit` | A buy whose cost at the current price is above `max_cost`, or a sell whose proceeds are below `min_proceeds`. Nothing was written. `error.details` carries `limit`, exactly as sent, `current_total`, a decimal string at scale 4, and the book's current `state_version`, a JSON number. Re-preview and retry with a new limit. |
 | 409 | `insufficient_funds` | A buy this account's `available` credits, its balance less what its buy orders reserve, cannot cover. `error.details` carries `balance`, `required`, `reserved` and `available`, decimal strings at scale 4: `available` is `balance - reserved`, and the trade needed `required`. |
 | 409 | `insufficient_shares_held` | A sell larger than this caller's position in this outcome less the shares their live sell orders in it reserve. `error.details` carries `held`, the whole position, `reserved` and `requested`, decimal strings at scale 4. |
 | 409 | `idempotency_key_reused` | This idempotency key already names a different trade — a different `outcome_id`, `side` or `quantity`. |
@@ -1382,11 +1448,11 @@ Errors:
 | 422 | `quantity_too_large` | A buy whose cost, or whose resulting shares outstanding, is above `99999999999999.9999` — the same two bounds the preview refuses at (D-040). |
 | 422 | `cost_below_tick` | A buy whose cost rounds to `0.0000` at the ledger's scale, so real shares would be charged nothing (D-041). |
 | 422 | `proceeds_below_tick` | A sell whose proceeds round to `0.0000`. Ask for more. |
-| 422 | `invalid_request` | A malformed body, an extra field, `side` other than `"buy"` or `"sell"`, or a quantity at five decimal places, `<= 0`, or wider than 18 digits. `error.details` names each field; see [Errors](#errors). |
+| 422 | `invalid_request` | A malformed body, an extra field, `side` other than `"buy"` or `"sell"`, or a quantity at five decimal places, `<= 0`, or wider than 18 digits. A missing limit for this side, the other side's limit, a `max_cost` `<= 0`, a `min_proceeds` `< 0`, or a limit at five decimal places or wider than 18 digits. `error.details` names each field; see [Errors](#errors). |
 | 500 | `market_book_incomplete` | This service holds a book for the market that cannot be priced — no outcome rows, one of them, or a `liquidity_b` the engine cannot use. The same guard the preview and the snapshot use. A server fault; not worth retrying. |
 | 500 | `cascade_fill_refused` | The overdraft check refused one of the resting orders this trade filled, which ADR 0024 makes impossible. Nothing was written and the ledger logged it. A server fault; not worth retrying. |
-| 503 | `market_terms_unavailable` | `market_service` could not be reached, or — on a market's first trade — answered with terms no book can be opened from. |
-| 503 | `auth_unavailable` | The auth service could not be reached, or did not answer whether this account may trade. Nothing was written. Worth retrying. |
+| 503 | `market_terms_unavailable` | The ledger's copy of trading terms is older than five seconds or has never loaded, because `market_service` has not answered its refresh. Also a market the copy lacks whose refresh failed, or that this service holds a book for and the copy still lacks after a refresh sent since this service read that book, and on a market's first trade, `market_service` not reached or answering with terms no book can be opened from. Nothing was written. Worth retrying. |
+| 503 | `auth_unavailable` | The ledger's copy of suspended accounts is older than five seconds or has never loaded, because the auth service has not answered its refresh. Nothing was written. Worth retrying. |
 
 **A suspended account is refused on this route only.** The preview, the
 snapshot, the balance, the history and the portfolio decide nothing, and keep
@@ -1529,7 +1595,9 @@ account (ADR 0022), then the market gate, then opening the market's book on
 its first touch, then minting your starting credits if you have never been
 granted them, then everything under the book lock. So a limit order can be
 your first action on the platform: the grant is minted before the budget is
-checked.
+checked. The account check and the gate read the same local copy a trade
+does, so a placement gets the same two `503`s when that copy is stale (the
+trade route's `503` rows, ADR 0030).
 
 **What a placement locks.** Under the book lock, a buy that rests entirely
 also locks your account until it commits, so a trade of yours in another
@@ -2289,9 +2357,10 @@ for it today.
 
 `account_suspended` (403) and `auth_unavailable` (503), both new in [4.2]
 #14, `insufficient_funds` (409), `insufficient_shares_held` (409, new in [T-3]
-#23), `idempotency_key_reused` (409), `market_closed` (409) and `quote_stale`
-(409, new in [T-2] #22) are the trade route's own, documented in its section
-above. `insufficient_shares_outstanding` (409) is unreachable on the trade
+#23), `idempotency_key_reused` (409), `market_closed` (409) and
+`price_beyond_limit` (409, new in #640, replacing [T-2] #22's `quote_stale`,
+which a body with no limit still gets until every client sends a limit; see
+"Rolling out") are the trade route's own, documented in its section above. `insufficient_shares_outstanding` (409) is unreachable on the trade
 route: each outcome's shares outstanding equal the sum of its positions, so
 `insufficient_shares_held` always refuses first. It stays in the code as a
 backstop and is out of the trade route's table on purpose; only the preview

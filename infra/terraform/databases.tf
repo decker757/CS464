@@ -43,3 +43,28 @@ resource "digitalocean_database_firewall" "cache" {
     value = digitalocean_tag.app.id
   }
 }
+
+# #640. One transaction-mode pool (PgBouncer) per service role, so every app
+# server shares a fixed number of server connections, however many servers
+# run. The 2 GB plan has about 47; these take 28, and the rest stay direct,
+# for the three migrate steps, ensure-database.sh and an operator. Each pool
+# logs in as its service's own role, which ensure-database.sh creates, so the
+# role must exist before its pool can. docs/deployment.md, "Connection budget".
+locals {
+  connection_pool_sizes = {
+    auth   = 6
+    market = 6
+    ledger = 14
+    audit  = 2
+  }
+}
+
+resource "digitalocean_database_connection_pool" "service" {
+  for_each   = local.connection_pool_sizes
+  cluster_id = digitalocean_database_cluster.postgres.id
+  name       = "cs464-${each.key}"
+  mode       = "transaction"
+  size       = each.value
+  db_name    = digitalocean_database_db.cs464.name
+  user       = "${each.key}_svc"
+}

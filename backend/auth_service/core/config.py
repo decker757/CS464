@@ -50,6 +50,30 @@ class Settings(ServiceSettings):
     # --- Registration policy --------------------------------------------
     password_min_length: int = 12
 
+    # --- Rate limits [A-2] #600, ADR 0027 -------------------------------
+    # Not a credential, so a default, like the ledger's: the compose service
+    # name. Production's `rediss://` URL arrives through the environment.
+    redis_url: SecretStr = Field(default=SecretStr("redis://redis:6379/0"))
+    rate_limit_key_prefix: str = "auth:rl"
+    # Each Redis call gives up after this long, so a hung Redis cannot stall a
+    # login; the limiter then fails open.
+    rate_limit_redis_timeout_seconds: float = Field(default=0.5, gt=0)
+
+    # Failed logins for one account from one IP. Stops guessing from a machine
+    # without letting a stranger lock the owner out from every other address.
+    login_failures_per_account_ip: int = Field(default=5, gt=0)
+    login_failures_per_account_ip_window_seconds: int = Field(default=900, gt=0)
+    # Failed logins for one account from anywhere: the looser cap that still
+    # stops guessing spread across many machines.
+    login_failures_per_account: int = Field(default=50, gt=0)
+    login_failures_per_account_window_seconds: int = Field(default=3600, gt=0)
+    # Every login attempt from one IP. Generous, because a room shares one
+    # public IP; it is there to stop a flood of Argon2 work, not guessing.
+    login_attempts_per_ip: int = Field(default=30, gt=0)
+    login_attempts_per_ip_window_seconds: int = Field(default=60, gt=0)
+    registrations_per_ip: int = Field(default=20, gt=0)
+    registrations_per_ip_window_seconds: int = Field(default=3600, gt=0)
+
     # --- Paging -----------------------------------------------------------
     # [4.1] #13's user list. The table only grows, so every read is bounded;
     # the same ceilings as the audit and ledger services'.

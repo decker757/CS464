@@ -5,7 +5,10 @@ The verifier's own rules are tested once, in `shared/unit_test/test_security.py`
 
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 import jwt
@@ -16,10 +19,10 @@ from core.config import get_settings
 from core.roles import UserRole
 
 
-def test_hash_is_not_the_plaintext_and_is_salted() -> None:
+async def test_hash_is_not_the_plaintext_and_is_salted() -> None:
     password = "correct-horse-battery-staple"
-    first = security.hash_password(password)
-    second = security.hash_password(password)
+    first = await security.hash_password(password)
+    second = await security.hash_password(password)
 
     assert password not in first
     assert first.startswith("$argon2id$")
@@ -31,13 +34,62 @@ def test_hash_is_not_the_plaintext_and_is_salted() -> None:
     ("attempt", "expected"),
     [("correct-horse-battery-staple", True), ("wrong-password", False), ("", False)],
 )
-def test_verify_password(attempt: str, expected: bool) -> None:
-    stored = security.hash_password("correct-horse-battery-staple")
-    assert security.verify_password(stored, attempt) is expected
+async def test_verify_password(attempt: str, expected: bool) -> None:
+    stored = await security.hash_password("correct-horse-battery-staple")
+    assert await security.verify_password(stored, attempt) is expected
 
 
-def test_verify_password_rejects_a_corrupt_hash() -> None:
-    assert security.verify_password("not-a-hash", "anything") is False
+async def test_verify_password_rejects_a_corrupt_hash() -> None:
+    assert await security.verify_password("not-a-hash", "anything") is False
+
+
+async def _longest_stall_while(work: Callable[[], Awaitable[object]]) -> tuple[float, float]:
+    """Run `work` a few times beside a heartbeat; return (longest gap, time taken).
+
+    The heartbeat asks for a 5 ms sleep, so a gap far longer than that means
+    something held the event loop.
+    """
+    gaps: list[float] = []
+    finished = asyncio.Event()
+
+    async def heartbeat() -> None:
+        last_beat = time.perf_counter()
+        while not finished.is_set():
+            await asyncio.sleep(0.005)
+            now = time.perf_counter()
+            gaps.append(now - last_beat)
+            last_beat = now
+
+    beating = asyncio.create_task(heartbeat())
+    await asyncio.sleep(0)  # let the heartbeat take its first sleep
+    started = time.perf_counter()
+    for _ in range(4):
+        await work()
+    taken = time.perf_counter() - started
+    finished.set()
+    await beating
+    return max(gaps), taken
+
+
+@pytest.mark.parametrize("call", ["hash_password", "verify_password", "dummy_verify"])
+async def test_argon2_leaves_the_event_loop_free(call: str) -> None:
+    """While a hash or verify runs, another coroutine on the loop still runs. #637
+
+    On the loop, Argon2 stalls the limiter's Redis calls past their timeout,
+    which fails the login limits open (ADR 0027). Bounded against the work's
+    own duration rather than a fixed time, so a slow machine cannot flip it:
+    held on the loop, the longest gap is all four calls back to back.
+    """
+    stored = await security.hash_password("correct-horse-battery-staple")
+    calls: dict[str, Callable[[], Awaitable[object]]] = {
+        "hash_password": lambda: security.hash_password("correct-horse-battery-staple"),
+        "verify_password": lambda: security.verify_password(stored, "wrong-password"),
+        "dummy_verify": security.dummy_verify,
+    }
+
+    longest_gap, taken = await _longest_stall_while(calls[call])
+
+    assert longest_gap < taken / 2
 
 
 @pytest.mark.parametrize("role", list(UserRole))
