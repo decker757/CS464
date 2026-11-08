@@ -24,7 +24,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot, the ledger's price producer and its order frames |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
-| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440, #609, #20, #640 | live at **https://predictsmu.xyz**: every push to `main` deploys to DigitalOcean, two app servers behind a load balancer (ADR 0026), and `npm run seed:production` seeds it with the demo markets; monitoring (#599) ships to Grafana Cloud from each server; the load test [5.4] #20 ran on 2026-11-04 (a trade's p95 was 5.45 s at 50 users, both servers at 100% CPU) and #640's answer ships in this release: a trade names a price limit (ADR 0029), the ledger keeps a one-second copy of who and what may trade and calls no other service on a trade (ADR 0030), a trade holds the book lock for 13 statements instead of 22 (#641), and DigitalOcean's connection pooler lets a third server start (#660); the after figures follow the release; staging (#19) is open |
+| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440, #609, #20, #640, #667 | live at **https://predictsmu.xyz**: every push to `main` deploys to DigitalOcean, two app servers behind a load balancer (ADR 0026), and `npm run seed:production` seeds it with the demo markets; monitoring (#599) ships to Grafana Cloud from each server; the load test [5.4] #20 ran on 2026-11-04 (a trade's p95 was 5.45 s at 50 users, both servers at 100% CPU) and #640's answer shipped on 2026-11-07: a trade names a price limit (ADR 0029), the ledger keeps a one-second copy of who and what may trade and calls no other service on a trade (ADR 0030), a trade holds the book lock for 13 statements instead of 22 (#641), and DigitalOcean's connection pooler lets a third server start (#660); the after figures, measured on 2026-11-07, are under "Load testing and scaling" below; this release ships #667, so that one hot market's lock queue no longer holds the ledger's connections away from its reads and readiness check (the ledger's pool holds all its clients, and only two trades per market hold a connection; a burst of cancels can still use up the rest while it lasts); staging is dropped from scope (ADR 0026) |
 
 ## Running it
 
@@ -254,8 +254,9 @@ What changed between the columns, all measured first and acted on second:
   committed; after, none.
 - **The ledger calls nobody on a trade** ([ADR 0030](docs/adr/0030-the-ledger-keeps-a-local-copy.md)).
   It keeps a one-second copy of who may trade and what may be traded, and a
-  copy older than five seconds refuses rather than trusts. The two HTTP calls
-  per trade were about half the CPU per trade.
+  copy older than five seconds refuses rather than trusts. Before it, #640
+  put each trade attempt at about 130 ms of CPU across the ledger and its
+  two calls; the calls' share was not measured on its own.
 - **The locked section of a trade is 13 statements, from 22** (#641), guarded
   by a test that fails above the budget.
 - **Two unbounded reads bounded:** the balance sum reads only an index (#642),
@@ -265,11 +266,20 @@ What the numbers say. Across markets, throughput grows with servers, and the
 pooler is what lets the next server start. On one market it does not: every
 trade on a market takes the same lock, on purpose, because the money has to
 serialise ([ADR 0015](docs/adr/0015-locking-the-read-that-decides-a-write.md)), and
-3,568 trades in 300 s is 12 a second, about 84 ms per hold, so 50 traders
-queued on one market wait about 4 s at the tail. That is the documented
-ceiling. The step past it, a per-market engine, is written up as a proposed
-ADR under #645, and the one, two and three server runs that put a number on
-the sideways scaling are the next measurement.
+3,568 trades in 300 s is 12 a second, about 84 ms per hold. That is the
+documented ceiling. The trade p95 on one market was 4.72 s, measured. How
+much of it was the lock queue, and how much the saturated CPU, was not
+measured: the dashboard's lock-wait panel was not recorded for that run.
+That run also showed one server's ledger reporting its database down while
+trades still committed, because trades waiting for the lock held its
+connections. #667 fixed that after the run, and #668's runs are the first to
+measure it.
+The step past it, a per-market engine, is written up as a proposed ADR,
+[ADR 0031](docs/adr/0031-a-per-market-trading-engine.md), and the one, two
+and three server runs that put a number on the sideways scaling are the
+next measurement (#668). What each fix changed, the ceilings and the next
+steps are in
+[`docs/load-test.md`, "Capacity and its limits"](docs/load-test.md#capacity-and-its-limits).
 
 ## Monitoring
 
@@ -419,16 +429,25 @@ another service is named.
 Measured or decided, with the record that says so.
 
 - **One market is one lock.** About 84 ms per hold under load, so about 12
-  trades a second on one market, and 50 traders on it wait about 4 s at the
-  tail ([`docs/load-test.md`](docs/load-test.md), 7 November). That is the
+  trades a second on one market, and a trade p95 of 4.72 s with 50 traders
+  on it, part lock queue and part CPU queue
+  ([`docs/load-test.md`](docs/load-test.md), 7 November). That is the
   cost of serialising money through Postgres. The step past it, a single
-  writer per market, is the proposed engine under #645.
-- **Behind the pooler, a hot market's lock queue holds the ledger's
-  connections.** During the one-market run, one server's readiness check
-  reported its database down while trades still committed: the ledger's
-  pool (14 connections) is smaller than its two servers' client pools
-  together (30). The fix is one number in Terraform, inside the connection
-  budget in [`docs/deployment.md`](docs/deployment.md).
+  writer per market, is the proposed engine,
+  [ADR 0031](docs/adr/0031-a-per-market-trading-engine.md).
+- **A hot market's lock queue no longer starves the ledger's reads, except
+  during a burst of cancels (#667).** During the one-market run, one
+  server's readiness check reported its database down while trades still
+  committed: trades waiting for the book lock held the ledger's 14 pooled
+  connections. The pool now holds every
+  ledger client (24, for 6 + 2 on up to three servers;
+  [`docs/deployment.md`](docs/deployment.md), "Connection budget"), so the
+  pooler never queues the ledger. Inside each ledger, only two trades per
+  market, and six in all, hold a connection at once. The rest wait in
+  memory, so two of its 8 connections are kept from trades and placements.
+  Reads and the readiness check share those two with everything else that
+  takes no slot: cancels, settlement, void and the leaderboard refresher. A
+  burst of cancels on a hot market can still use them up while it lasts.
 - **A price is published after the trade commits, and a crash between the
   two loses that frame** ([ADR 0010](docs/adr/0010-realtime-price-broadcast.md)).
   A client that reconnects fetches a snapshot, which is the recovery path it
@@ -437,8 +456,8 @@ Measured or decided, with the record that says so.
   bounds the window ([ADR 0002](docs/adr/0002-auth-token-transport.md)).
 - **The audit log is atomic with the action only while every service shares
   one database** ([ADR 0006](docs/adr/0006-audit-log-write-path.md)).
-- **One managed Postgres, one region, and no staging environment.** #19's
-  staging is not built; it needs a registrable domain of its own.
+- **One managed Postgres, one region, and no staging environment.** Staging
+  is dropped from scope (ADR 0026, amended 2026-11-08).
 - **The trade panel does not yet send its own slippage tolerance.** The
   backend accepts one; #652 is the frontend half.
 
@@ -460,6 +479,13 @@ nobody notices.
   never fail the trade.
 - [**The schemas**](docs/architecture.md#the-schemas): `market` and `ledger` as
   ERDs, including the balance column `ledger.accounts` does not have.
+
+After them, [**the diagram set**](docs/architecture.md#the-diagram-set):
+twelve more drawn for the final proposal, with shorter labels that print at
+A4 width, and the parts the three do not draw — production, CI/CD, security,
+the market lifecycle, settlement, scaling, the live-price fan-out and a
+delivery timeline. Their sources are in `docs/diagrams/`, rendered to SVG and
+PNG by `docs/diagrams/render.py`.
 
 They live in their own file rather than inline so that each exists once.
 
@@ -485,7 +511,9 @@ sql/migrations/           0002 only: a login role, and 02-schemas.sql re-run
 deploy/                   nginx.conf for the replicated stack below
 docs/adr/                 decisions and why they were made
 docs/api/                 endpoint contracts for the frontend
-docs/architecture.md      the three diagrams above, each citing its ADR
+docs/architecture.md      the three diagrams above, each citing its ADR,
+                          and the diagram set
+docs/diagrams/            the diagram set's sources, renders and render.py
 docs/horizontal-scaling.md  two of every service behind a proxy, and the run
                           that showed it works
 scripts/                  weekly sprint digest to Telegram
@@ -586,3 +614,6 @@ to make and would be expensive to reverse.
 - [0030](docs/adr/0030-the-ledger-keeps-a-local-copy.md) the ledger keeps a
   one-second local copy of suspensions and trading terms, and calls nobody on
   a trade; a stale copy refuses
+- [0031](docs/adr/0031-a-per-market-trading-engine.md) (Proposed) a
+  per-market trading engine: one owner per book, a fenced lease, group
+  commits; written, not built

@@ -223,6 +223,20 @@ def not_found_clock(monkeypatch: pytest.MonkeyPatch) -> ManualClock:
     return clock
 
 
+@pytest.fixture(autouse=True)
+def fresh_connection_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The process's connection slots, built afresh for this test from the
+    settings as they stand when it first trades. #667
+
+    The slots last as long as the process, and an asyncio semaphore that has
+    made a request wait belongs to that test's event loop, which the next
+    test does not share.
+    """
+    from service import connection_slots  # noqa: PLC0415
+
+    monkeypatch.setattr(connection_slots, "_slots", None)
+
+
 @pytest.fixture
 async def clean_database():
     """Drop and rebuild the schema, then hand over an empty database.

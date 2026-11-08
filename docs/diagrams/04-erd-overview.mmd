@@ -1,0 +1,137 @@
+%% 04 — Four schemas, sixteen tables, and the ids that cross them
+%% Drawn from: ADR 0003, ADR 0006, ADR 0009, ADR 0013, ADR 0019, ADR 0021, ADR 0024, ADR 0025,
+%%   backend/auth_service/model/entities.py, backend/market_service/model/entities.py,
+%%   backend/ledger_service/model/entities.py, sql/02-schemas.sql,
+%%   and each service's migrations/versions/*.py
+%% -
+%% Legend
+%%   Entities are shown as schema.table. Mermaid needs one bare name per
+%%   entity, so the ids below are schema_table: market_market_outcomes and
+%%   ledger_market_outcomes are two different tables. Only keys are drawn:
+%%   PKs, FKs, and ids that name another table's row; per-schema ERDs
+%%   (docs/architecture.md, 12-erd-auth-audit) carry every other column.
+%%   solid line   a real foreign key. Every one stays inside one schema.
+%%                Written "--" (Mermaid's identifying) only to get a solid
+%%                line; identifying vs non-identifying is not encoded here.
+%%                Cardinality is what the constraints enforce: o{ even
+%%                where the code always writes children (entries per
+%%                transaction, outcomes per book).
+%%   dotted line  an id stored with NO foreign key, labelled "no FK": the two
+%%                market-to-ledger ids, where no role holds a grant (ADR 0003),
+%%                and proposed_outcome_id, which stays inside market and is
+%%                bare by choice (market entities.py:334). Its cardinality
+%%                is what the writing code guarantees, not the database.
+%%   "→ auth.users" on a column stands in for a dotted line to auth.users:
+%%                eight such lines met in a hub unreadable in print. Like every
+%%                column not marked FK, it is an id with no foreign key.
+%%   "composite FK" is (market_id, outcome_id) into ledger.market_outcomes.
+%% -
+%% Layout: it goes on a landscape page (24.6 x 15.9 cm), so it is drawn
+%%   three columns wide rather than four. ELK puts the first-written entity
+%%   of a relationship to the left of the second, so six relationships are
+%%   written child first (}o--|| for ||--o{, |o..|| for ||..o|). The
+%%   crow's feet and the meaning are the same either way round; only the
+%%   column changes. LINEAR_SEGMENTS placement packs the columns closer
+%%   than ELK's default, which leaves tall gaps beside the long edges.
+%%   Edge labels and column comments use non-breaking spaces (U+00A0) so they
+%%   do not wrap; type a plain space and the label breaks over two lines.
+%%   The init line enlarges text for print (ER edge labels are 14px in
+%%   Mermaid's own CSS) and makes the edge label background opaque: Mermaid
+%%   draws it at 50% white, and a line running through a label showed.
+%%{init: {"elk": {"nodePlacementStrategy": "LINEAR_SEGMENTS"}, "themeVariables": {"fontSize": "32px"}, "themeCSS": ".edgeLabel .label, .edgeLabel p, .edgeLabel span { font-size: 32px !important; } .labelBkg { background-color: #FFFFFF !important; }"}}%%
+erDiagram
+    direction LR
+
+    auth_users["auth.users"] {
+        uuid id PK
+    }
+    auth_refresh_tokens["auth.refresh_tokens"] {
+        uuid id PK
+        uuid user_id FK
+    }
+
+    market_markets["market.markets"] {
+        uuid id PK
+        uuid creator_id "→ auth.users"
+        uuid proposed_by_id "→ auth.users"
+        uuid approved_by_id "→ auth.users"
+        uuid proposed_outcome_id
+    }
+    market_market_outcomes["market.market_outcomes"] {
+        uuid id PK
+        uuid market_id FK
+    }
+    market_resolution_sources["market.resolution_sources"] {
+        uuid id PK
+        uuid market_id FK
+    }
+
+    ledger_accounts["ledger.accounts"] {
+        uuid id PK
+        uuid owner_id "user, market or<br/>platform; no FK"
+    }
+    ledger_transactions["ledger.transactions"] {
+        uuid id PK
+    }
+    ledger_entries["ledger.entries"] {
+        uuid id PK
+        uuid transaction_id FK
+        uuid account_id FK
+    }
+    ledger_market_books["ledger.market_books"] {
+        uuid market_id PK
+        uuid pool_account_id FK
+    }
+    ledger_market_outcomes["ledger.market_outcomes"] {
+        uuid market_id PK, FK
+        uuid outcome_id PK
+    }
+    ledger_positions["ledger.positions"] {
+        uuid user_id PK "→ auth.users"
+        uuid market_id PK, FK
+        uuid outcome_id PK, FK
+    }
+    ledger_orders["ledger.orders"] {
+        uuid id PK
+        uuid user_id "→ auth.users"
+        uuid market_id FK
+        uuid outcome_id FK
+    }
+    ledger_market_results["ledger.market_results"] {
+        uuid market_id PK, FK
+        uuid outcome_id FK
+        uuid voided_by "→ auth.users"
+    }
+    ledger_leaderboard_generations["ledger.leaderboard_generations"] {
+        uuid id PK
+    }
+    ledger_leaderboard_entries["ledger.leaderboard_entries"] {
+        uuid generation_id PK, FK
+        int rank PK
+        uuid user_id "→ auth.users"
+    }
+
+    audit_admin_actions["audit.admin_actions"] {
+        uuid id PK
+        uuid actor_id "→ auth.users"
+        uuid target_id "user, market or order; no FK"
+    }
+
+    %% Real foreign keys, all inside one schema
+    auth_refresh_tokens }o--|| auth_users : "user_id"
+    market_market_outcomes }o--|| market_markets : "market_id"
+    market_markets ||--o{ market_resolution_sources : "market_id"
+    ledger_transactions ||--o{ ledger_entries : "transaction_id"
+    ledger_accounts ||--o{ ledger_entries : "account_id"
+    ledger_market_books }o--|| ledger_accounts : "pool_account_id"
+    ledger_market_books ||--o{ ledger_market_outcomes : "market_id"
+    ledger_market_books ||--o| ledger_market_results : "market_id"
+    ledger_market_outcomes ||--o{ ledger_positions : "composite FK"
+    ledger_market_outcomes ||--o{ ledger_orders : "composite FK"
+    ledger_market_outcomes |o--o| ledger_market_results : "winner"
+    ledger_leaderboard_entries }o--|| ledger_leaderboard_generations : "generation_id"
+
+    %% Ids with no foreign key
+    market_market_outcomes |o..o| market_markets : "no FK"
+    ledger_market_books |o..|| market_markets : "no FK"
+    market_market_outcomes ||..o| ledger_market_outcomes : "no FK"

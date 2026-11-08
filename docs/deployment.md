@@ -170,6 +170,9 @@ Merge to `main`. `deploy.yml` then:
 5. Checks every public name answers.
 
 Two deploys never overlap. A push during a deploy waits for it to finish.
+Only the newest waiting push is kept: GitHub cancels a waiting run when
+another arrives. Nothing is lost, because the newest run deploys the newest
+commit, which holds the others.
 
 ## When a deploy fails
 
@@ -182,6 +185,13 @@ The run goes red and says where. What state it left behind:
 | rolling a server | the old release, every one of them: the failed server went back by itself, and the ones before it were sent back |
 | rolling a server, which "could not go back" | the failed server serves nothing and stays drained; the ones before it stay on the new release, serving. Fix forward, or `roll.sh` the failed one by hand once you know why |
 | the public check | the new release, every one of them, all healthy behind the load balancer; look at DNS, the certificate and the load balancer |
+
+The "rolling a server" row has three exceptions, and the run's log names
+the server in each. A server on its first release has none to go back to,
+so it stays on the new one. A server that cannot be asked which release it
+is on is left as it is. And a server that fails to be sent back is only
+logged.
+`deploy/production/release.sh`, step 3.
 
 **A migration is not undone when its release is sent back.** So write every
 migration to work with the release before it too: add a column, and drop the
@@ -453,8 +463,10 @@ query string, by design (docs/api/realtime-service.md), so nothing secret is in 
   setup, step 4). A wrong `TRACING_ENDPOINT` breaks nothing else: the
   service's log just shows OpenTelemetry warnings that it is dropping spans.
   `release.sh` also sets `TRACING_SAMPLE_RATIO=0.1`, so production keeps one
-  trace in ten, because a 1-vCPU server spent 12–16% of its CPU on tracing at
-  100% (#20, 2026-11-04); local and CI keep 1.0.
+  trace in ten, because tracing every request took 12–16% of self time in
+  #640's py-spy profile, taken on a laptop running the scaled stack during
+  #20's load test on 2026-11-04 (production's own share was not measured);
+  local and CI keep 1.0.
 - The same "dropping span" warnings appear while Alloy is down, including
   the moments between a roll and Alloy starting. They are harmless.
 - Background work makes small traces with no request behind them: the close
@@ -529,20 +541,62 @@ DigitalOcean connection pool (PgBouncer), in `infra/terraform/databases.tf`:
 | --- | --- | --- | --- |
 | `cs464-auth` | `auth_svc` | transaction | 6 |
 | `cs464-market` | `market_svc` | transaction | 6 |
-| `cs464-ledger` | `ledger_svc` | transaction | 14 |
+| `cs464-ledger` | `ledger_svc` | transaction | 24 |
 | `cs464-audit` | `audit_svc` | transaction | 2 |
 
-The pools hold 28 connections to Postgres, however many servers run. The
-other 19 or so stay free for what connects directly: the three migrate steps
-(one at a time), `ensure-database.sh`, and an operator with `psql`. A request
+The pools hold 38 connections to Postgres, however many servers run. The
+other 9 or so stay free for what connects directly: the three migrate steps
+(one at a time), `ensure-database.sh`, the production seed's `psql` steps,
+and an operator with `psql`. A request
 that finds its pool busy waits its turn inside the pool, instead of failing
 with "too many connections".
 
 The services' own SQLAlchemy pools (`DATABASE_POOL_SIZE` and
 `DATABASE_MAX_OVERFLOW` in `deploy/production/compose.yml`) now count
 connections to the pooler, which are cheap: each pool takes up to 5,000. Per
-server: auth 3+1, market 3+2, ledger 10+5, audit 1+1, so 26. Three servers
-make 78, all sharing the same 28.
+server: auth 3+1, market 3+2, ledger 6+2, audit 1+1, so 19. Three servers
+make 57, all sharing the same 38.
+
+**The ledger's pool holds all of its clients (#667).** A trade waiting for a
+market's book lock keeps its server connection while it waits. Until #667
+the ledger's pool had 14 server connections and each ledger had 10 + 5
+clients, so on the 7 November one-market run the 14 filled with waiting
+trades: every other ledger read, and the readiness check's `SELECT 1`, then
+queued at the pooler, and the dashboard showed `ledger on app-1: database`
+DOWN while trades still committed. So the ledger's pool is at least every
+ledger client at full overflow: 24, for 6 + 2 on each of up to three
+servers. A fourth server needs a bigger pool or smaller client pools; keep
+`app_server_count × (pool + overflow) ≤ 24`, which a `validation` on
+`app_server_count` in `infra/terraform/variables.tf` enforces. The other
+services hold no lock while they wait, so their pools stay smaller than
+their clients.
+
+That keeps the queue out of the pooler. Inside each ledger, a trade waiting
+for the book lock still holds one of its process's 8 connections, so the
+ledger also limits who may hold one. A trade or a placement waits in memory,
+holding no connection, until it has one of its market's slots
+(`DATABASE_CONNECTIONS_PER_MARKET`, default 2) and one of the process's (the
+pool at full overflow less `DATABASE_CONNECTIONS_FOR_READS`, default 2:
+6 + 2 − 2 = 6). However many markets are busy, at least 2 of the 8 are kept
+from trades and placements. Everything that takes no slot shares those 2:
+snapshots, balances, history, the readiness check, cancels, settlement, void
+and the leaderboard refresher on the one server that runs it. A trade
+publishes its price only after giving its slot back, so a slow Redis holds no
+slot. The slots are worked out from
+the pool sizes, so they follow any change to them. DECISIONS.md, "Only a few
+trades per market hold a ledger connection at once".
+
+**Changing a pool's size replaces the pool.** The DigitalOcean provider
+(2.106.0) has no update for a connection pool, so a new `size` in
+`databases.tf` makes Terraform delete the pool and create it again, and that
+service loses its database until the new one exists. Resize it in the
+DigitalOcean console instead (Databases, the cluster, Connection Pools, the
+pool's Edit), which changes it in place. Then change `databases.tf` to
+match, merge it to `main`, and run `infra/tf plan` from the main checkout,
+which holds the state: it should show no change to the pool. Until that
+change is on `main`, nobody applies anything from `main`: its old size would
+replace the resized pool. Each pool carries `prevent_destroy`, so a plan that
+would replace one fails instead of running.
 
 **Two addresses per role.** `app.env` carries both, and `release.sh` writes
 them from the GitHub secrets that `infra/push-secrets.sh` sets:
@@ -661,10 +715,14 @@ rebuild from nothing.
   `infra/terraform/variables.tf`, `infra/tf apply`, `infra/push-secrets.sh`,
   then deploy. The load balancer picks the new server up by its tag.
 - **Postgres's connections no longer limit the number of servers.** Every
-  server shares the four connection pools, which hold 28 of the 2 GB plan's
+  server shares the four connection pools, which hold 38 of the 2 GB plan's
   47 or so, however many servers run ("Connection budget" above). What a
-  third server adds is clients waiting on the same 28. To give the database
-  more work at once, raise a pool's `size` in `infra/terraform/databases.tf`.
+  third server adds is clients waiting on the same 38. A fourth needs the
+  ledger's pool or client pools resized first ("The ledger's pool holds all
+  of its clients"). To give the database more work at once, raise a pool's
+  `size` in `infra/terraform/databases.tf`, resizing it in the console first.
+  At 38 of about 47, the ledger's pool cannot grow much more without a
+  bigger `database_size`.
   The pools together must leave room for the direct connections. Past about
   40 in all, take a bigger `database_size`.
 - **Bigger servers:** change `app_server_size`, then resize one server at a
@@ -691,7 +749,9 @@ Grafana Cloud's free tier allows 10,000 active series, 50 GB of logs and
 (the series budget above). Alloy itself used 51–169 MB of memory per server,
 minutes after its first deploy. Images on GHCR are free for a public
 repository. To stop paying, run `infra/tf destroy`. That deletes the database too, so take a backup first if
-anything in it matters.
+anything in it matters. Remove the `lifecycle { prevent_destroy = true }` block
+from the pools in `infra/terraform/databases.tf` first, or `destroy` refuses
+to start ("Changing a pool's size replaces the pool" above).
 
 ## Tests
 
@@ -717,11 +777,10 @@ checks both.
 
 ## Not done yet
 
-- **Staging.** #19 also asks for a staging environment on its own database.
-  `infra/terraform` would run it as a second workspace. It is not built.
-  It needs a registrable domain of its own, not `staging.<domain>`: the
-  login cookie reaches every subdomain of the production domain (ADR 0026).
+- **Staging** is dropped from scope (ADR 0026, amended 2026-11-08).
 - **Re-measuring the series budget.** Around 2026-11-11, a week after
   monitoring went live with #632, read the real series count off Grafana
   Cloud's *Usage* page and update the estimate above and the README.
-- **Load test numbers:** #20, against this deployment.
+- **The one-, two- and three-server load test:** #668, for
+  docs/load-test.md's "Capacity and its limits" and ADR 0031. #20's runs
+  against this deployment are in docs/load-test.md.

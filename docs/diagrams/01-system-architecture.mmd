@@ -1,0 +1,79 @@
+%% 01 — System architecture
+%% Drawn from: ADR 0003, ADR 0006, ADR 0010, ADR 0011, ADR 0017 and ADR 0022
+%%   (both as amended by ADR 0030), ADR 0019, ADR 0021, ADR 0025, ADR 0026,
+%%   ADR 0030, deploy/production/compose.yml,
+%%   deploy/production/gateway/default.conf.template, infra/terraform/load_balancer.tf,
+%%   docker-compose.yml, sql/01-roles.sql, sql/02-schemas.sql,
+%%   backend/ledger_service/main.py (_start_copy_refreshers),
+%%   backend/ledger_service/service/{local_copy,market_terms,market_status,user_directory,bus}.py,
+%%   backend/ledger_service/service/{trading,books,settlement,voiding}.py,
+%%   backend/market_service/service/sweeper.py,
+%%   backend/ledger_service/service/leaderboard_refresher.py
+%% A trade calls nobody (ADR 0030): the copy job refreshes who is suspended and
+%% which markets are published about every second, and the trade reads it in
+%% memory. A market missing from the copy, published under a second ago, makes
+%% the trade fetch /internal/markets/published itself (local_copy.ensure_trading).
+%% GET /public/markets/{id} is a book's first touch, by a trade, an order, a
+%% preview or a snapshot (books.ensure_open, book_prices.read_or_open), and the
+%% read before settle and void (market_status.read_terms).
+%% Production: the load balancer, then the gateway on each server (02). Locally,
+%% compose publishes one port per service, 8000 to 8004, and no gateway runs; the
+%% scale stack puts one nginx in front (docs/horizontal-scaling.md). The bus is Valkey in
+%% production and Redis locally: the same protocol. Grants per schema: 05.
+%% Some labels join their words with U+00A0 so Mermaid keeps them on one line.
+%%{init: {"elk": {"lineHops": false}, "flowchart": {"wrappingWidth": 500, "padding": 8, "nodeSpacing": 30}, "themeVariables": {"fontSize": "24px"}}}%%
+flowchart TB
+    browser["Browser, React SPA"]:::browser
+    lb["Load balancer: ends TLS, checks /lb-health"]:::edge
+    gateway["gateway on each server: nginx, frontend"]:::edge
+    browser -->|"HTTPS + WebSocket, cookie auth"| lb
+    lb --> gateway
+
+    subgraph svc["FastAPI services"]
+        direction LR
+        audit["audit<br/>reads log"]:::audit
+        subgraph mk["market"]
+            direction TB
+            market["market<br/>lifecycle, resolution"]:::market
+            sweeper(["close sweeper, 10 s<br/>open → closed"]):::job
+        end
+        auth["auth<br/>users, sessions"]:::auth
+        subgraph lg["ledger"]
+            direction TB
+            ledger["ledger<br/>credits, trades, LMSR"]:::ledger
+            refresher(["leaderboard<br/>refresher, 60 s"]):::job
+            copy(["local copy<br/>refresh, 1 s"]):::job
+        end
+        realtime["realtime<br/>socket relay"]:::realtime
+    end
+
+    gateway -->|"a subdomain per service; /ws/prices on realtime"| svc
+
+    copy -->|"GET /internal/<br/>users/suspended<br/>X-Service-Key"| auth
+    refresher -->|"POST /internal/<br/>users/lookup<br/>X-Service-Key"| auth
+    copy -->|"GET /internal/<br/>markets/published<br/>X-Service-Key"| market
+    ledger -->|"GET /public/<br/>markets/{id}: first<br/>touch, settle, void;<br/>POST settle, void"| market
+
+    pg[("Postgres 17: a schema and role per service,<br/>no cross grants; writers INSERT the audit log")]:::pg
+    redis[("Valkey pub/sub<br/>market.price, order.update")]:::redis
+
+    auth -->|"auth_svc"| pg
+    market -->|"market_svc"| pg
+    ledger -->|"ledger_svc"| pg
+    audit -->|"audit_svc:<br/>SELECT, INSERT"| pg
+
+    ledger -->|"PUBLISH<br/>after commit"| redis
+    realtime -->|"SUBSCRIBE"| redis
+
+    classDef browser  fill:#F2F2F2,stroke:#555555,color:#1A202C
+    classDef edge     fill:#FFF4CC,stroke:#9A7B00,color:#1A202C
+    classDef auth     fill:#DCEBFA,stroke:#2F6DB5,color:#1A202C
+    classDef market   fill:#DFF2E1,stroke:#2E8B47,color:#1A202C
+    classDef ledger   fill:#FCEBCF,stroke:#C27C0E,color:#1A202C
+    classDef audit    fill:#ECE3F7,stroke:#7048A8,color:#1A202C
+    classDef realtime fill:#DDF3F3,stroke:#1F8A8A,color:#1A202C
+    classDef pg       fill:#E6EBF2,stroke:#3B5068,color:#1A202C
+    classDef redis    fill:#FBE0DE,stroke:#C0392B,color:#1A202C
+    classDef job      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
+    style mk fill:#F9FDF9,stroke:#2E8B47
+    style lg fill:#FFFDF7,stroke:#C27C0E

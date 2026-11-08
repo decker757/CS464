@@ -1,0 +1,62 @@
+%% 08 — A market's lifecycle, MarketStatus
+%% Drawn from: ADR 0004, ADR 0008, ADR 0011, ADR 0013, ADR 0014, ADR 0016,
+%%   ADR 0019, ADR 0023, ADR 0025,
+%%   backend/market_service/model/entities.py (MarketStatus),
+%%   backend/market_service/service/market_service.py,
+%%   backend/market_service/service/closing.py,
+%%   backend/market_service/service/settling.py,
+%%   backend/market_service/core/settling.py,
+%%   backend/market_service/controller/routes.py,
+%%   backend/ledger_service/service/settlement.py,
+%%   backend/ledger_service/service/voiding.py
+%% Every arrow is a POST on market by an admin, under /markets/{id} except
+%% autosave and submit (POST /markets), and except the sweep. publish leaves only from submitted (market_service.py:393-395);
+%% the sweep and close early both land on closed. "window end" = the stored dispute_window_ends_at. approve,
+%% reject and send-back each quote the proposal_id they read (ADR 0016).
+%% settle and void are called by the ledger after its payout or refunds
+%% commit (ADR 0019, ADR 0025); market itself pays nobody.
+%% approved --> voided is the ledger asking `voidable`, inside the window (voiding.py:162,
+%% settling.py:is_voidable); market's own /void step tolerates window end + 5 min.
+%% Layout: drawn for a landscape page (24.6 x 15.9 cm). The init line sets
+%%   22px text; Mermaid wraps an edge label at 200px whatever the font size,
+%%   so a guard longer than that is broken by hand with <br/>.
+%%{init: {"themeVariables": {"fontSize": "22px"}}}%%
+stateDiagram-v2
+    direction LR
+
+    state "Authoring, creator only" as authoring {
+        direction TB
+        [*] --> draft : autosave
+        [*] --> submitted : save [rules pass]
+        draft --> draft : autosave
+        draft --> submitted : submit<br/>[rules pass]
+        submitted --> submitted : edit, resubmit<br/>(never to draft)
+    }
+
+    state "Resolution" as resolution {
+        direction TB
+        [*] --> closed
+        closed --> pending_resolution : propose<br/>[creator]
+        pending_resolution --> approved : approve<br/>[not proposer]
+        pending_resolution --> closed : reject<br/>[not proposer]
+        approved --> closed : send-back<br/>[before window end]
+        approved --> settled : settle (ledger,<br/>after payout)<br/>[≥ window end<br/>+ 5 min]
+        closed --> voided : void (ledger,<br/>after refunds)
+        pending_resolution --> voided : void (ledger)<br/>/ clears proposal
+        approved --> voided : void (ledger)<br/>[before window end]
+        settled --> [*]
+        voided --> [*]
+    }
+
+    authoring --> open : publish (creator)<br/>[submitted,<br/>rules re-run]
+    open --> resolution : sweep<br/>[after close_time]
+    open --> resolution : close early<br/>[before close_time]
+
+    state "open" as open
+    open : no trade after close_time,
+    open : whatever the status says
+
+    classDef live fill:#DFF2E1,stroke:#2E8B47,color:#1A202C
+    classDef terminal fill:#E2E2E2,stroke:#555555,color:#1A202C
+    class draft, submitted, open, closed, pending_resolution, approved live
+    class settled, voided terminal

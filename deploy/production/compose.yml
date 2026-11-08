@@ -83,11 +83,18 @@ services:
 
   # Pool sizes. Each service connects to its DigitalOcean pool, not to
   # Postgres, so these count client connections, which are cheap: a pool
-  # takes thousands. The cap on Postgres is the pools' own, 28 in all,
+  # takes thousands. The cap on Postgres is the pools' own, 38 in all,
   # however many servers run (infra/terraform/databases.tf). Per server:
-  # auth 3+1, market 3+2, ledger 10+5, audit 1+1 = 26; three servers make 78
-  # client connections onto those 28. The ledger's is the largest because
-  # the trade path is its. docs/deployment.md, "Connection budget".
+  # auth 3+1, market 3+2, ledger 6+2, audit 1+1 = 19; three servers make 57
+  # client connections onto those 38. The ledger's clients on three servers
+  # (3 x 8 = 24) fit its pool of 24, so the pooler never queues the ledger
+  # (#667). A trade waiting for a book lock still keeps its connection while
+  # it waits, so the ledger lets only 2 trades per market, and 6 + 2 - 2 = 6
+  # in all, hold one; the rest wait in memory, and 2 are kept from trades for
+  # reads and /ready. The 6 is worked out from the ledger's DATABASE_POOL_SIZE
+  # and DATABASE_MAX_OVERFLOW below, less DATABASE_CONNECTIONS_FOR_READS; that
+  # and DATABASE_CONNECTIONS_PER_MARKET are not set here, so both are their
+  # default, 2. docs/deployment.md, "Connection budget".
   auth:
     <<: *app
     image: ${IMAGE_REGISTRY:?}/cs464-auth:${IMAGE_TAG:?}
@@ -123,8 +130,8 @@ services:
     environment:
       <<: *app-environment
       DATABASE_URL: ${LEDGER_DATABASE_URL:?}
-      DATABASE_POOL_SIZE: 10
-      DATABASE_MAX_OVERFLOW: 5
+      DATABASE_POOL_SIZE: 6
+      DATABASE_MAX_OVERFLOW: 2
       LEDGER_SERVICE_KEY: ${LEDGER_SERVICE_KEY:?}
       REDIS_URL: ${REDIS_URL:?}
       # true on one server only, set per server in app.env. ADR 0021.

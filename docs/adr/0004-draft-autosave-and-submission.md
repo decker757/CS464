@@ -121,3 +121,8 @@ without a schema change. Non-URL evidence — a screenshot, a PDF, a snapshot of
 a page that later changes — is deliberately out of scope here: it is evidence
 for [3.1] #9's outcome proposal, which is a different moment with a different
 author.
+
+> **Amended 2026-11-08. True of the code today.** Context says [1.3] #3 owns
+> DRAFT → OPEN. [ADR 0008](0008-publishing-a-market.md) decided that
+> publishing works from SUBMITTED only, so a market goes DRAFT → SUBMITTED →
+> OPEN, and a draft cannot be published. Nothing else here changes.

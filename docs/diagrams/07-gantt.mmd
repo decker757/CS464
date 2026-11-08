@@ -1,0 +1,77 @@
+%% 07 — Delivery timeline by epic
+%% Drawn from: gh pr list --state merged (336 PRs into dev or a stack branch,
+%%   2026-09-13 to 2026-11-07, the cut-off), each PR's closing issue and its
+%%   "epic:" label, else the issue's parent, else the story tag in the title
+%%   ([5.x] is infra, as #19, #20 and #599 are labelled). 67 PRs with no epic
+%%   anywhere are the last lane; #221's void stack, unlabelled, is under
+%%   resolution. Releases are the [Release] PRs into main, named as their
+%%   titles name them. #633, which merged main back into dev, is a PR into dev
+%%   with no epic, so it is in the last lane; #664 and #666, docs PRs straight
+%%   into main, are not drawn.
+%%   #19's five PRs, #603 to #607, are in the infra lane; "Production" marks the
+%%   days it went live and the two load-test runs in production, from
+%%   docs/load-test.md's results table.
+%% A bar runs from an epic's first merged PR to its last. It is a span, not
+%% continuous work. FE bars are shaded (`active`), BE bars plain.
+%% Compact mode shares a row between bars that do not overlap, which would pile
+%% the milestone labels onto one row. Mermaid draws a milestone at the middle of
+%% its span, and fills a section's rows greedily in order of each span's start,
+%% so each milestone is given a span centred on its date (releases 4, 17, 19, 20,
+%% 24 and 29 Oct and 1, 4 and 7 Nov) whose start puts labels that would collide
+%% on different rows. The span itself is not drawn. "It." is Iteration, as the
+%% release PRs' titles name them. Two dates had two release PRs, and the chart
+%% names the later one: #597 and #613 on 1 Nov, and #631 and #632, the two steps
+%% of one release, on 4 Nov.
+%%{init: {"gantt": {"displayMode": "compact", "barHeight": 18, "barGap": 4}, "themeCSS": ".tick text { font-size: 15px; } .sectionTitle { font-size: 15px; } .taskText, .taskTextOutsideRight, .taskTextOutsideLeft { font-size: 14.5px; }"}}%%
+gantt
+    dateFormat YYYY-MM-DD
+    axisFormat %d %b
+    tickInterval 1week
+    todayMarker off
+    section Authentication
+    BE, 11 PRs :2026-09-13, 53d
+    FE, 4 PRs :active, 2026-09-20, 44d
+    section Market creation
+    BE, 3 PRs :2026-09-13, 3d
+    FE, 5 PRs :active, 2026-09-26, 30d
+    section Admin and audit
+    BE, 13 PRs :2026-09-15, 27d
+    FE, 2 PRs :active, 2026-10-11, 9d
+    section Infra and foundation
+    BE, 69 PRs :2026-09-15, 54d
+    FE, 8 PRs :active, 2026-09-27, 36d
+    section Resolution, settle, void
+    BE, 33 PRs :2026-09-16, 44d
+    FE, 11 PRs :active, 2026-09-28, 32d
+    section Credit balance
+    BE, 4 PRs :2026-09-16, 34d
+    FE, 3 PRs :active, 2026-10-19, 7d
+    section Market oversight
+    BE, 15 PRs :2026-09-16, 33d
+    FE, 10 PRs :active, 2026-09-28, 27d
+    section Market discovery
+    BE, 11 PRs :2026-09-21, 39d
+    FE, 20 PRs :active, 2026-09-26, 38d
+    section Trading
+    BE, 20 PRs :2026-09-24, 43d
+    FE, 15 PRs :active, 2026-10-05, 28d
+    section Leaderboard
+    BE, 10 PRs :2026-10-11, 6d
+    FE, 2 PRs :active, 2026-10-19, 1d
+    section Fixes, refactors, docs
+    BE, 36 PRs :2026-09-13, 53d
+    FE, 31 PRs :active, 2026-09-27, 36d
+    section Releases to main
+    #206 Sprint 2  :milestone, 2026-10-02, 4d
+    #327 It. 3    :milestone, 2026-10-15, 4d
+    #398 It. 4    :milestone, 2026-10-18, 2d
+    #427 It. 5    :milestone, 2026-10-18, 4d
+    #577 It. 7    :milestone, 2026-10-27, 4d
+    #504 It. 6    :milestone, 2026-10-20, 8d
+    #613          :milestone, 2026-10-29, 6d
+    #632          :milestone, 2026-10-30, 10d
+    #663          :milestone, 2026-11-02, 10d
+    section Production
+    #19 live      :milestone, 2026-10-29, 6d
+    #20 load test :milestone, 2026-10-30, 10d
+    #20 re-run    :milestone, 2026-10-31, 14d

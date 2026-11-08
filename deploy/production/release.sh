@@ -8,9 +8,10 @@
 #   2. Migrate the database once, from the first server (ADR 0020).
 #   3. Roll the servers one at a time with roll.sh. If one fails, roll.sh has
 #      already put it back on its old release, and every server rolled before
-#      it is sent back too, so the servers never run different releases. A
+#      it is sent back too, so the servers end on the release they had, with
+#      the exceptions docs/deployment.md lists under "When a deploy fails". A
 #      server is sent back with its old release's own roll.sh, from its own
-#      directory, so the old release runs exactly as it was. The one exception:
+#      directory, so the old release runs exactly as it was. One more case:
 #      a server that could not go back is serving nothing, so the others are
 #      left serving rather than drained one by one to be sent back.
 #   4. Check the public site answers on every name.
@@ -20,9 +21,11 @@
 # A migration stays applied when its release is sent back, so every
 # migration must also work with the release before it. docs/deployment.md.
 #
-# Reads, from the GitHub "production" environment:
-#   APP_HOSTS PRODUCTION_DOMAIN IMAGE_REGISTRY REGISTRY_USER REGISTRY_TOKEN
-#   DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DATABASE_ADMIN_URL REDIS_URL
+# Reads, from its environment, which deploy.yml sets: IMAGE_REGISTRY, worked
+# out from the repository owner; REGISTRY_USER and REGISTRY_TOKEN, the run's
+# own actor and token; PRODUCTION_DOMAIN, a repository variable; and from the
+# GitHub "production" environment:
+#   APP_HOSTS DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DATABASE_ADMIN_URL REDIS_URL
 #   JWT_SECRET LEDGER_SERVICE_KEY, and for each of AUTH MARKET LEDGER AUDIT:
 #   <NAME>_DATABASE_URL (through the pooler), <NAME>_DIRECT_DATABASE_URL (to
 #   Postgres itself, for the migrate steps) and <NAME>_DB_PASSWORD

@@ -10,13 +10,20 @@ variable "region" {
 }
 
 variable "app_server_count" {
-  description = "How many app servers run behind the load balancer. Every server shares the four connection pools in databases.tf, so a third fits the database (docs/deployment.md, \"Connection budget\")."
+  description = "How many app servers run behind the load balancer. Every server shares the four connection pools in databases.tf, and the ledger's pool of 24 holds 6 + 2 ledger clients on each of up to three (docs/deployment.md, \"Connection budget\")."
   type        = number
   default     = 2
 
   validation {
     condition     = var.app_server_count >= 1
     error_message = "At least one app server."
+  }
+
+  # A fourth server's ledger clients (4 x 8 = 32) would outnumber the ledger's
+  # pool of 24 and bring #667 back. Resize the pool or the client pools first.
+  validation {
+    condition     = var.app_server_count <= 3
+    error_message = "At most three app servers: the ledger's pool of 24 holds three servers' 6 + 2 ledger clients. Resize it first, then raise this limit (docs/deployment.md, \"Connection budget\")."
   }
 }
 
@@ -33,7 +40,7 @@ variable "database_size" {
 }
 
 variable "cache_size" {
-  description = "The managed Valkey (Redis-compatible) plan that carries live prices."
+  description = "The managed Valkey (Redis-compatible) plan that carries live prices and auth's login limits."
   type        = string
   default     = "db-s-1vcpu-1gb"
 }

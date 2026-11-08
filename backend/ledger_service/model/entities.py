@@ -503,8 +503,8 @@ class MarketOutcome(Base):
     # row orphaned from its book is a market whose `q` vector exists with
     # nothing to price it against, and it is the kind of mistake [T-2] #22
     # could introduce without anything going red. `outcome_id` names a row in
-    # `market.outcomes`, which ledger_svc holds no grant on, so it stays bare
-    # for the reason ADR 0003 gives.
+    # `market.market_outcomes`, which ledger_svc holds no grant on, so it
+    # stays bare for the reason ADR 0003 gives.
     #
     # Composite primary key rather than a surrogate id plus a separate unique
     # constraint: nothing ever references one of these rows by an id of its

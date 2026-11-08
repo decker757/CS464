@@ -1,0 +1,39 @@
+%% 09 — Settling an approved market
+%% Drawn from: ADR 0019, ADR 0023, ADR 0015, ADR 0006,
+%%   DECISIONS.md "market_terms.mark_settled accepts only a 200",
+%%   backend/ledger_service/service/settlement.py (pay_out, _replay,
+%%   _refuse_if_not_settleable),
+%%   backend/ledger_service/service/market_terms.py (fetch, mark_settled),
+%%   backend/market_service/service/market_service.py (settle),
+%%   backend/market_service/core/settling.py (SETTLEMENT_GAP)
+%%{init: {"themeCSS": ".actor-line { stroke: #C3CBD5 !important; stroke-dasharray: 3 3; }"}}%%
+sequenceDiagram
+    autonumber
+    participant B as Browser (admin)
+    participant M as market
+    participant L as ledger
+    participant DB as Postgres
+
+    B->>L: POST /ledger/markets/{id}/settlement, empty body
+    L->>M: GET /public/markets/{id}
+    M-->>L: status, proposed_outcome_id, settleable
+    L->>DB: find market_results row, no lock
+    alt already settled: a repeat
+        L->>M: POST /markets/{id}/settle again
+        M-->>L: 200, or any other answer
+        L-->>B: 200, same figures, or 503 unless 200
+    else no record
+        break unless approved and settleable, or already settled
+            L-->>B: 409, nothing written
+        end
+        L->>DB: lock market_books, re-check record
+        L->>DB: pay winners, residue, record, audit, COMMIT
+        L->>M: POST /markets/{id}/settle
+        M->>DB: lock row, re-check window, status settled
+        M-->>L: 200, or any other answer
+        alt market answered 200
+            L-->>B: 200, holders_paid, total_paid, residue
+        else any other answer
+            L-->>B: 503 settlement_unconfirmed: repeat it
+        end
+    end

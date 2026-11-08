@@ -24,8 +24,13 @@ resource "digitalocean_database_firewall" "postgres" {
   }
 }
 
-# The bus the ledger publishes prices to and the realtime service subscribes
-# on (ADR 0010). It holds nothing worth keeping, so one node is enough.
+# Two jobs: the bus the ledger publishes prices and order updates to and the
+# realtime service subscribes on (ADR 0010), and auth's login and
+# registration counters (ADR 0027). It holds nothing worth keeping. If the
+# node restarts empty, prices come back from the ledger's snapshot and the
+# login counts start again from zero. While it is down, live prices pause and
+# the login limiter is off, since it fails open, and cs464-login-limiter-off
+# fires. Neither loses money or an account, so one node is enough.
 resource "digitalocean_database_cluster" "cache" {
   name                 = "cs464-valkey"
   engine               = "valkey"
@@ -46,15 +51,19 @@ resource "digitalocean_database_firewall" "cache" {
 
 # #640. One transaction-mode pool (PgBouncer) per service role, so every app
 # server shares a fixed number of server connections, however many servers
-# run. The 2 GB plan has about 47; these take 28, and the rest stay direct,
-# for the three migrate steps, ensure-database.sh and an operator. Each pool
+# run. The 2 GB plan has about 47; these take 38, and the rest stay direct,
+# for the three migrate steps, ensure-database.sh and an operator. The
+# ledger's is at least every ledger client at full overflow on three servers
+# (6 + 2 each, deploy/production/compose.yml), so a trade queued on one
+# market's book lock never makes the pooler queue the ledger's other reads
+# (#667). Each pool
 # logs in as its service's own role, which ensure-database.sh creates, so the
 # role must exist before its pool can. docs/deployment.md, "Connection budget".
 locals {
   connection_pool_sizes = {
     auth   = 6
     market = 6
-    ledger = 14
+    ledger = 24
     audit  = 2
   }
 }
@@ -67,4 +76,13 @@ resource "digitalocean_database_connection_pool" "service" {
   size       = each.value
   db_name    = digitalocean_database_db.cs464.name
   user       = "${each.key}_svc"
+
+  # The provider has no update for a pool, so any change here (a new size
+  # above all) would delete the pool and create it again, and its service
+  # would lose the database meanwhile. Resize in the DigitalOcean console
+  # first and change this file to match; then the plan shows no change. If a plan wants to replace a pool,
+  # this stops it. docs/deployment.md, "Changing a pool's size replaces the pool".
+  lifecycle {
+    prevent_destroy = true
+  }
 }

@@ -2,12 +2,14 @@ name: Deploy
 
 # [5.3] #19. Every push to main goes to production. Build the six images and
 # push them to GHCR, tagged with the commit; then deploy/production/release.sh
-# migrates the database once and rolls the app servers one at a time. If any
-# server fails, every server ends on the release it had before, and this run
-# fails. docs/deployment.md is the walkthrough; ADR 0026 is why.
+# migrates the database once and rolls the app servers one at a time. If a
+# server fails, the servers go back to the release they had before, with the
+# exceptions docs/deployment.md lists under "When a deploy fails", and this
+# run fails. docs/deployment.md is the walkthrough; ADR 0026 is why.
 #
-# Main is only reached by promoting dev, where CI has already run. This does
-# not repeat the suites; ci-deploy.yml has already proven the stack.
+# Main is normally reached by promoting dev, where CI has already run, but no
+# required check enforces that. This does not repeat the suites;
+# ci-deploy.yml has already proven the stack.
 #
 # Reads the GitHub environment "production" (its secrets and APP_HOSTS) and
 # the repository variable PRODUCTION_DOMAIN, all written by
@@ -18,7 +20,8 @@ on:
   workflow_dispatch:
 
 # One deploy at a time. A push during a deploy waits for it to finish
-# rather than cancelling it halfway through a roll.
+# rather than cancelling it halfway through a roll. Only the newest waiting
+# run is kept; it deploys the newest commit, which holds the others.
 concurrency:
   group: deploy-production
   cancel-in-progress: false

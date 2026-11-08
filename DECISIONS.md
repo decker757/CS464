@@ -11330,6 +11330,23 @@ tested before production. See "asyncpg's statement cache is off in every
 engine". `docs/deployment.md`, "Connection budget", and ADR 0026's
 amendment.
 
+*Amended 2026-11-08 by #667: the ledger's pool holds every ledger client.*
+A trade waiting for a book lock keeps its server connection, so a pool
+smaller than its clients fills with waiting trades on one busy market, and
+the ledger's other reads and its readiness check queue at the pooler behind
+them. The 7 November one-market run showed exactly that with a pool of 14
+and 10 + 5 clients a server. So the ledger's pool is 24 and its clients 6 + 2
+a server: three servers' 24 fit. The other pools stay smaller than their
+clients, because nothing in auth, market or audit holds a lock while it
+waits. *Rejected:* 8 + 4 a server, which fits two servers exactly and would
+starve again on #668's three-server run; and a bigger pool for the same
+clients, since 30 for the ledger leaves too little of the 47 for the
+direct connections. The pools now hold 38. This ends the queue at the
+pooler only: on one busy market, waiting trades can still fill one ledger
+process's own 6 + 2, and its reads and readiness check then queue inside
+that process. "Only a few trades per market hold a ledger connection at
+once" limits that.
+
 ---
 
 ### D-NEW — The production site is seeded by its own command, with a generated password per account
@@ -11768,3 +11785,131 @@ read 31.
   ceiling of two statements per movement. This shape grows by one, the lock, so
   that test would no longer catch the probes going back to one statement per
   account. The structural test above is what holds the one statement.
+
+---
+
+### D-NEW — Only a few trades per market hold a ledger connection at once
+
+**Date:** 2026-11-08 · **Ticket:** #667 · **Status:** active
+
+**Decision.** Before its first statement, a trade (`trading.execute`) or a
+placement (`orders.place`) waits in memory for two slots, holding no database
+connection, and keeps them until its transaction has ended. It publishes its
+price and order frames only after giving them back:
+
+1. one of its market's, at most `DATABASE_CONNECTIONS_PER_MARKET` (default 2)
+   per market in each ledger process;
+2. then one of the process's, at most the pool at full overflow less
+   `DATABASE_CONNECTIONS_FOR_READS` (default 2). In production that is
+   6 + 2 − 2 = 6.
+
+So whatever the trades are doing, at least two of each ledger's eight
+connections are kept from trades and placements. Everything that takes no
+slot shares those two: snapshots, balances, history, the readiness check's
+`SELECT 1`, cancels, settlement, void and the leaderboard refresher on the
+one server that runs it. The primitive is `core/connection_slots.py`; the one
+instance, and the rollback before a slot is given back, are in
+`service/connection_slots.py`. The settings refuse a reserve that leaves
+trades no connection. The book lock in Postgres is still the only authority
+over a trade (ADR 0015). These slots decide nothing about a trade, only who
+holds a connection while it waits for the lock.
+
+**Why.** A trade waiting for a book lock holds its connection while it waits.
+Part 1 of #667 made the pooler's 24 hold every ledger client, which moved
+the queue into each process: on one hot market about 17 trades per server
+were in flight at about 6 commits a second, so a new checkout waited about
+1.5 s against `/ready`'s 2 s timeout. With these slots at most two per market
+per process are in Postgres's lock queue: the holder and one ready behind it.
+When the holder commits, a trade that is already waiting gets the lock at
+once, and the next trade in memory takes the freed slot and runs its
+statements before the lock (the replay lookup, the grant check) while the new
+holder holds it. The lock is never idle, so one market's throughput does not
+change.
+
+**Why both limits.** The per-market one alone does not keep the reserve:
+five busy markets at two each are ten trades, more than the eight
+connections. The process-wide one alone keeps the reserve, but one hot
+market's queue would take all six slots, and a trade on a quiet market would
+wait in line behind trades that are waiting for a lock it does not need. The
+market's slot is taken first, so a hot market's queue waits outside the
+process-wide limit and leaves it to the other markets.
+
+**Where the slot is taken.** Around the whole unit of work, not around
+`books.lock_book`. `AsyncSession` begins lazily, and the first statement is
+the unlocked replay lookup, so the connection is out from there until the
+commit. On the way out the slot rolls the session back before it is given
+back. After a commit that does nothing and sends no statement. After a replay
+or a refusal it is the rollback the session's close would send anyway, only
+earlier, so the next trade's checkout never overlaps this one's. The trade's
+statement budget is unchanged.
+
+**The publish is outside the slot.** The price frame and the order frames go
+out after the slot is given back, on the trade path and for a placement that
+fills alike. Inside it, a stalled Redis would hold each slot after the
+commit for 5 s per frame, the client's socket timeout (`main.py`), and up to
+5 s more for a frame that has to open a connection first. The client
+`redis.from_url` builds there retries nothing (redis-py 8.1 gives its
+connections `Retry(NoBackoff(), 0)`), so that is the bound, but a trade that
+filled resting orders sends one frame per fill as well as its price frame. A
+slow Redis would then throttle trades, which ADR 0010 forbids: the publish
+never gets in a trade's way. The frames are built inside the slot, from the
+ORM rows, before its rollback can expire them, and only plain frames leave
+it. A failed publish is still logged and never raised.
+
+**Not gated: cancel, admin cancel, settlement, void and the leaderboard
+refresher.** The first four are rare and done by people at human speed.
+Settlement and void run once per market. A cancel learns its market only by
+reading the order, so a slot before its first statement would mean giving the
+connection back and taking it again. Each of them still waits for the book
+lock holding a connection, so a burst of cancels on a hot market can use up
+the reserve for as long as it lasts. The refresher takes no book lock; it runs
+on one server, once a minute, and uses one of that server's reserve while it
+runs.
+
+**No timeout.** A waiting request costs memory, not a connection, and the
+client's own timeout still applies. A timeout here would turn a slow market
+into errors that clients retry, which adds load. A waiting task that is
+cancelled gives its place up, and its market is forgotten if nobody else waits.
+
+**ADR 0031 is not contradicted.** It rejects "a queue in front of the trade"
+as a way to go faster: such a queue orders trades without owning the book,
+so every trade still pays for reading `q` and taking the lock. These slots
+are not a way to go faster, and they do not order anything. Trades still
+race for the book lock in Postgres, and Postgres still decides the order.
+They change only where a waiting trade waits. The queue that already
+existed now costs memory instead of a connection.
+
+**Rejected.**
+- *A separate engine for the readiness check*, one direct connection per
+  ledger process outside its pool. Three servers × (8 + 1) = 27 is more than
+  the ledger's pool of 24, so the pooler would queue again. It would also save
+  only `/ready`, and not the snapshots, balances and history.
+- *A slot around `books.lock_book` only*: the connection is already out from
+  the replay lookup, so it would not be withheld.
+- *A `lock_timeout`*: #669, closed as not planned. It bounds a wait by failing
+  the trade, and this fixes the connections without failing anything.
+- *Bigger client pools*: the ledger's 24 on the pooler is fixed by the
+  database's ~47 (part 1, "Connection budget" in `docs/deployment.md`).
+
+**Costs.**
+- A retry of a committed trade on a hot market waits for a slot too, because
+  its replay lookup is the first statement.
+- The limits are per process, so with three servers up to six trades are in
+  one market's lock queue.
+
+**Notes.** `unit_test/service/test_connection_slots.py` runs at one
+production ledger's sizes (6 + 2) against real Postgres, with the book locks
+held from a separate engine. Eight trades or placements on one held book: at
+most two hold a connection and `/ready` answers at once. Remove the market's
+limit and six do; remove both limits and all eight do, and `/ready` times
+out. Three trades on each of four held books: the reserve stays free. Remove
+the process-wide limit and eight hold a connection, and `/ready` times out.
+Two requests on one market that stall in their publish, each trade filling a
+resting order, leave a third free to commit; put the price frame's or the
+order frames' publish back inside the slot and the third waits. A slot that
+issues one read before its rollback, so the rollback is real, still leaves a
+trade and a placement answering with the frames they committed; build a
+frame after the block and they fail with `MissingGreenlet`.
+`unit_test/core/test_connection_slots.py` holds the order of the two limits
+and that a market nobody waits for is forgotten, so the map stays as small as
+the markets in flight.

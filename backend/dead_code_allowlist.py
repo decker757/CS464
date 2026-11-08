@@ -14,6 +14,9 @@ reset_hub
 # subscription behind.
 subscriber_count
 connection_count
+# The ledger's suite asserts that a market nobody waits for leaves no
+# semaphore behind (#667).
+markets_in_flight
 
 
 # Alembic calls these by name in every migrations/versions/*.py; nothing
