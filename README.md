@@ -24,7 +24,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot, the ledger's price producer and its order frames |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
-| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440, #609, #20, #640 | live at **https://predictsmu.xyz**: every push to `main` deploys to DigitalOcean, two app servers behind a load balancer (ADR 0026), and `npm run seed:production` seeds it with the demo markets; monitoring (#599) ships to Grafana Cloud from each server; the load test [5.4] #20 ran on 2026-11-04 (a trade's p95 was 5.45 s at 50 users, both servers at 100% CPU) and #640's answer ships in this release: a trade names a price limit (ADR 0029), the ledger keeps a one-second copy of who and what may trade and calls no other service on a trade (ADR 0030), a trade holds the book lock for 13 statements instead of 22 (#641), and DigitalOcean's connection pooler lets a third server start (#660); the after figures, measured on 2026-11-07, are under "Load testing and scaling" below; staging is dropped from scope (ADR 0026) |
+| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440, #609, #20, #640, #667 | live at **https://predictsmu.xyz**: every push to `main` deploys to DigitalOcean, two app servers behind a load balancer (ADR 0026), and `npm run seed:production` seeds it with the demo markets; monitoring (#599) ships to Grafana Cloud from each server; the load test [5.4] #20 ran on 2026-11-04 (a trade's p95 was 5.45 s at 50 users, both servers at 100% CPU) and #640's answer shipped on 2026-11-07: a trade names a price limit (ADR 0029), the ledger keeps a one-second copy of who and what may trade and calls no other service on a trade (ADR 0030), a trade holds the book lock for 13 statements instead of 22 (#641), and DigitalOcean's connection pooler lets a third server start (#660); the after figures, measured on 2026-11-07, are under "Load testing and scaling" below; this release ships #667, so that one hot market's lock queue no longer holds the ledger's connections away from its reads and readiness check (the ledger's pool holds all its clients, and only two trades per market hold a connection); staging is dropped from scope (ADR 0026) |
 
 ## Running it
 
@@ -270,6 +270,10 @@ serialise ([ADR 0015](docs/adr/0015-locking-the-read-that-decides-a-write.md)), 
 documented ceiling. The trade p95 on one market was 4.72 s, measured. How
 much of it was the lock queue, and how much the saturated CPU, was not
 measured: the dashboard's lock-wait panel was not recorded for that run.
+That run also showed one server's ledger reporting its database down while
+trades still committed, because trades waiting for the lock held its
+connections. #667 fixed that after the run, and #668's runs are the first to
+measure it.
 The step past it, a per-market engine, is written up as a proposed ADR,
 [ADR 0031](docs/adr/0031-a-per-market-trading-engine.md), and the one, two
 and three server runs that put a number on the sideways scaling are the
@@ -431,10 +435,11 @@ Measured or decided, with the record that says so.
   cost of serialising money through Postgres. The step past it, a single
   writer per market, is the proposed engine,
   [ADR 0031](docs/adr/0031-a-per-market-trading-engine.md).
-- **A hot market's lock queue holds the ledger's connections (#667).**
-  During the one-market run, one server's readiness check reported its
-  database down while trades still committed: trades waiting for the book
-  lock held the ledger's 14 pooled connections. The pool now holds every
+- **A hot market's lock queue no longer starves the ledger's reads, except
+  during a burst of cancels (#667).** During the one-market run, one
+  server's readiness check reported its database down while trades still
+  committed: trades waiting for the book lock held the ledger's 14 pooled
+  connections. The pool now holds every
   ledger client (24, for 6 + 2 on up to three servers;
   [`docs/deployment.md`](docs/deployment.md), "Connection budget"), so the
   pooler never queues the ledger. Inside each ledger, only two trades per
