@@ -421,15 +421,19 @@ port 22 from anywhere with keys only, because GitHub's runners have no fixed
 address. Each gateway serves the frontend and routes `auth.`, `market.`,
 `ledger.`, `audit.` and `realtime.` to the containers on its own server. Managed
 Postgres and Valkey accept only servers tagged `cs464-app`, over the private
-network. Terraform generates the application's secrets and reads the two that
+network. The apps reach Postgres through four PgBouncer pools, which hold 28 of
+its 47 or so connections however many servers run; auth keeps its login and
+registration limits in the same Valkey that carries prices (ADR 0027). Grafana
+Alloy on each server sends metrics, logs and traces to Grafana Cloud, which
+holds the dashboard and five alerts (ADR 0028). Terraform generates the application's secrets and reads the two that
 DigitalOcean makes, the `doadmin` password and the Valkey URL.
 `infra/push-secrets.sh` copies them to the GitHub `production` environment, and
 `release.sh` writes `app.env` on each server, role passwords included, inside each
-role's URL. Only the admin URL stays out of it, reaching a server on stdin. Dashed
-boxes are what ADR 0026 records as not built.
-**Drawn from:** ADR 0026, 0002, 0010, 0011, 0020, 0021; `infra/terraform/`,
-`infra/push-secrets.sh`, `deploy/production/`, `.github/workflows/deploy.yml`,
-[deployment.md](deployment.md).
+role's URL. Only the admin URL stays out of it, reaching a server on stdin. The
+dashed box is the Postgres standby ADR 0026 does not buy.
+**Drawn from:** ADR 0026, 0002, 0010, 0011, 0020, 0021, 0027, 0028;
+`infra/terraform/`, `infra/push-secrets.sh`, `deploy/production/`,
+`.github/workflows/deploy.yml`, [deployment.md](deployment.md).
 [Source](diagrams/02-cloud-deployment.mmd)
 
 ### 3. CI/CD
