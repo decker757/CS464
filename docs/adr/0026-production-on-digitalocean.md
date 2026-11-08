@@ -1,6 +1,7 @@
 # ADR 0026: Production on DigitalOcean, two or more app servers behind a load balancer, deployed from main
 
-- **Status:** Proposed, 2026-11-01. Accepted when the #19 stack merges.
+- **Status:** Accepted, 2026-11-01, when the #19 stack reached `main` (#613).
+  Proposed the same day.
   Superseded in part by [ADR 0028](0028-liveness-for-the-balancer-readiness-for-alerts.md):
   `/health` stays liveness, and `/ready` is what the alerts watch.
 - **Date:** 2026-11-01
@@ -134,6 +135,19 @@ with room left for the migrate steps.
   the key and pretend to be the server. That is the price of the deploy
   knowing every host key in advance, and it is small next to that process
   already being on the server.
+
+> **Amended 2026-11-08. A scope decision by the team, recorded by Ernest.**
+> Staging is dropped from the project's scope. No issue tracks it, #19 was
+> closed on 2026-11-01, and the course ends before a second environment
+> would pay off. So the two staging bullets under Consequences no longer
+> describe open work: there is no staging environment, and none is planned.
+> The rest of this record stands.
+
+> **Amended 2026-11-08. True of the code today.** "Only the load balancer
+> can reach a server's gateway" is true of port 80. Port 22 is open to every
+> address, keys only, because GitHub's runners have no fixed address
+> (`infra/terraform/servers.tf`). So the load balancer is the only way to the
+> gateway, and SSH is the one other way into a server.
 
 ## Rejected alternatives
 

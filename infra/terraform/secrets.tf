@@ -1,6 +1,7 @@
-# Every secret the services need, generated here so no person types or
-# chooses one. push-secrets.sh copies them into the GitHub "production"
-# environment, which is the only place the deploy reads them from.
+# The secrets we generate, generated here so no person types or chooses one.
+# DigitalOcean makes the rest: the database admin password and the Valkey
+# URL (outputs.tf). push-secrets.sh copies them all into the GitHub
+# "production" environment. REGISTRY_TOKEN is the deploy run's own token.
 
 resource "random_password" "jwt_secret" {
   length  = 64

@@ -31,7 +31,7 @@ see why the code looks the way it does without reconstructing the argument.
 | [0023](0023-sending-an-approved-outcome-back.md) | Sending an approved outcome back, and the window's end stored at approval | Accepted |
 | [0024](0024-resting-orders-fill-inside-the-trade.md) | Resting orders fill against the AMM inside the trade that moved the price | Accepted |
 | [0025](0025-voiding-a-flawed-market.md) | Voiding a flawed market, by any administrator without a stake, refunded at what was paid, ledger first | Accepted |
-| [0026](0026-production-on-digitalocean.md) | Production on DigitalOcean, two or more app servers behind a load balancer, deployed from main | Proposed |
+| [0026](0026-production-on-digitalocean.md) | Production on DigitalOcean, two or more app servers behind a load balancer, deployed from main | Accepted |
 | [0027](0027-login-rate-limits-in-redis-failing-open.md) | Login and registration limits in Redis, per username or email and address, failing open | Proposed |
 | [0028](0028-liveness-for-the-balancer-readiness-for-alerts.md) | /health is liveness for the load balancer, /ready is readiness for dashboards and alerts | Proposed |
 | [0029](0029-price-limits-replace-exact-quotes.md) | Price limits replace exact quotes on the trade route, shipped expand then contract | Accepted |
