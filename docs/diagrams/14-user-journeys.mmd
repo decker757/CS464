@@ -1,6 +1,6 @@
 %% 14 — Four user journeys, step by step
 %% Drawn from: ADR 0008, ADR 0009, ADR 0010, ADR 0011, ADR 0013, ADR 0014,
-%%   ADR 0016, ADR 0019, ADR 0023, ADR 0024,
+%%   ADR 0016, ADR 0019, ADR 0023, ADR 0024, ADR 0029,
 %%   backend/auth_service/controller/routes.py,
 %%   backend/ledger_service/controller/routes.py,
 %%   backend/ledger_service/service/ledger_service.py, service/grants.py,
@@ -10,11 +10,15 @@
 %%   backend/market_service/core/settling.py, core/config.py,
 %%   backend/realtime_service/controller/routes.py, service/subscriptions.py,
 %%   frontend/src/context/BalanceContext.tsx, frontend/src/hooks/useMarketPrices.ts,
-%%   frontend/src/hooks/useMyOrders.ts, frontend/src/pages/admin/CreateMarketPage.tsx
+%%   frontend/src/hooks/useMyOrders.ts, frontend/src/pages/admin/CreateMarketPage.tsx,
+%%   frontend/src/components/markets/TradingPanel.tsx
 %% -
 %% Box colour = the service that handles the step. "…" stands for the
 %% service's market prefix: /ledger/markets/{id} on a ledger box,
 %% /markets/{id} on a market box. Every step exists in the code today.
+%% a4: a trade is decided by its price limit (ADR 0029). The trade panel
+%% still sends the quote's state_version instead until [FE] #644 lands,
+%% and the ledger still accepts that; then "or the quote's" goes.
 %%{init: {"flowchart": {"wrappingWidth": 200, "nodeSpacing": 14, "rankSpacing": 20, "padding": 8}}}%%
 flowchart TB
     subgraph j1["1 · A new trader's first trade"]
@@ -22,7 +26,7 @@ flowchart TB
         a1["Trader registers<br/>POST /auth/register"]:::auth
         a2["First balance read<br/>mints signup-grant"]:::ledger
         a3["Opens a market,<br/>reads its snapshot"]:::ledger
-        a4["Buys at the quote<br/>POST …/trades<br/>+ state_version"]:::ledger
+        a4["Buys, POST …/trades,<br/>with a price limit,<br/>or the quote's<br/>state_version"]:::ledger
         a5["On /ws/prices, a<br/>market.price frame<br/>moves the price"]:::realtime
         a1 --> a2 --> a3 --> a4 --> a5
     end

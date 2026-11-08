@@ -612,9 +612,12 @@ account's entries.
 A trader's first trade, a market drafted and published, two administrators
 resolving one, and a limit order filling inside another trader's trade. Each
 box is coloured by the service that handles the step; "…" is that service's
-market prefix, and the 24 h window is the default setting.
-**Drawn from:** ADR 0008, 0009, 0010, 0011, 0013, 0014, 0016, 0019, 0023, 0024;
-`backend/*/controller/routes.py`, `backend/*/service/`, `frontend/src/hooks/`.
+market prefix, and the 24 h window is the default setting. A trade is decided
+by its price limit (ADR 0029); the trade panel still sends the quote's
+`state_version` instead until [FE] #644 lands, and the ledger still accepts it.
+**Drawn from:** ADR 0008, 0009, 0010, 0011, 0013, 0014, 0016, 0019, 0023, 0024,
+0029; `backend/*/controller/routes.py`, `backend/*/service/`,
+`frontend/src/hooks/`, `frontend/src/components/markets/TradingPanel.tsx`.
 [Source](diagrams/14-user-journeys.mmd)
 
 ### 15. LMSR price and cost
