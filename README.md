@@ -268,8 +268,11 @@ serialise ([ADR 0015](docs/adr/0015-locking-the-read-that-decides-a-write.md)), 
 3,568 trades in 300 s is 12 a second, about 84 ms per hold, so 50 traders
 queued on one market wait about 4 s at the tail. That is the documented
 ceiling. The step past it, a per-market engine, is written up as a proposed
-ADR under #645, and the one, two and three server runs that put a number on
-the sideways scaling are the next measurement.
+ADR, [ADR 0031](docs/adr/0031-a-per-market-trading-engine.md), and the one,
+two and three server runs that put a number on the sideways scaling are the
+next measurement (#668). What each fix changed, the ceilings and the next
+steps are in
+[`docs/load-test.md`, "Capacity and its limits"](docs/load-test.md#capacity-and-its-limits).
 
 ## Monitoring
 
@@ -422,7 +425,8 @@ Measured or decided, with the record that says so.
   trades a second on one market, and 50 traders on it wait about 4 s at the
   tail ([`docs/load-test.md`](docs/load-test.md), 7 November). That is the
   cost of serialising money through Postgres. The step past it, a single
-  writer per market, is the proposed engine under #645.
+  writer per market, is the proposed engine,
+  [ADR 0031](docs/adr/0031-a-per-market-trading-engine.md).
 - **Behind the pooler, a hot market's lock queue holds the ledger's
   connections.** During the one-market run, one server's readiness check
   reported its database down while trades still committed: the ledger's
@@ -586,3 +590,6 @@ to make and would be expensive to reverse.
 - [0030](docs/adr/0030-the-ledger-keeps-a-local-copy.md) the ledger keeps a
   one-second local copy of suspensions and trading terms, and calls nobody on
   a trade; a stale copy refuses
+- [0031](docs/adr/0031-a-per-market-trading-engine.md) (Proposed) a
+  per-market trading engine: one owner per book, a fenced lease, group
+  commits; written, not built
