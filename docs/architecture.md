@@ -394,11 +394,12 @@ disagree, the code is right.
 In production the browser reaches the load balancer, then the gateway on an app
 server, which serves the frontend and sends each subdomain to its service. Each
 service but realtime connects as its own Postgres role, and the ledger
-publishes prices to Valkey after every commit. A trade calls no other service:
-the ledger keeps a local copy of who is suspended and which markets are
-published, refreshed about every second from auth and market with
-`LEDGER_SERVICE_KEY` (ADR 0030). The ledger still calls market on a market's
-first trade and to read and mark a settlement or a void. The close sweeper,
+publishes prices to Valkey after every commit. A trade normally calls no
+other service: the ledger keeps a local copy of who is suspended and which
+markets are published, refreshed about every second from auth and market with
+`LEDGER_SERVICE_KEY` (ADR 0030), and refetches the published list itself only
+for a market the copy does not hold yet. The ledger still calls market on a
+book's first touch and to read and mark a settlement or a void. The close sweeper,
 the leaderboard refresher and the copy's refresh run inside their services. Locally
 compose publishes one port per service, no gateway runs, and the bus is Redis.
 `audit_svc` holds INSERT as well as SELECT only so that its own suite can seed
@@ -497,7 +498,8 @@ append-only audit log.
 
 A replayed idempotency key is answered at once. Otherwise the ledger checks
 the trader and the market against its local copy, in memory, with no call to
-auth or market; a copy older than five seconds refuses with 503. It then
+auth or market unless the market is missing from the copy; a copy older than
+five seconds refuses with 503. It then
 locks the `market_books` row, reads everything the trade decides from in one
 statement after the lock, and prices the trade. A price beyond the request's
 `max_cost` or `min_proceeds` is `409 price_beyond_limit`, with nothing
