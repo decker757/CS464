@@ -41,7 +41,8 @@ class ConnectionSlots:
         self._total = asyncio.Semaphore(total)
         self._by_market: dict[uuid.UUID, _MarketSlots] = {}
 
-    def __len__(self) -> int:
+    @property
+    def markets_in_flight(self) -> int:
         """How many markets have a request holding or waiting for a slot."""
         return len(self._by_market)
 
