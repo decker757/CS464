@@ -9,6 +9,10 @@ commits.
 here; ADR 0030 answers both of their checks from the ledger's local copy, so a
 trade on a warm market calls no other service.**
 
+0. The market's connection slot, `service/connection_slots.py`, waited for
+   in memory before the first statement and held until the transaction has
+   ended, so only a few trades per market hold a connection while they queue
+   for the book lock (#667). It decides nothing about the trade.
 1. The idempotency lookup, unlocked. A hit is compared against the request
    and returned — no status check, no HTTP call, no lock. "The replay lookup
    is unlocked, and that is safe because it can only ever short-circuit": a
@@ -163,6 +167,7 @@ from service import (
     book_prices,
     books,
     bus,
+    connection_slots,
     grants,
     posting,
     reservations,
@@ -834,7 +839,7 @@ async def publish_order_updates(
         await bus.publish_order(redis_client, event, transaction_id=transaction.id)
 
 
-async def execute(
+async def _execute(
     session: AsyncSession,
     market_id: uuid.UUID,
     *,
@@ -843,32 +848,14 @@ async def execute(
     side: Side,
     quantity: Decimal,
     state_version: int | None,
-    limit: Decimal | None = None,
+    limit: Decimal | None,
     idempotency_key: str,
     access_token: str,
     redis_client: redis.Redis,
     terms_client: httpx.AsyncClient,
     local_copy: LocalCopy,
 ) -> TradeResult:
-    """Trade `quantity` of `outcome_id` in `market_id`, or replay a trade this
-    key already named.
-
-    `local_copy` answers the account check and the gate; `terms_client` is
-    called only on a cold market's first touch. `access_token` is the
-    caller's own, forwarded unchanged to that first touch — this function
-    mints nothing. `idempotency_key` is the client's own string; the stored
-    key is derived from it, `user_id` and `market_id` (`trade_key`), never
-    stored as sent.
-
-    `limit` is a buy's most it will pay or a sell's least it will accept;
-    with one, `state_version` is not compared and `PriceBeyondLimit` is the
-    refusal. With none, `QuoteStale` is, on strict equality (#640).
-
-    Raises `ValueError` on a `quantity` that is not positive, or on a trade
-    naming neither a limit nor a `state_version`, before anything else: the
-    route's validators are not the only caller this function can have, and a
-    negative sell would pass the holding check and be priced as a buy.
-    """
+    """`execute`'s steps 1 to 13, run while it holds the market's slot."""
     if quantity <= 0:
         raise ValueError(f"quantity must be positive, got {quantity}")
     if limit is None and state_version is None:
@@ -1063,3 +1050,63 @@ async def execute(
     await publish_order_updates(redis_client, filled, now=now)
 
     return result
+
+
+async def execute(
+    session: AsyncSession,
+    market_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+    side: Side,
+    quantity: Decimal,
+    state_version: int | None,
+    limit: Decimal | None = None,
+    idempotency_key: str,
+    access_token: str,
+    redis_client: redis.Redis,
+    terms_client: httpx.AsyncClient,
+    local_copy: LocalCopy,
+) -> TradeResult:
+    """Trade `quantity` of `outcome_id` in `market_id`, or replay a trade this
+    key already named.
+
+    Waits first, holding no connection, for one of the market's connection
+    slots, and ends the transaction before giving it back (#667). Call it
+    with a session that has issued no statement yet.
+
+    `local_copy` answers the account check and the gate; `terms_client` is
+    called only on a cold market's first touch. `access_token` is the
+    caller's own, forwarded unchanged to that first touch — this function
+    mints nothing. `idempotency_key` is the client's own string; the stored
+    key is derived from it, `user_id` and `market_id` (`trade_key`), never
+    stored as sent.
+
+    `limit` is a buy's most it will pay or a sell's least it will accept;
+    with one, `state_version` is not compared and `PriceBeyondLimit` is the
+    refusal. With none, `QuoteStale` is, on strict equality (#640).
+
+    Raises `ValueError` on a `quantity` that is not positive, or on a trade
+    naming neither a limit nor a `state_version`, before anything else: the
+    route's validators are not the only caller this function can have, and a
+    negative sell would pass the holding check and be priced as a buy.
+    """
+    # Before the replay lookup, the first statement: from it until the
+    # commit, the trade holds a connection. DECISIONS.md, "Only a few trades
+    # per market hold a ledger connection at once".
+    async with connection_slots.hold_a_slot(session, market_id):
+        return await _execute(
+            session,
+            market_id,
+            user_id=user_id,
+            outcome_id=outcome_id,
+            side=side,
+            quantity=quantity,
+            state_version=state_version,
+            limit=limit,
+            idempotency_key=idempotency_key,
+            access_token=access_token,
+            redis_client=redis_client,
+            terms_client=terms_client,
+            local_copy=local_copy,
+        )

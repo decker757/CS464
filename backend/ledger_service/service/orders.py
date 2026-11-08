@@ -67,6 +67,7 @@ from service import (
     book_prices,
     books,
     bus,
+    connection_slots,
     grants,
     posting,
     reservations,
@@ -472,7 +473,7 @@ def order_view_of(order: Order, *, outcome_position: int, live: bool) -> OrderVi
     )
 
 
-async def place(
+async def _place(
     session: AsyncSession,
     market_id: uuid.UUID,
     *,
@@ -487,14 +488,7 @@ async def place(
     terms_client: httpx.AsyncClient,
     local_copy: LocalCopy,
 ) -> Placement:
-    """Place a limit order in `market_id`, or replay the one this key named.
-
-    Commits. Locks the book row, then the placer's account by one of the two
-    paths in the module docstring. Raises `ValueError` on a limit outside
-    `(0, 1)` or a quantity that is not positive, before anything else, as
-    `trading.execute` does: the route is not the only possible caller, and a
-    limit of 1 has no finite fill. Every refusal raises before the commit.
-    """
+    """`place`'s steps, run while it holds the market's slot."""
     if quantity <= 0:
         raise ValueError(f"quantity must be positive, got {quantity}")
     if not ZERO < limit_price < 1:
@@ -614,6 +608,50 @@ async def place(
         now=now,
         redis_client=redis_client,
     )
+
+
+async def place(
+    session: AsyncSession,
+    market_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+    side: Side,
+    limit_price: Decimal,
+    quantity: Decimal,
+    idempotency_key: str,
+    access_token: str,
+    redis_client: redis.Redis,
+    terms_client: httpx.AsyncClient,
+    local_copy: LocalCopy,
+) -> Placement:
+    """Place a limit order in `market_id`, or replay the one this key named.
+
+    Commits. Waits first, holding no connection, for one of the market's
+    connection slots, as `trading.execute` does (#667), so call it with a
+    session that has issued no statement yet. Locks the book row, then the
+    placer's account by one of the two paths in the module docstring. Raises
+    `ValueError` on a limit outside `(0, 1)` or a quantity that is not
+    positive, before anything else, as `trading.execute` does: the route is
+    not the only possible caller, and a limit of 1 has no finite fill. Every
+    refusal raises before the commit.
+    """
+    # Before the retry lookup, the first statement, as on the trade path.
+    async with connection_slots.hold_a_slot(session, market_id):
+        return await _place(
+            session,
+            market_id,
+            user_id=user_id,
+            outcome_id=outcome_id,
+            side=side,
+            limit_price=limit_price,
+            quantity=quantity,
+            idempotency_key=idempotency_key,
+            access_token=access_token,
+            redis_client=redis_client,
+            terms_client=terms_client,
+            local_copy=local_copy,
+        )
 
 
 async def list_live(session: AsyncSession, user_id: uuid.UUID) -> list[OrderView]:
