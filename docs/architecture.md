@@ -511,15 +511,15 @@ detailed version is [above](#a-trade-end-to-end).
 
 ![Timeline](diagrams/rendered/07-gantt.svg)
 
-297 pull requests merged into `dev` or a stack branch, 13 September to 29 October
-2026: one bar per epic
-from its first to its last merged PR (backend plain, frontend shaded), with the
-releases to `main`. The deploy (#19) shipped on 1 November: #603 to #607 merged
-into `dev` and #613 took them to `main`; the other pull requests merged after 29
-October are not drawn. Staging and the load test (#20) are still to do, with no
-date. #19 is closed and no open issue tracks staging.
+336 pull requests merged into `dev` or a stack branch, 13 September to 7 November
+2026, the chart's cut-off: one bar per epic from its first to its last merged PR
+(backend plain, frontend shaded), and the releases to `main`, the last on
+7 November. Production went live on 1 November with #19, and the trade
+endpoint was load-tested there (#20) on 4 November and again on 7 November,
+after the release that brought price limits, the ledger's local copy and the
+connection pools ([load-test.md](load-test.md)).
 **Drawn from:** `gh pr list --state merged` and each PR's issue's `epic:`
-label. [Source](diagrams/07-gantt.mmd)
+label, and [load-test.md](load-test.md)'s results. [Source](diagrams/07-gantt.mmd)
 
 ### 8. Market lifecycle
 
