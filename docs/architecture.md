@@ -433,7 +433,7 @@ port 22 from anywhere with keys only, because GitHub's runners have no fixed
 address. Each gateway serves the frontend and routes `auth.`, `market.`,
 `ledger.`, `audit.` and `realtime.` to the containers on its own server. Managed
 Postgres and Valkey accept only servers tagged `cs464-app`, over the private
-network. The apps reach Postgres through four PgBouncer pools, which hold 28 of
+network. The apps reach Postgres through four PgBouncer pools, which hold 38 of
 its 47 or so connections however many servers run; auth keeps its login and
 registration limits in the same Valkey that carries prices (ADR 0027). Grafana
 Alloy on each server sends metrics, logs and traces to Grafana Cloud, which
@@ -567,10 +567,11 @@ record.
 ![Horizontal scaling](diagrams/rendered/10-horizontal-scaling.svg)
 
 The two app servers run the same services, so a server can be added or replaced;
-Postgres and Valkey stay at one each. Pool and overflow per service add up to 26
+Postgres and Valkey stay at one each. Pool and overflow per service add up to 19
 clients a server, and every server connects through four PgBouncer pools that
-hold 28 of Postgres's 47 or so connections however many servers run, so a third
-server adds clients waiting on the same 28; the migrate steps connect directly,
+hold 38 of Postgres's 47 or so connections however many servers run, so a third
+server adds clients waiting on the same 38, and the ledger's pool of 24 holds
+every ledger client on up to three (#667); the migrate steps connect directly,
 one after another, in the room left. The close sweeper runs
 on both servers, safely under SKIP LOCKED, and the leaderboard refresher on the
 first only. Each server's ledger refreshes its local copy from the auth and

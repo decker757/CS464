@@ -197,7 +197,8 @@ one-second sleep.
   transaction queued on the book lock keeps one, and the readiness check's
   `SELECT 1` waited behind them. The five-market run never did this. The
   ledger's pool should be sized above its client pools' total (two servers at
-  10 + 5 each), inside the connection budget in `docs/deployment.md`.
+  10 + 5 each), inside the connection budget in `docs/deployment.md`. #667
+  does: 24, with 6 + 2 on each of up to three servers.
 - **Next measurements:** the one, two and three server runs (#668), which
   say how far the five-market figure moves with CPU. What each fix changed
   is under "Capacity and its limits", below.
@@ -315,9 +316,11 @@ why the next step does too.
   fill with waiting trades and every other ledger read waits behind them.
   During the one-market run, app-1's readiness check, a `SELECT 1`, timed out
   and the dashboard showed `ledger on app-1: database` DOWN while trades
-  still committed. The five-market run never did. #667's fix is to make the
-  two agree, for example a pool of 24 with 8 + 4 per server, inside the
-  budget in `docs/deployment.md`. It is not done yet.
+  still committed. The five-market run never did. #667 makes the two agree:
+  a pool of 24, and 6 + 2 per server, so every ledger client on up to three
+  servers has a server connection (`docs/deployment.md`, "Connection
+  budget"). It goes live before #668's runs, which are the first measured
+  with it.
 
 ### Reads that grow without bound
 
@@ -368,7 +371,8 @@ was CPU starvation.
 ### What comes next, in order
 
 Two things first, which change no design: #667's pool sizes (one number in
-Terraform and two in the production compose file) and #668's runs.
+Terraform and two in the production compose file, live before the runs) and
+#668's runs.
 
 1. **A single-statement write path.** Everything a trade writes, as one
    data-modifying statement after the account locks, so the locked section
