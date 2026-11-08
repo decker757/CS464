@@ -8,9 +8,10 @@
 #   2. Migrate the database once, from the first server (ADR 0020).
 #   3. Roll the servers one at a time with roll.sh. If one fails, roll.sh has
 #      already put it back on its old release, and every server rolled before
-#      it is sent back too, so the servers never run different releases. A
+#      it is sent back too, so the servers end on the release they had, with
+#      the exceptions docs/deployment.md lists under "When a deploy fails". A
 #      server is sent back with its old release's own roll.sh, from its own
-#      directory, so the old release runs exactly as it was. The one exception:
+#      directory, so the old release runs exactly as it was. One more case:
 #      a server that could not go back is serving nothing, so the others are
 #      left serving rather than drained one by one to be sent back.
 #   4. Check the public site answers on every name.

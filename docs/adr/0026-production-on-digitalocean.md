@@ -136,7 +136,7 @@ with room left for the migrate steps.
   knowing every host key in advance, and it is small next to that process
   already being on the server.
 
-> **Amended 2026-11-08. A scope decision by the team, recorded by Ernest.**
+> **Amended 2026-11-08. Decided by Ernest.**
 > Staging is dropped from the project's scope. No issue tracks it, #19 was
 > closed on 2026-11-01, and the course ends before a second environment
 > would pay off. So the two staging bullets under Consequences no longer

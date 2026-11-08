@@ -156,7 +156,7 @@ sequenceDiagram
         end
         L->>DB: open and fund the book — once per market<br/>mint the starting grant — once per trader, ever
         L->>DB: SELECT FOR UPDATE on market_books, the wider lock first
-        L->>DB: one context statement after the lock: the key, the latch, close_time against<br/>clock_timestamp(), q, the holding; b and state_version from the locked book row (#641)
+        L->>DB: one context statement after the lock: the key, the latch, close_time against<br/>clock_timestamp(), q, the holding, b and state_version from the locked book row (#641)
         L->>L: trade_cost_of(q, b) in core/pricing.py
         L->>DB: write q, the position, the transaction and its entries — pending
         Note over L,DB: COMMIT. posting.post_all is the one statement that commits,<br/>so everything above it is pending until here and rolls back together.<br/>ADR 0009, ADR 0015
