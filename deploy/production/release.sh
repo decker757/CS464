@@ -20,9 +20,11 @@
 # A migration stays applied when its release is sent back, so every
 # migration must also work with the release before it. docs/deployment.md.
 #
-# Reads, from the GitHub "production" environment:
-#   APP_HOSTS PRODUCTION_DOMAIN IMAGE_REGISTRY REGISTRY_USER REGISTRY_TOKEN
-#   DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DATABASE_ADMIN_URL REDIS_URL
+# Reads, from its environment, which deploy.yml sets: IMAGE_REGISTRY, worked
+# out from the repository owner; REGISTRY_USER and REGISTRY_TOKEN, the run's
+# own actor and token; PRODUCTION_DOMAIN, a repository variable; and from the
+# GitHub "production" environment:
+#   APP_HOSTS DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DATABASE_ADMIN_URL REDIS_URL
 #   JWT_SECRET LEDGER_SERVICE_KEY, and for each of AUTH MARKET LEDGER AUDIT:
 #   <NAME>_DATABASE_URL (through the pooler), <NAME>_DIRECT_DATABASE_URL (to
 #   Postgres itself, for the migrate steps) and <NAME>_DB_PASSWORD
