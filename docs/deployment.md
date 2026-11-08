@@ -170,6 +170,9 @@ Merge to `main`. `deploy.yml` then:
 5. Checks every public name answers.
 
 Two deploys never overlap. A push during a deploy waits for it to finish.
+Only the newest waiting push is kept: GitHub cancels a waiting run when
+another arrives. Nothing is lost, because the newest run deploys the newest
+commit, which holds the others.
 
 ## When a deploy fails
 
@@ -182,6 +185,12 @@ The run goes red and says where. What state it left behind:
 | rolling a server | the old release, every one of them: the failed server went back by itself, and the ones before it were sent back |
 | rolling a server, which "could not go back" | the failed server serves nothing and stays drained; the ones before it stay on the new release, serving. Fix forward, or `roll.sh` the failed one by hand once you know why |
 | the public check | the new release, every one of them, all healthy behind the load balancer; look at DNS, the certificate and the load balancer |
+
+"Every one of them" has three exceptions, and the run's log names the server
+in each. A server on its first release has none to go back to, so it stays
+on the new one. A server that cannot be asked which release it is on is
+left as it is. And a server that fails to be sent back is only logged.
+`deploy/production/release.sh`, step 3.
 
 **A migration is not undone when its release is sent back.** So write every
 migration to work with the release before it too: add a column, and drop the
@@ -717,10 +726,7 @@ checks both.
 
 ## Not done yet
 
-- **Staging.** #19 also asks for a staging environment on its own database.
-  `infra/terraform` would run it as a second workspace. It is not built.
-  It needs a registrable domain of its own, not `staging.<domain>`: the
-  login cookie reaches every subdomain of the production domain (ADR 0026).
+- **Staging** is dropped from scope (ADR 0026, amended 2026-11-08).
 - **Re-measuring the series budget.** Around 2026-11-11, a week after
   monitoring went live with #632, read the real series count off Grafana
   Cloud's *Usage* page and update the estimate above and the README.

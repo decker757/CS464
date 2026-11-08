@@ -65,12 +65,11 @@ also the socket's origin allowlist, and CORS does not apply to a WebSocket
 handshake (ADR 0010). `COMPOSE_PROJECT_NAME` is what makes the suite's admin
 promotions reach **this** project's database rather than a dev stack's.
 
-**The stack has to be started with `STARTING_CREDITS=1000`.** Seven tests
-assert the starting grant as a figure on screen — "1,000 credits" — and that
-is `.env.example`'s value, which the e2e workflow's throwaway `.env` keeps. A
-`.env` that sets anything else fails those seven against this stack and
-against a dev one equally, so it is not a replication problem; it is worth
-knowing before reading the failures as one.
+**Any `STARTING_CREDITS` will do.** The specs read the starting grant from
+the ledger (`startingGrant` in `frontend/e2e/support/backend.ts`) rather than
+assuming `.env.example`'s 1000, and the e2e workflow runs them at 1234.5678 on
+purpose (#373). The one floor is the most any one trader in the suite spends,
+`LARGEST_SPEND` in the same file; below it, global setup stops the run.
 
 ## The migrate step, which is the interesting part
 
