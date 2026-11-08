@@ -46,15 +46,19 @@ resource "digitalocean_database_firewall" "cache" {
 
 # #640. One transaction-mode pool (PgBouncer) per service role, so every app
 # server shares a fixed number of server connections, however many servers
-# run. The 2 GB plan has about 47; these take 28, and the rest stay direct,
-# for the three migrate steps, ensure-database.sh and an operator. Each pool
+# run. The 2 GB plan has about 47; these take 38, and the rest stay direct,
+# for the three migrate steps, ensure-database.sh and an operator. The
+# ledger's is at least every ledger client at full overflow on three servers
+# (6 + 2 each, deploy/production/compose.yml), so a trade queued on one
+# market's book lock never makes the pooler queue the ledger's other reads
+# (#667). Each pool
 # logs in as its service's own role, which ensure-database.sh creates, so the
 # role must exist before its pool can. docs/deployment.md, "Connection budget".
 locals {
   connection_pool_sizes = {
     auth   = 6
     market = 6
-    ledger = 14
+    ledger = 24
     audit  = 2
   }
 }
