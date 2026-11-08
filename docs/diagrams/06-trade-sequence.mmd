@@ -17,10 +17,14 @@
 %% Filled arrowheads: synchronous calls. Open arrowheads (-)): async pub/sub.
 %% "stale" is a copy older than local_copy_max_age_seconds, five seconds:
 %% 503 auth_unavailable or market_terms_unavailable. Closed is 409 market_closed.
-%% Left out to keep one path: a body with no limit is decided by state_version
-%% (409 quote_stale), a book's first trade opens and funds it and a trader's first
-%% read mints the grant, both before the lock, and the latch and close_time
-%% refusals that the context statement decides (409 market_closed).
+%% Left out to keep one path: a market missing from the copy (published under a
+%% second ago) makes the trade fetch /internal/markets/published itself, or answer
+%% 404 (local_copy.ensure_trading); a key found again under the lock is answered
+%% as a replay (trading.py step 6); a body with no limit is decided by
+%% state_version (409 quote_stale); a book's first touch opens and funds it and a
+%% trader's first read mints the grant, both before the lock; and the latch and
+%% close_time refusals that the context statement decides (409 market_closed).
+%% The two in-memory steps are notes, so they take no step number.
 %%{init: {"sequence": {"width": 100, "actorMargin": 35}, "themeCSS": ".actor-line { stroke: #C3CBD5 !important; stroke-dasharray: 3 3; }"}}%%
 sequenceDiagram
     autonumber
@@ -35,16 +39,17 @@ sequenceDiagram
     loop each second, every ledger
         L->>A: GET /internal/<br/>users/suspended
         L->>M: GET /internal/<br/>markets/published
+        Note right of L: service<br/>key
     end
     B->>L: POST /ledger/markets/{id}/trades<br/>max_cost or min_proceeds
     L->>DB: read key,<br/>no lock
     alt key already committed: a replay
         L-->>B: 201, the stored result
     else first time
-        L->>L: the copy: suspended<br/>403, closed 409,<br/>stale 503
+        Note right of L: the copy:<br/>suspended<br/>403, closed<br/>409, stale<br/>503
         L->>DB: lock book,<br/>FOR UPDATE
         L->>DB: one statement:<br/>key, latch,<br/>close_time,<br/>q, position
-        L->>L: LMSR price<br/>vs limit
+        Note right of L: LMSR price<br/>vs the limit
         alt beyond the limit
             L-->>B: 409 price_beyond_limit, nothing written
         else within it
