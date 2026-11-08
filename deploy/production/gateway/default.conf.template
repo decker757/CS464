@@ -151,8 +151,9 @@ server {
         set $upstream http://realtime:8000;
         proxy_pass $upstream;
         include /etc/nginx/conf.d/proxy-headers.inc;
-        # A websocket: pass the upgrade on, and let a quiet socket stay open
-        # for an hour instead of nginx's default minute.
+        # A websocket: pass the upgrade on, and give a quiet socket an hour
+        # instead of nginx's default minute. The load balancer closes it at
+        # 600 s first (infra/terraform/load_balancer.tf).
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;

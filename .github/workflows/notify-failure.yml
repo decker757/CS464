@@ -1,4 +1,5 @@
-# Reusable failure notifier, called by ci-backend.yml and ci-frontend.yml.
+# Reusable failure notifier, called by ci-backend.yml, ci-frontend.yml,
+# ci-deploy.yml, e2e.yml and deploy.yml.
 #
 # Lives in one file so the shell-injection guards and the topic handling are
 # written once. Callers pass `area` so the message says what broke.
