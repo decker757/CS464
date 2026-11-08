@@ -141,6 +141,19 @@ trip gained or lost stays, a few credits at most.
 "A second" is over the trading time alone. k6's own `/s` figure divides by a
 time that includes setup.
 
+Means for the two 7 November runs, which ADR 0031's arithmetic uses. They are
+from k6's saved summaries, `loadtest/results/20261107T151930Z.txt` (one
+market) and `loadtest/results/20261107T151101Z.txt` (five markets), which git
+ignores and which are kept on the machine that ran them:
+
+| 2026-11-07 run | Trade avg, med | Snapshot avg, med | Iterations, avg |
+|---|---|---|---|
+| 1 market | 2.85 s, 2.69 s | 1.68 s, 1.6 s | 1,784, 8.49 s |
+| 5 markets | 1.42 s, 1.28 s | 897 ms, 799 ms | 3,197, 4.75 s |
+
+An iteration is one trader's loop: a snapshot, a buy, a sell and a
+one-second sleep.
+
 **What the numbers say.**
 - **Latency holds.** With 50 traders the p95 is a quarter of the alert's
   line, and no trade failed with an error.
@@ -174,10 +187,10 @@ time that includes setup.
   five, so the servers' CPU was saturated too, and part of the trade's tail
   is that queue, not the lock. ADR 0031's trigger for a per-market engine is
   a one-market lock wait above 200 ms at the p95, or more than about 20
-  trades a second on one market. The lock-wait criterion fired, on a derived
-  figure: the dashboard's lock-wait panel was not written down for this run,
-  and 200 ms is only three trades queued ahead at 84 ms. ADR 0031, "When to
-  take it", has the arithmetic.
+  trades a second on one market. The lock-wait criterion is very likely met,
+  but not yet measured: the dashboard's lock-wait panel was not written down
+  for this run, and #668 records it. ADR 0031, "When to take it", has the
+  arithmetic.
 - **Behind the pooler, the lock queue holds the ledger's connections.** During
   the one-market run, `ledger on app-1: database` showed DOWN on the dashboard:
   the ledger's pool has 14 server connections for both servers, every
@@ -365,13 +378,16 @@ Terraform and two in the production compose file) and #668's runs.
    it"). If the hold shrank in proportion, it would go from 84 ms to about
    32 ms, about 31 trades a second on one market. That is an estimate, and
    the real figure will be worse, because the pricing and the Python around
-   the statements stay. It is not expected to bring the one-market run under
-   200 ms of lock wait: the 50 traders still ask for more than 31 a second
-   unless each loop's three requests take over 2.2 s, and seven trades
-   queued at 32 ms each is already 224 ms. That is derived, not measured.
+   the statements stay. It may not bring the one-market run under 200 ms
+   of lock wait, and has to be measured: at 31 a second each trader's loop
+   is 3.2 s, so the snapshot and the two trades share 2.2 s. At today's
+   1.68 s snapshot the trades get about 0.5 s of that, and seven trades
+   queued at 32 ms each is 224 ms, near the line. That is derived, not
+   measured.
 2. **The per-market engine,** [ADR 0031](adr/0031-a-per-market-trading-engine.md).
    Each market's book in memory in one ledger process, behind a fenced lease
    on the book row, with trades committed in batches and the overdraft check
    still in Postgres. Its trigger, a one-market lock wait above 200 ms at the
-   p95, fired on 7 November, on a derived figure. It stays proposed until
-   step 1 is built and measured.
+   p95, was very likely met on 7 November, but is not yet measured; #668
+   records the book-lock wait panel. It stays proposed until step 1 is built
+   and measured.
