@@ -1,10 +1,10 @@
 # ADR 0031: A per-market trading engine: one owner per book, a fenced lease, group commits
 
 - **Status:** Proposed, 2026-11-05. Not accepted and not built. Its trigger
-  (under "When to take it") was met on 2026-11-07, on a derived figure.
-  It stays Proposed until
-  the single-statement write path below has been built and measured, and the
-  engine's work is planned.
+  (under "When to take it") was very likely met on 2026-11-07, but it has
+  not been measured: #668 records the book-lock wait panel. It stays
+  Proposed until the single-statement write path below has been built and
+  measured, and the engine's work is planned.
 - **Date:** 2026-11-05. The 2026-11-07 measurements and the trigger's
   reading added 2026-11-08. Edited in place the same day after its review:
   the fence also checks `state_version`, the rollout is expand then
@@ -66,7 +66,8 @@ record is about. It has two parts.
   in flight, and none while it sleeps or reads. By Little's law about **34
   trades were in flight on average**: 3,606 attempts in 300 s (3,568
   committed and 38 refused at their limit) is 12 a second, times the
-  measured mean trade latency of 2.85 s (the run's k6 summary). 50 × 84 ms =
+  measured mean trade latency of 2.85 s (`docs/load-test.md`, the means
+  under "Results"). 50 × 84 ms =
   4.2 s is what the last trader would wait if all 50 queued at once, so it is
   an upper bound, not the p95. The measured p95 was 4.72 s, and it holds
   more than the lock queue: the snapshot read, which takes no lock, had a
@@ -253,12 +254,17 @@ does,** over an internal route on the owner's `lease_owner` address. The
 public never reaches it: the gateway answers 404 for `/internal/` (ADR 0030).
 That protects the route from the internet, not from the private network: a
 forward goes from replica to replica and never passes the gateway. So the
-forward carries the trader's own bearer token, and the owner verifies it
-again exactly as the public route does. The debited account still comes from
-the token's `sub`, and the body is still `TradeIn`. The service key alone is
-not enough: the forwarder would then name the account, and a write route
-that takes the account from the request is what root CLAUDE.md forbids ("The
-ledger has four write routes, and none takes money"). A forward that lands
+forward carries the access token the forwarder received, from the cookie a
+browser sends (ADR 0002) or from the `Authorization` header, and the owner
+verifies it again exactly as the public route does. The account still comes
+from the token's `sub`, and the body is forwarded unchanged. After the
+contract step that is every request the actor sequences: a trade
+(`TradeIn`), an order placement (`OrderIn`), a cancel (an empty body), and
+an administrator's cancel (a `reason`, with an administrator's token, which
+the owner checks for the role again). The service key alone is not enough:
+the forwarder would then name the account, and a write route that takes the
+account from the request is what root CLAUDE.md forbids ("The ledger has six
+write routes, and none takes money"). A forward that lands
 on a process that has since lost the lease is refused 503 rather than
 forwarded again, so a request makes at most one hop.
 
@@ -321,8 +327,10 @@ needs. The refusals it can raise, and what each one means:
   with no `movement_key`. A placement can cause one, because its new buy
   order counts at its whole budget (DECISIONS.md, the notes to D-NEW "A fill
   the running check refuses inside a cascade is `500 cascade_fill_refused`").
-  If the account named placed an order in the batch, that placement is
-  dropped and answered `409 insufficient_funds`, as today.
+  If the account named placed an order in the batch, its last placement in
+  the batch is dropped and answered `409 insufficient_funds`, as today, and
+  the rest is re-sequenced. An account can place more than one order in a
+  batch, so a second refusal drops the one before it, and so on.
 - **Anything else is a bug.** A start-of-batch refusal of an account that
   placed nothing, or a refusal at a fill's movement, cannot happen today by
   construction, by the same D-NEW: a trade drops no reservation, and every
@@ -460,13 +468,14 @@ It should be built and measured first, because it is cheaper than this
 record, and a leaner `post_all` is what the engine's batch writer would call
 anyway.
 
-It is not expected to clear the trigger on #20's one-market shape. At 31
-trades a second, each of the 50 traders gets 0.62, one loop every 3.2 s.
-The loop's sleep is 1 s of that, so unless the snapshot and the two trades
-take more than 2.2 s between them, the traders ask for more than the lock
-can serve. Either way the requests wait. Seven trades queued ahead at 32 ms
-each is already 224 ms, above the 200 ms line. All of this is derived; none
-of it is measured.
+It may not clear the trigger on #20's one-market shape; it has to be
+measured. At 31 trades a second, each of the 50 traders gets 0.62, one loop
+every 3.2 s. The loop's sleep is 1 s of that, so the snapshot and the two
+trades share 2.2 s. If the snapshot stays at today's mean of 1.68 s, the two
+trades get only about 0.5 s between them, and the lock wait could sit near
+the line: seven trades queued ahead at 32 ms each is 224 ms, just above it.
+A faster snapshot leaves more of the 2.2 s to the lock queue. All of this is
+derived; none of it is measured.
 
 ## When to take it
 
@@ -482,21 +491,23 @@ When either of these is measured under #20's script, after #641 has landed:
 Below both, more vCPU and the single-statement write path are cheaper answers
 to the same load.
 
-**The second has fired, on a derived figure.** #641 landed on 2026-11-07.
-The panel was not written down for the one-market run after it, so the lock
-wait is not measured. The run before the fixes measured 4.5 s on it.
+**The second is very likely met, but not yet measured.** #641 landed on
+2026-11-07. The panel was not written down for the one-market run after it,
+so the lock wait is not measured, and by the rule above the trigger has not
+fired. #668 records the book-lock wait panel. The run before the fixes
+measured 4.5 s on it.
 
-The trigger needs only a weak claim. A p95 lock wait above 200 ms is three
-trades queued ahead at 84 ms each, 252 ms. On that run about 34 trades were
-in flight on average, all on one book (Little's law, under Context). The
-mean trade took 2.85 s and the mean snapshot read, which takes no lock,
-1.68 s, both measured, on the same servers. So the average trade spent about
-1.2 s more than a lock-free read. Its own extra work cannot explain that: 600
-vCPU-seconds over 3,568 trades is at most 168 ms of app-server CPU per
-trade, even if every cycle on both servers went to trades. For the p95 lock
-wait to be under 200 ms, fewer than three of those 34 trades would have to
-be waiting for the lock at the p95, and most of that 1.2 s would have to be
-something else.
+What the measured figures say, by Little's law on the lock. A p95 lock wait
+under 200 ms would mean a mean under 200 ms too, unless the slowest 5% of
+waits were extreme. At 12 trades a second, a mean wait under 200 ms is
+fewer than 2.4 trades waiting on average, plus about one holding the lock
+(12 a second × 84 ms). On that run about 34 trades were in flight on
+average, all on one book (under Context). So about 30 of them would have to
+be somewhere other than the lock, each for about 2.5 s (30 ÷ 12 a second).
+The snapshot read, which takes no lock, took 1.68 s on average on the same
+servers. A trade would then spend about 1.5 times a whole snapshot read
+outside the lock. That is possible, since a trade does more work than a
+snapshot, but unlikely. Means from `docs/load-test.md`, "Results".
 
 The stronger claim, that almost all of the 4.72 s p95 is the lock queue, is
 not made. The lock-free snapshot's own p95 was 2.81 s on that run, so much
@@ -546,7 +557,8 @@ shipped in the expand release with the epoch bumps.
   before its epoch bump runs beside it.
 
 Unchanged in what they decide, and touched in how: ADR 0019 and ADR 0025,
-whose book-lock UPDATE also bumps the epoch; ADR 0030, whose deciding close
+which gain one statement under the book lock, an UPDATE that bumps the
+epoch, since neither writes the book row today; ADR 0030, whose deciding close
 check moves into the batch's fenced statement, still under the book lock and
 on `clock_timestamp()`; and ADR 0029, whose limit is checked again for a
 re-sequenced trade, and whose expand-then-contract rollout the engine
