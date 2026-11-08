@@ -1,12 +1,26 @@
 %% 06 — A trade, end to end
-%% Drawn from: ADR 0009, ADR 0010, ADR 0015, ADR 0017, ADR 0022, D-049,
+%% Drawn from: ADR 0009, ADR 0010, ADR 0015, ADR 0017 and ADR 0022 (both as
+%%   amended by ADR 0030), ADR 0024, ADR 0029, ADR 0030, D-049,
 %%   DECISIONS.md "One price frame per commit, at the final state_version",
-%%   backend/ledger_service/service/trading.py (execute),
-%%   backend/ledger_service/service/account_status.py, market_status.py,
-%%   backend/ledger_service/core/errors.py (AccountSuspended, MarketClosed),
-%%   backend/ledger_service/controller/routes.py (POST /markets/{id}/trades),
+%%   backend/ledger_service/service/trading.py (execute, read_trade_context),
+%%   backend/ledger_service/service/local_copy.py (refuse_if_suspended,
+%%   ensure_trading, fetch_suspended, fetch_published_markets),
+%%   backend/ledger_service/main.py (_start_copy_refreshers),
+%%   backend/ledger_service/core/config.py (local_copy_refresh_seconds 1.0,
+%%   local_copy_max_age_seconds 5.0),
+%%   backend/ledger_service/core/pricing.py (trade_cost_of, refuse_if_beyond_limit),
+%%   backend/ledger_service/core/errors.py (AccountSuspended, MarketClosed,
+%%   AuthUnavailable, MarketTermsUnavailable, PriceBeyondLimit),
+%%   backend/ledger_service/model/schemas.py (TradeIn: max_cost, min_proceeds),
+%%   backend/ledger_service/controller/routes.py (POST /markets/{id}/trades, 201),
 %%   backend/ledger_service/service/bus.py, backend/realtime_service/service/bus.py
 %% Filled arrowheads: synchronous calls. Open arrowheads (-)): async pub/sub.
+%% "stale" is a copy older than local_copy_max_age_seconds, five seconds:
+%% 503 auth_unavailable or market_terms_unavailable. Closed is 409 market_closed.
+%% Left out to keep one path: a body with no limit is decided by state_version
+%% (409 quote_stale), a book's first trade opens and funds it and a trader's first
+%% read mints the grant, both before the lock, and the latch and close_time
+%% refusals that the context statement decides (409 market_closed).
 %%{init: {"sequence": {"width": 100, "actorMargin": 35}, "themeCSS": ".actor-line { stroke: #C3CBD5 !important; stroke-dasharray: 3 3; }"}}%%
 sequenceDiagram
     autonumber
@@ -18,18 +32,26 @@ sequenceDiagram
     participant DB as Postgres
     participant R as Redis
 
-    B->>L: POST /ledger/markets/{id}/trades
+    loop each second, every ledger
+        L->>A: GET /internal/<br/>users/suspended
+        L->>M: GET /internal/<br/>markets/published
+    end
+    B->>L: POST /ledger/markets/{id}/trades<br/>max_cost or min_proceeds
     L->>DB: read key,<br/>no lock
     alt key already committed: a replay
         L-->>B: 201, the stored result
     else first time
-        L->>A: GET /auth/me
-        A-->>L: 200 (suspended: ledger 403)
-        L->>M: GET /public/<br/>markets/{id}
-        M-->>L: status (not open: ledger 409)
-        L->>DB: lock book, re-check key, LMSR price, fill orders, COMMIT
-        L-)R: PUBLISH market.price<br/>(failure logged)
-        L-->>B: 201, the trade result
-        R-)RT: price frame
-        RT-)B: price frame<br/>on /ws/prices
+        L->>L: the copy: suspended<br/>403, closed 409,<br/>stale 503
+        L->>DB: lock book,<br/>FOR UPDATE
+        L->>DB: one statement:<br/>key, latch,<br/>close_time,<br/>q, position
+        L->>L: LMSR price<br/>vs limit
+        alt beyond the limit
+            L-->>B: 409 price_beyond_limit, nothing written
+        else within it
+            L->>DB: write q,<br/>position, entries,<br/>fills, COMMIT
+            L-)R: PUBLISH market.price<br/>(failure logged)
+            L-->>B: 201, the trade result
+            R-)RT: price frame
+            RT-)B: price frame<br/>on /ws/prices
+        end
     end

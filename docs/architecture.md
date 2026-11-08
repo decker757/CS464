@@ -489,13 +489,18 @@ append-only audit log.
 
 ![Trade sequence](diagrams/rendered/06-trade-sequence.svg)
 
-A replayed idempotency key is answered at once; otherwise the ledger confirms
-the trader with auth and the market's status with market, prices and commits
-under the `market_books` row lock, and publishes the new price through the bus,
-Redis locally and Valkey in production, to subscribed browsers. The detailed version is
-[above](#a-trade-end-to-end).
-**Drawn from:** ADR 0009, 0010, 0015, 0017, 0022, D-049;
-`backend/ledger_service/service/trading.py`.
+A replayed idempotency key is answered at once. Otherwise the ledger checks
+the trader and the market against its local copy, in memory, with no call to
+auth or market; a copy older than five seconds refuses with 503. It then
+locks the `market_books` row, reads everything the trade decides from in one
+statement after the lock, and prices the trade. A price beyond the request's
+`max_cost` or `min_proceeds` is `409 price_beyond_limit`, with nothing
+written; otherwise it writes and commits, and publishes the new price through
+the bus, Redis locally and Valkey in production, to subscribed browsers. The
+detailed version is [above](#a-trade-end-to-end).
+**Drawn from:** ADR 0009, 0010, 0015, 0017 and 0022 (as amended by 0030),
+0024, 0029, 0030, D-049; `backend/ledger_service/service/trading.py`,
+`service/local_copy.py`, `core/pricing.py`.
 [Source](diagrams/06-trade-sequence.mmd)
 
 ### 7. Delivery timeline
