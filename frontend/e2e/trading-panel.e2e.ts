@@ -259,6 +259,8 @@ test('a buy refused because its price moved says so even if the trader picked an
 
   const refused = page.getByRole('alert').filter({ hasText: /^Your buy of 10 Yes was not made: the price moved before it went through\./ })
   await expect(refused).toBeVisible()
+  // With a limit sent (#644), the ledger says how far past it the price went.
+  await expect(refused).toHaveText(/ It now comes to \d+\.\d{4} credits, past your limit of \d+\.\d{4}\.$/)
   await expect(outcomeChoice(page, 'No')).toBeChecked()
   // Only the rival's trade is on the book.
   expect((await snapshot(trader, market.id)).state_version).toBe(1)
