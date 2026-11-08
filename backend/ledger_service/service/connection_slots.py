@@ -3,12 +3,15 @@
 DECISIONS.md, "Only a few trades per market hold a ledger connection at
 once". One `core.connection_slots.ConnectionSlots` per process, sized from the
 settings the engine is sized from, so whatever the trades hold, at least
-`database_connections_for_reads` of the pool stay free for reads and `/ready`.
+`database_connections_for_reads` of the pool are kept from trades and
+placements. Everything that takes no slot shares those: reads, `/ready`,
+cancels, settlement, void and the leaderboard refresher.
 
 The trade path and the placement take a slot before their first statement and
-give it back after their transaction has ended: `AsyncSession` begins
-lazily, so the first statement checks the connection out, and it stays out
-until the commit or the rollback.
+give it back once their transaction has ended, before they publish:
+`AsyncSession` begins lazily, so the first statement checks the connection
+out, and it stays out until the commit or the rollback. A stalled Redis then
+holds no slot (ADR 0010).
 """
 
 from __future__ import annotations
