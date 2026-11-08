@@ -92,7 +92,7 @@ DigitalOcean's list prices when `docs/deployment.md` was written. That page says
 | Port 80 redirects to HTTPS | `infra/terraform/load_balancer.tf:40-47` |
 | Services reach Postgres with TLS required (`ssl=require`; `sslmode=require` for the admin URL) | `infra/terraform/outputs.tf:13,20,57` |
 | The login cookie is `Secure` | `deploy/production/compose.yml:102` |
-| What only a real deploy proves: the DigitalOcean resources, the certificate, TLS to the managed databases and DigitalOcean's own pools | `docs/deployment.md:722-724` |
+| What only a real deploy proves: the DigitalOcean resources, the certificate, TLS to the managed databases and DigitalOcean's own pools | `docs/deployment.md:790-791` |
 | Checked live, 2026-11-02: issuer Let's Encrypt, six names, expires 2027-01-30; `http://predictsmu.xyz/` answers 307 to `https://` | `openssl s_client`, `curl` |
 
 ## Domain layout
