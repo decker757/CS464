@@ -1,0 +1,105 @@
+%% 13 — The core tables, and the ids that cross schemas
+%% Drawn from: ADR 0003, ADR 0005, ADR 0009,
+%%   backend/auth_service/model/entities.py, backend/market_service/model/entities.py,
+%%   backend/ledger_service/model/entities.py, backend/ledger_service/service/posting.py,
+%%   sql/02-schemas.sql, and each service's migrations/versions/*.py
+%% -
+%% Legend
+%%   Nine of the sixteen tables, and only the columns that carry the idea;
+%%   04-erd-overview has every table, the per-schema ERDs every column.
+%%   Entities are shown as schema.table. Mermaid needs one bare name per
+%%   entity, so the ids are schema_table: market_market_outcomes and
+%%   ledger_market_outcomes are two different tables.
+%%   solid line   a real foreign key. Every one stays inside one schema.
+%%                Cardinality is what the constraints enforce: o{ even where
+%%                the code always writes children (two or more legs per
+%%                transaction, outcomes per book).
+%%   dotted line  an id stored with NO foreign key, labelled "no FK": each
+%%                service connects as its own role and holds no grant on
+%%                another's schema (sql/02-schemas.sql, ADR 0003). Its
+%%                cardinality is what the writing code guarantees.
+%%   "no FK" or "→ auth.users" on a column is the same kind of id, written
+%%                inline: owner_id names a user, a market or the platform by kind.
+%%   SUM = 0      a transaction's legs sum to zero, refused otherwise by
+%%                posting.py; not a database constraint.
+%%   SUM = balance  a balance is SUM(amount) over an account's entries and
+%%                is never stored (ADR 0009). entries is append-only by trigger.
+%%   copied once  market_books snapshots b from market.markets on first
+%%                touch; the terms are frozen once published (ADR 0005).
+%%   numeric is numeric(18,4) throughout: money and shares share one scale.
+%% -
+%% Layout: quoted labels use non-breaking spaces (U+00A0) so they do not wrap,
+%%   and U+2011 in "append‑only" for the same reason. The init line keeps
+%%   ELK in declaration order, so the tables fall in three columns, and
+%%   enlarges text for print, as in 04-erd-overview.
+%%{init: {"elk": {"layeringStrategy": "DF_MODEL_ORDER"}, "themeVariables": {"fontSize": "40px"}, "themeCSS": ".edgeLabel .label, .edgeLabel p, .edgeLabel span { font-size: 40px !important; }"}}%%
+erDiagram
+    direction LR
+
+    auth_users["auth.users"] {
+        uuid id PK
+        varchar(32) username
+        varchar(16) role
+    }
+
+    market_markets["market.markets"] {
+        uuid id PK
+        uuid creator_id
+        varchar(24) status
+        numeric liquidity_b
+    }
+    market_market_outcomes["market.market_outcomes"] {
+        uuid id PK
+        uuid market_id FK
+        varchar(120) label
+    }
+
+    ledger_accounts["ledger.accounts"] {
+        uuid id PK
+        varchar(24) kind
+        uuid owner_id "no FK"
+    }
+    ledger_transactions["ledger.transactions"] {
+        uuid id PK
+        varchar(32) kind
+        varchar(255) idempotency_key UK
+    }
+    ledger_entries["ledger.entries (append‑only)"] {
+        uuid id PK
+        uuid transaction_id FK
+        uuid account_id FK
+        numeric amount "SUM = balance"
+    }
+
+    ledger_market_books["ledger.market_books"] {
+        uuid market_id PK
+        numeric liquidity_b "copied once"
+        uuid pool_account_id FK
+        bigint state_version
+    }
+    ledger_market_outcomes["ledger.market_outcomes"] {
+        uuid market_id PK, FK
+        uuid outcome_id PK
+        numeric q "shares"
+    }
+    ledger_positions["ledger.positions"] {
+        uuid user_id PK "→ auth.users"
+        uuid market_id PK, FK
+        uuid outcome_id PK, FK
+        numeric quantity
+        numeric cost_basis
+    }
+
+    %% Real foreign keys, all inside one schema. Some are written child
+    %% first, with the ends swapped to match, so the layout is three columns.
+    market_markets ||--o{ market_market_outcomes : ""
+    ledger_transactions ||--o{ ledger_entries : "SUM = 0"
+    ledger_accounts ||--o{ ledger_entries : ""
+    ledger_market_books }o--|| ledger_accounts : ""
+    ledger_market_books ||--o{ ledger_market_outcomes : ""
+    ledger_market_outcomes ||--o{ ledger_positions : ""
+
+    %% Ids with no foreign key
+    auth_users ||..o{ market_markets : "no FK"
+    ledger_market_books |o..|| market_markets : "no FK"
+    ledger_market_outcomes |o..|| market_market_outcomes : "no FK"
