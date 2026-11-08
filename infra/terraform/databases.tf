@@ -24,8 +24,11 @@ resource "digitalocean_database_firewall" "postgres" {
   }
 }
 
-# The bus the ledger publishes prices to and the realtime service subscribes
-# on (ADR 0010). It holds nothing worth keeping, so one node is enough.
+# Two jobs: the bus the ledger publishes prices to and the realtime service
+# subscribes on (ADR 0010), and auth's login and registration counters (ADR
+# 0027). It holds nothing worth keeping: a lost price is recovered from the
+# ledger's snapshot, and lost counters only weaken the limiter for a while,
+# which fails open. So one node is enough.
 resource "digitalocean_database_cluster" "cache" {
   name                 = "cs464-valkey"
   engine               = "valkey"
