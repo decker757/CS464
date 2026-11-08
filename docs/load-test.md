@@ -193,7 +193,7 @@ one-second sleep.
   arithmetic.
 - **Behind the pooler, the lock queue holds the ledger's connections.** During
   the one-market run, `ledger on app-1: database` showed DOWN on the dashboard:
-  the ledger's pool has 14 server connections for both servers, every
+  the ledger's pool then had 14 server connections for both servers, every
   transaction queued on the book lock keeps one, and the readiness check's
   `SELECT 1` waited behind them. The five-market run never did this. The
   ledger's pool should be sized above its client pools' total (two servers at

@@ -740,7 +740,9 @@ Grafana Cloud's free tier allows 10,000 active series, 50 GB of logs and
 (the series budget above). Alloy itself used 51–169 MB of memory per server,
 minutes after its first deploy. Images on GHCR are free for a public
 repository. To stop paying, run `infra/tf destroy`. That deletes the database too, so take a backup first if
-anything in it matters.
+anything in it matters. Remove the `lifecycle { prevent_destroy = true }` block
+from the pools in `infra/terraform/databases.tf` first, or `destroy` refuses
+to start ("Changing a pool's size replaces the pool" above).
 
 ## Tests
 

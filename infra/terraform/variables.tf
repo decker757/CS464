@@ -23,7 +23,7 @@ variable "app_server_count" {
   # pool of 24 and bring #667 back. Resize the pool or the client pools first.
   validation {
     condition     = var.app_server_count <= 3
-    error_message = "At most three app servers: the ledger's pool of 24 holds three servers' 6 + 2 ledger clients. Resize it first (docs/deployment.md, \"The ledger's pool holds all of its clients\")."
+    error_message = "At most three app servers: the ledger's pool of 24 holds three servers' 6 + 2 ledger clients. Resize it first, then raise this limit (docs/deployment.md, \"Connection budget\")."
   }
 }
 

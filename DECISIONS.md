@@ -11341,7 +11341,10 @@ clients, because nothing in auth, market or audit holds a lock while it
 waits. *Rejected:* 8 + 4 a server, which fits two servers exactly and would
 starve again on #668's three-server run; and a bigger pool for the same
 clients, since 30 for the ledger leaves too little of the 47 for the
-direct connections. The pools now hold 38.
+direct connections. The pools now hold 38. This ends the queue at the
+pooler only: on one busy market, waiting trades can still fill one ledger
+process's own 6 + 2, and its reads and readiness check then queue inside
+that process. #667's second part limits that.
 
 ---
 
