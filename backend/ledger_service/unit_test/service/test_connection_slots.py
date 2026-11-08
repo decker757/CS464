@@ -36,6 +36,7 @@ from unit_test.trade_fixtures import (
     PROBE_TIMEOUT,
     SMALL_QUANTITY,
     TIMEOUT,
+    Recorder,
     Upstream,
     assert_ledger_balances,
     book_row,
@@ -61,6 +62,10 @@ _SETTLE_SECONDS = 0.5
 # refused for the price it moved to (#640); a placement this low rests.
 _BUY_LIMIT = Decimal("100.0000")
 _RESTING_LIMIT = Decimal("0.1000")
+
+# How long a third request may take to commit while two publishes stall. A
+# warm trade takes milliseconds.
+_STALLED_PUBLISH_PATIENCE = 2.0
 
 Submit = Callable[[AsyncSession, Upstream, uuid.UUID, str], Awaitable[object]]
 
@@ -207,9 +212,10 @@ async def test_on_one_hot_market_only_the_limit_hold_a_connection(
     hold a connection, the readiness check gets one at once, and once the
     book is free every request commits and the ledger still sums to zero.
 
-    Remove the slot from `trading.execute` or `orders.place` and six requests
-    take connections (the process-wide limit still saves `/ready`); remove
-    both limits and all eight do, and the readiness check times out."""
+    Remove the market's limit and six requests take connections (the
+    process-wide limit still saves `/ready`). Remove the slot from
+    `trading.execute` or `orders.place`, or both limits, and all eight do,
+    and the readiness check times out."""
     (upstream,) = await _warm_markets(1)
     parties = _POOL_SIZE + _MAX_OVERFLOW
 
@@ -290,3 +296,94 @@ async def test_a_trade_gives_its_connection_back_before_its_slot(
 
     assert not session.in_transaction()
     assert get_engine().pool.checkedout() == 0
+
+
+class _StalledBus(Recorder):
+    """A Redis whose every publish waits until `release` is set, as a stalled
+    one does up to its socket timeout. `reached` counts the publishes that
+    have started."""
+
+    def __init__(self, release: asyncio.Event) -> None:
+        super().__init__()
+        self.reached = 0
+
+        async def stall() -> None:
+            self.reached += 1
+            await release.wait()
+
+        self.on_publish = stall
+
+
+async def _until_publishing(bus: _StalledBus, task: asyncio.Task) -> None:
+    async with asyncio.timeout(PROBE_TIMEOUT):
+        while bus.reached == 0:
+            if task.done():
+                task.result()
+                pytest.fail("the trade finished without publishing")
+            await asyncio.sleep(0.01)
+
+
+@pytest.mark.parametrize("submit", ["trade", "placement"])
+async def test_a_stalled_publish_does_not_hold_the_market_s_slot(
+    clean_database, submit: str
+) -> None:
+    """ADR 0010: the publish never gets in a trade's way. Two requests on one
+    market commit and then stall in their publish, which fills the market's
+    two slots if the publish runs inside them. A third request must still
+    commit while both publishes wait. Move the publish back inside the slot
+    and the third waits for a slot until this gives up."""
+    (upstream,) = await _warm_markets(1)
+    users = [uuid.uuid4() for _ in range(3)]
+    async with session_factory()() as setup:
+        for user_id in users:
+            await fund(setup, user_id)
+    release = asyncio.Event()
+
+    async def commit_one(user_id: uuid.UUID, redis_client: Recorder):
+        async with session_factory()() as own:
+            if submit == "trade":
+                return await buy(
+                    own,
+                    upstream,
+                    user_id=user_id,
+                    quantity=SMALL_QUANTITY,
+                    state_version=None,
+                    limit=_BUY_LIMIT,
+                    client_key=f"stall-{user_id}",
+                    redis_client=redis_client,
+                )
+            # At the market's price, so the placement fills and publishes.
+            return await place(
+                own,
+                upstream,
+                user_id=user_id,
+                limit_price=Decimal("0.9900"),
+                quantity=SMALL_QUANTITY,
+                redis_client=redis_client,
+            )
+
+    stalled = []
+    for user_id in users[:2]:
+        bus = _StalledBus(release)
+        task = asyncio.create_task(commit_one(user_id, bus))
+        await _until_publishing(bus, task)
+        stalled.append(task)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        async with asyncio.timeout(_STALLED_PUBLISH_PATIENCE):
+            await commit_one(users[2], Recorder())
+    except TimeoutError:
+        pytest.fail(
+            "a third request waited for a slot while two publishes stalled: "
+            "the publish runs inside the market's slot"
+        )
+    finally:
+        release.set()
+        await _finish(stalled)
+    print(f"third request committed in {loop.time() - started:.3f} s")
+
+    async with session_factory()() as check:
+        assert (await book_row(check, upstream.market_id)).state_version == 3
+        await assert_ledger_balances(check)

@@ -1,9 +1,10 @@
 """The per-market and process-wide limits on trades holding a connection. #667
 
 Pure: no database. What the limits do to real connections is in
-`unit_test/service/test_connection_slots.py`; these are the two properties
-that test cannot see, the map's size and the order the two limits are taken
-in. DECISIONS.md, "Only a few trades per market hold a ledger connection at
+`unit_test/service/test_connection_slots.py`. The first two tests here are
+what that file cannot see: the map's size, and the order the two limits are
+taken in. The last two pin each limit on its own, without Postgres.
+DECISIONS.md, "Only a few trades per market hold a ledger connection at
 once".
 """
 
@@ -45,17 +46,17 @@ async def test_a_market_nobody_holds_or_waits_for_is_forgotten() -> None:
         _hold_until(slots, market_id, entered=asyncio.Event(), leave=asyncio.Event())
     )
     await asyncio.sleep(_SETTLE_SECONDS)
-    assert len(slots) == 1
+    assert slots.markets_in_flight == 1
 
     # A waiter that is cancelled takes its count with it, and the holder still
     # keeps the market.
     waiter.cancel()
     await asyncio.gather(waiter, return_exceptions=True)
-    assert len(slots) == 1
+    assert slots.markets_in_flight == 1
 
     holder_leaves.set()
     await holder
-    assert len(slots) == 0
+    assert slots.markets_in_flight == 0
 
 
 async def test_a_request_waiting_for_its_market_takes_no_process_wide_slot() -> None:
