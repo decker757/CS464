@@ -52,8 +52,6 @@ function mockPreviewError(code: string, message: string, status = 422, details?:
   )
 }
 
-// More shares of either outcome than any test here sells, so the sell clamp
-// is never what refuses a trade unless a test says what is held.
 // The two refusals that mean the price moved (#589, #644), as the ledger sends them.
 const PRICE_MOVED_DETAILS = {
   quote_stale: { quoted: 1, current: 2 },
@@ -74,6 +72,8 @@ function holdPriceMovedRefusal(code: keyof typeof PRICE_MOVED_DETAILS): () => vo
   return () => answerTrade()
 }
 
+// More shares of either outcome than any test here sells, so the sell clamp
+// is never what refuses a trade unless a test says what is held.
 const HELD_PLENTY = { 'o-yes': '100.0000', 'o-no': '100.0000' }
 
 interface PanelOptions {
@@ -676,6 +676,25 @@ describe('TradingPanel', () => {
     answerTrade()
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/buy of 10 Yes was not made/i)
+  })
+
+  it('says how far past its limit a refused trade went, after the trader picked another outcome', async () => {
+    // The interim line with the figures lasts only until the re-quote
+    // answers; the alert above the tickets is what stays.
+    mockPreview(previewResponse())
+    const answerTrade = holdPriceMovedRefusal('price_beyond_limit')
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { rerender } = renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    rerender(panel({ outcomeId: 'o-no' }))
+    answerTrade()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /^Your buy of 10 Yes was not made: the price moved before it went through\. It now comes to 5\.3000 credits, past your limit of 5\.1763\.$/,
+    )
   })
 
   it('says a trade refused as quote_stale was not made after the trader switched to the Limit ticket', async () => {
