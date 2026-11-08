@@ -11845,10 +11845,16 @@ statement budget is unchanged.
 
 **The publish is outside the slot.** The price frame and the order frames go
 out after the slot is given back, on the trade path and for a placement that
-fills alike. Inside it, a stalled Redis (a 5 s socket timeout) would hold
-each slot for up to 5 s after the commit, and a slow Redis would then
-throttle trades, which ADR 0010 forbids: the publish never gets in a trade's
-way. A failed publish is still logged and never raised.
+fills alike. Inside it, a stalled Redis would hold each slot after the
+commit for 5 s per frame, the client's socket timeout (`main.py`), and up to
+5 s more for a frame that has to open a connection first. The client
+`redis.from_url` builds there retries nothing (redis-py 8.1 gives its
+connections `Retry(NoBackoff(), 0)`), so that is the bound, but a trade that
+filled resting orders sends one frame per fill as well as its price frame. A
+slow Redis would then throttle trades, which ADR 0010 forbids: the publish
+never gets in a trade's way. The frames are built inside the slot, from the
+ORM rows, before its rollback can expire them, and only plain frames leave
+it. A failed publish is still logged and never raised.
 
 **Not gated: cancel, admin cancel, settlement, void and the leaderboard
 refresher.** The first four are rare and done by people at human speed.
@@ -11898,8 +11904,12 @@ most two hold a connection and `/ready` answers at once. Remove the market's
 limit and six do; remove both limits and all eight do, and `/ready` times
 out. Three trades on each of four held books: the reserve stays free. Remove
 the process-wide limit and eight hold a connection, and `/ready` times out.
-Two requests on one market that stall in their publish leave a third free
-to commit; put the publish back inside the slot and the third waits.
+Two requests on one market that stall in their publish, each trade filling a
+resting order, leave a third free to commit; put the price frame's or the
+order frames' publish back inside the slot and the third waits. A slot that
+issues one read before its rollback, so the rollback is real, still leaves a
+trade and a placement answering with the frames they committed; build a
+frame after the block and they fail with `MissingGreenlet`.
 `unit_test/core/test_connection_slots.py` holds the order of the two limits
 and that a market nobody waits for is forgotten, so the map stays as small as
 the markets in flight.
