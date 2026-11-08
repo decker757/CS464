@@ -17,6 +17,10 @@ virtualenvs, so point it at the main checkout's `backend/`. The audit service
 has no virtualenv of its own and is imported with the market service's, which
 pins the same libraries (`VENV_FALLBACKS`).
 
+Reinstall each service's `requirements.txt` into its virtualenv before
+running: a stale virtualenv fails inside that service's subprocess, as an
+`ImportError` in the traceback this script prints.
+
 The script runs itself once per service as a subprocess (`--collect
 <service>`) under that service's virtualenv, with `PYTHONPATH` set to the
 service folder and `backend/`, the settings each service requires set to
