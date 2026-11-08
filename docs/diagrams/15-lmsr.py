@@ -8,9 +8,11 @@ Two panels, side by side, for three values of the liquidity parameter b:
          the x × 1.00 that YES pays out if it wins; the gap between that line
          and a cost curve is the market maker's loss, and it never exceeds b·ln 2
 
-Every number is computed by the repo's own engine, `core/lmsr.py`, called the
-way the ledger calls it: `Decimal` in, `Decimal` out, inside the engine's own
-50-digit context. Nothing here restates an LMSR formula.
+Every price and cost on the curves is computed by the repo's own engine,
+`core/lmsr.py`, called the way the ledger calls it: `Decimal` in, `Decimal`
+out, inside the engine's own 50-digit context. The script computes only the
+two straight reference lines (x × 0.50 and x × 1.00), and the b·ln 2 it
+prints is the engine's own `cost` at q = (0, 0), not a formula of its own.
 
 Run from the repository root:
 
