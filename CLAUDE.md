@@ -280,8 +280,9 @@ is the un-propose ADR 0013 declined — and the rule is
 `actor.id == proposed_by_id`, never the username and never `creator_id`. State
 is checked before identity and identity before the reason, in the one
 `_proposal_to_decide` both share. APPROVED is a status rather than
-PENDING_RESOLUTION with `approved_at` set, so every later write but settle
-and send-back is `market_already_approved` and [3.3] #11 and [3.4] #12 get a
+PENDING_RESOLUTION with `approved_at` set, so every later write but settle,
+send-back and void (inside the dispute window, ADR 0025) is
+`market_already_approved` and [3.3] #11 and [3.4] #12 get a
 `status = 'approved'` working set shaped like the close sweep's. A rejection
 sends the market back to CLOSED, nulls all seven proposal columns and leaves
 `closed_at` alone. There are no `rejected_by_*` columns: the
@@ -385,7 +386,7 @@ their own balance and history, permanently. The rule belongs in the caller: a
 reused key naming different money is a bug for a trade and an edit for a grant,
 and only the caller knows which.
 
-**The ledger has four write routes, and none takes money.**
+**The ledger has six write routes, and none takes money.**
 `POST /ledger/markets/{id}/trades` ([T-2] #22) accepts a trader's own token,
 which is safe only because the body names no account, no amount and no leg:
 `TradeIn` is `extra="forbid"`, the debited account comes from the token's
@@ -397,9 +398,15 @@ refuses `503` (ADR 0030).
 names a limit price and a quantity, and the budget is computed from them.
 `POST /ledger/orders/{id}/cancel` ([T-8] #28) takes an empty body: the order
 must be the token's own, and what it releases is derived from the order row.
+`POST /ledger/admin/orders/{id}/cancel` ([T-8] #326) is the same cancel for an
+administrator, and its body holds a `reason` and nothing else.
 `POST /ledger/markets/{id}/settlement` ([3.4] #12) takes an administrator's
 token and an empty body: the winner comes from market_service, and the holders
-and amounts come from the ledger's own positions under the book lock. A write
+and amounts come from the ledger's own positions under the book lock.
+`POST /ledger/markets/{id}/void` ([BE] #221) takes an administrator's token and
+a `reason`: whether the market may be voided comes from market_service, and
+each refund comes from the ledger's own records under the book lock (ADR 0025).
+A seventh POST, `/ledger/markets/snapshots`, only reads. A write
 route that took an outcome, an amount or an account from the request would be a
 route for minting yourself credits, and would first have to answer how a
 *service* proves it is a service. ADR 0009's two amendments, ADR 0019.
@@ -500,7 +507,9 @@ The same asymmetry explains the auth flow there. A browser cannot set request
 headers on a WebSocket — the JavaScript API has no parameter for them — so the
 cookie is its only transport, and ADR 0002's same-registrable-domain constraint
 decides whether live prices work at all rather than being a deployment
-footnote. There is deliberately no token in the query string.
+footnote. A non-browser client may send an `Authorization: Bearer` header
+instead, which the socket reads first. There is deliberately no token in the
+query string.
 
 **The realtime service has no database and must not grow one.** No role in
 `sql/01-roles.sql`, no schema in `sql/02-schemas.sql`, no `DATABASE_URL`, and

@@ -24,7 +24,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | LMSR pricing | [F-3] #43 | shipped in `ledger_service/core/lmsr.py` |
 | Realtime | [F-2] #42, [X-4] #37 | shipped: socket, pub/sub, auth, the snapshot, the ledger's price producer and its order frames |
 | Migrations | [F-5] #75 | Alembic per service; no app creates a table |
-| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440, #609, #20, #640 | live at **https://predictsmu.xyz**: every push to `main` deploys to DigitalOcean, two app servers behind a load balancer (ADR 0026), and `npm run seed:production` seeds it with the demo markets; monitoring (#599) ships to Grafana Cloud from each server; the load test [5.4] #20 ran on 2026-11-04 (a trade's p95 was 5.45 s at 50 users, both servers at 100% CPU) and #640's answer ships in this release: a trade names a price limit (ADR 0029), the ledger keeps a one-second copy of who and what may trade and calls no other service on a trade (ADR 0030), a trade holds the book lock for 13 statements instead of 22 (#641), and DigitalOcean's connection pooler lets a third server start (#660); the after figures follow the release; staging (#19) is open |
+| Deployment | [5.1] #17, [5.2] #18, [5.3] #19, [5.4] #440, #609, #20, #640 | live at **https://predictsmu.xyz**: every push to `main` deploys to DigitalOcean, two app servers behind a load balancer (ADR 0026), and `npm run seed:production` seeds it with the demo markets; monitoring (#599) ships to Grafana Cloud from each server; the load test [5.4] #20 ran on 2026-11-04 (a trade's p95 was 5.45 s at 50 users, both servers at 100% CPU) and #640's answer ships in this release: a trade names a price limit (ADR 0029), the ledger keeps a one-second copy of who and what may trade and calls no other service on a trade (ADR 0030), a trade holds the book lock for 13 statements instead of 22 (#641), and DigitalOcean's connection pooler lets a third server start (#660); the after figures follow the release; staging is dropped from scope (ADR 0026) |
 
 ## Running it
 
@@ -437,8 +437,8 @@ Measured or decided, with the record that says so.
   bounds the window ([ADR 0002](docs/adr/0002-auth-token-transport.md)).
 - **The audit log is atomic with the action only while every service shares
   one database** ([ADR 0006](docs/adr/0006-audit-log-write-path.md)).
-- **One managed Postgres, one region, and no staging environment.** #19's
-  staging is not built; it needs a registrable domain of its own.
+- **One managed Postgres, one region, and no staging environment.** Staging
+  is dropped from scope (ADR 0026, amended 2026-11-08).
 - **The trade panel does not yet send its own slippage tolerance.** The
   backend accepts one; #652 is the frontend half.
 
