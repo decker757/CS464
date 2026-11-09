@@ -999,3 +999,72 @@ async def test_the_trade_contract_does_not_offer_market_not_published(
     section = doc.split("## POST /ledger/markets/{market_id}/trades", 1)[1]
     section = section.split("\n## ", 1)[0]
     assert "market_not_published" not in section
+
+
+# =========================================================================
+# Asking whether a key committed a trade (#584)
+# =========================================================================
+def _lookup_path(market_id: uuid.UUID) -> str:
+    return f"/ledger/markets/{market_id}/trades/by-key"
+
+
+def _max_client_key_length() -> int:
+    from model.schemas import MAX_CLIENT_KEY_LENGTH  # noqa: PLC0415
+
+    return MAX_CLIENT_KEY_LENGTH
+
+
+async def test_a_lookup_needs_a_token(trade_client) -> None:
+    """The caller's identity is half of the stored key, so there is nothing
+    to look up without one."""
+    client, _ = trade_client
+
+    response = await client.get(
+        _lookup_path(uuid.uuid4()), params={"idempotency_key": _CLIENT_KEY}
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_token"
+
+
+async def test_a_committed_key_is_200_with_the_body_the_trade_was_answered_with(
+    trade_client, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The client asking is one that lost the trade's reply, so the answer is
+    that reply, field for field. The key holds every character a path or a
+    query string would misread, at the longest a key may be: the reason it
+    is a query parameter rather than a path segment."""
+    client, _ = trade_client
+    market = _Market()
+    await _warm(session, market)
+    _Terms().install(monkeypatch, market)
+    headers = bearer(uuid.uuid4())
+    key = "a/b?c&d#e%2F+ ".ljust(_max_client_key_length(), "x")
+    traded = await client.post(
+        _path(market.market_id), json=_body(market, idempotency_key=key), headers=headers
+    )
+    assert traded.status_code == 201
+
+    response = await client.get(
+        _lookup_path(market.market_id),
+        params={"idempotency_key": key},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == traded.json()
+
+
+async def test_a_key_nothing_committed_under_is_404_trade_not_found(
+    trade_client,
+) -> None:
+    client, _ = trade_client
+
+    response = await client.get(
+        _lookup_path(uuid.uuid4()),
+        params={"idempotency_key": _CLIENT_KEY},
+        headers=bearer(uuid.uuid4()),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "trade_not_found"

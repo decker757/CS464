@@ -297,8 +297,16 @@ export interface TradeRequest {
   outcome_id: string
   side: TradeSide
   quantity: string
+  // Decides nothing once a limit is sent: the ledger then prices the trade at
+  // the current book and checks it against the limit instead (#640, #644).
   state_version: number
   idempotency_key: string
+  // The most a buy will pay, and the least a sell will accept, at four places
+  // (#644). One or the other, by side; neither when no limit could be worked
+  // out, and then the ledger keeps the exact state_version rule, for now: once
+  // every client sends a limit, the ledger will refuse a trade without one.
+  max_cost?: string
+  min_proceeds?: string
 }
 
 export interface TradeResult {
@@ -320,6 +328,19 @@ export interface TradeResult {
  */
 export async function postTrade(marketId: string, data: TradeRequest): Promise<TradeResult> {
   const res = await api.post<TradeResult>(`${LEDGER_BASE}/ledger/markets/${marketId}/trades`, data)
+  return res.data
+}
+
+/**
+ * The caller's own trade on this market committed under `idempotencyKey`
+ * (#584), as the trade route answered it. `404 trade_not_found` when nothing
+ * has committed under it yet, which is final only once the trade's own
+ * request has certainly ended (ledger-service.md, the trade lookup).
+ */
+export async function getTradeByKey(marketId: string, idempotencyKey: string): Promise<TradeResult> {
+  const res = await api.get<TradeResult>(`${LEDGER_BASE}/ledger/markets/${marketId}/trades/by-key`, {
+    params: { idempotency_key: idempotencyKey },
+  })
   return res.data
 }
 

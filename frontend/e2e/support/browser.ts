@@ -191,3 +191,16 @@ export async function boxOf(element: Locator): Promise<{ x: number; y: number; w
   if (box === null) throw new Error('the element is not on screen')
   return box
 }
+
+/** The page's first trade reaches the ledger and commits, and the browser
+ *  never hears back, as when a reply is lost. Later trades, and the GET that
+ *  lists a market's trades on the same path, pass untouched. */
+export async function loseFirstTradeReply(page: Page): Promise<void> {
+  let isReplyDropped = false
+  await page.route('**/ledger/markets/*/trades', async route => {
+    if (route.request().method() !== 'POST' || isReplyDropped) return route.fallback()
+    isReplyDropped = true
+    await route.fetch()
+    await route.abort()
+  })
+}

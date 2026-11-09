@@ -69,8 +69,8 @@ recorded.
   trade waits for its market, so a burst on one market raises latency
   instead of being shed. The gateway gives up on the request after 60 s,
   and the trade may still commit; the idempotency key is what makes the
-  retry safe.
-- The trade panel does not send a price limit yet; the API accepts one.
+  retry safe, and the ledger answers whether a key committed
+  (`GET /ledger/markets/{id}/trades/by-key`).
 
 **The next step, and what triggers it.** One writer per market in memory,
 with trades committed in batches:
@@ -83,8 +83,8 @@ decisions in [`DECISIONS.md`](DECISIONS.md), diagrams in
 [`docs/architecture.md`](docs/architecture.md). About 2,400 backend tests,
 covering 97.4% of backend statements (CI, 8 November); the ones that need a
 database run against real Postgres under each service's production role.
-About 900 frontend unit tests, and 73 Playwright tests against the real
-stack.
+About 1,170 frontend unit tests, and 76 Playwright tests against the real
+stack (CI on `dev`, 9 November).
 
 ## Status
 
@@ -97,7 +97,7 @@ stack.
 | Voiding | #221, UI #526 | shipped, both sides: an admin voids a flawed market and every holder is refunded at cost (ADR 0025) |
 | Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60, #479 | shipped, both sides, including the suspend control and a users list that filters by role and by status; promoting an admin is an API call and has no screen yet |
 | Credits | [B-1] #32, [B-2] #33, [F-1] #41, UI #376, #443, #410 | shipped; every balance is derived from append-only entries, and the portfolio shows profit and loss and how many shares a live sell order holds back |
-| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61, #429, #495, #566, #580, #592 | shipped, both sides: the price is the control that picks an outcome, a live price chart, and limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024). A trade's confirmation, or the warning that it could not be confirmed, shows even after the trader picks another outcome, and a trade sent again after no answer is made once and says so. A trade may name a price limit and executes within it at the current price (ADR 0029); the panel will send one of its own in #652, still open |
+| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61, #429, #495, #566, #580, #592, #584, #585, #589, #644 | shipped, both sides: the price is the control that picks an outcome, a live price chart, and limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024). A trade's confirmation, or the warning that it could not be confirmed, shows even after the trader picks another outcome, and a trade sent again after no answer is made once and says so. A trade may name a price limit and executes within it at the current price (ADR 0029). The panel sends one with every trade, allowing the price to move 1% against the trader from the quote, and shows it before the click (#644). A trade refused because the price moved says so even after the trader picks another outcome (#589). A trade whose reply was lost survives a reload: the panel asks the ledger whether its key committed (#584) and says whether it went through (#585), believing a "not found" only five minutes after the latest attempt |
 | Discovery | [X-1]–[X-4] #34–#37, #446, #447, UI #54, #126, #209, #441, #444, #448, #450, #564 | shipped: search and filters, live prices, the trader's own holdings, bands for closing soon, trending and biggest movers, and cards that show the odds as a split bar and each outcome's change over the week |
 | Leaderboard | [L-1]–[L-3] #38–#40, UI #58 | shipped, both sides |
 | Layout and accessibility | #380, #437, #438, #452, #574 | every signed-in page fits a phone, with the navigation behind a menu button, and every text colour pair passes WCAG AA, including a browse chip's label while its price flashes |
@@ -475,6 +475,11 @@ another service is named.
   `::test_a_retry_executes_nothing`,
   `service/test_trade_concurrency.py::test_a_duplicate_arriving_after_the_pre_gate_lookup_is_replayed_under_the_lock`,
   `service/test_settlement_concurrency.py::test_a_trade_retried_behind_a_settlement_replays_its_original`.
+- **A trader can ask whether a trade committed under a key, and sees only
+  their own.** Another trader's key, or the same key on another market, is
+  the same `404` as a key nobody sent.
+  `service/test_trade_lookup.py::test_a_committed_key_answers_with_the_trade_a_retry_would_replay`,
+  `::test_the_key_asked_as_someone_else_is_trade_not_found`.
 - **The books balance.** No balance is stored; every movement writes legs that
   sum to zero; the platform account's negative balance is the credits in
   circulation ([ADR 0009](docs/adr/0009-the-ledger-write-path.md)).
@@ -548,7 +553,11 @@ Measured or decided, with the record that says so.
   ahead of it, and none is refused to keep the rest fast. A cap per market
   that refuses at once with a retryable `503` is the usual answer, and is
   not built. The gateway gives up on a request after 60 s while the trade
-  may still commit, so a client retries under the same idempotency key.
+  may still commit, so a client retries under the same idempotency key, or
+  asks the ledger whether that key committed. A "not found" is final only
+  once the trade's own request has ended, which a client cannot always
+  know, so the trade panel believes one five minutes after its latest
+  attempt (#585). That is a margin, not a guarantee.
 - **A price is published after the trade commits, and a crash between the
   two loses that frame** ([ADR 0010](docs/adr/0010-realtime-price-broadcast.md)).
   A client that reconnects fetches a snapshot, which is the recovery path it
@@ -559,8 +568,6 @@ Measured or decided, with the record that says so.
   one database** ([ADR 0006](docs/adr/0006-audit-log-write-path.md)).
 - **One managed Postgres, one region, and no staging environment.** Staging
   is dropped from scope (ADR 0026, amended 2026-11-08).
-- **The trade panel does not yet send its own slippage tolerance.** The
-  backend accepts one; #652 is the frontend half.
 
 ## Architecture
 

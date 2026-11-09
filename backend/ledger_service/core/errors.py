@@ -138,6 +138,18 @@ class IdempotencyKeyReused(LedgerError):
     )
 
 
+class TradeNotFound(LedgerError):
+    """No trade of the caller's committed under this key in this market. #584.
+
+    Another trader's key reads the same as one never sent, so keys cannot be
+    probed, as `OrderNotFound` does for order ids.
+    """
+
+    status_code = 404
+    code = "trade_not_found"
+    message = "No trade was made under this key."
+
+
 class MarketTermsUnavailable(LedgerError):
     """market_service could not be reached, or answered as if it were down.
 
