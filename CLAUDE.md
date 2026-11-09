@@ -33,13 +33,14 @@ docs/api/               endpoint contracts for the frontend
 docs/horizontal-scaling.md  two of every service behind a proxy [5.4] #440
 docs/deployment.md      production: first-time setup, deploys, rollback,
                         scaling and cost [5.3] #19
-docs/architecture.md    three mermaid diagrams — the services and their
-                        schemas, a trade across three services, the ERDs —
-                        each naming the ADR it was drawn from, then the
-                        diagram set, embedded with captions
-docs/diagrams/          the diagram set for the final proposal #590: twelve
-                        .mmd sources, rendered/ SVG and PNG made by render.py,
-                        and _conventions.md, the rules every one follows
+docs/architecture.md    three diagrams — the services and their schemas,
+                        a trade across three services, the ERDs — each
+                        naming the ADR it was drawn from, then the diagram
+                        set, all embedded as SVG
+docs/diagrams/          every diagram's .mmd source: 01-15 the set for the
+                        final proposal #590, 16-19 architecture.md's first
+                        three, the ERD as two; rendered/ SVG and PNG made by render.py, and
+                        _conventions.md, the rules every one follows
 DECISIONS.md            the layer under the ADRs: smaller decisions, in order,
                         cited from code comments by number (D-001 to D-052)
                         or, after those, by title (D-NEW "<title>")

@@ -28,6 +28,20 @@ router = APIRouter(prefix="/auth", tags=["auth"])
     status_code=status.HTTP_201_CREATED,
     summary="Create an account",
     description="[A-1] #29. Creates the user and opens their first session.",
+    responses={
+        409: {
+            "description": (
+                "`duplicate_user`: the username or email is already registered. "
+                "`details` names each clashing field when it can be identified."
+            )
+        },
+        429: {
+            "description": (
+                "`too_many_attempts`: too many registrations from this address. "
+                "`Retry-After` says when to try again."
+            )
+        },
+    },
 )
 async def register(
     payload: RegisterRequest,
@@ -48,6 +62,27 @@ async def register(
     response_model=AuthResponse,
     summary="Log in",
     description="[A-2] #30. Accepts a username or an email in `identifier`.",
+    responses={
+        401: {
+            "description": (
+                "`invalid_credentials`: no such account, or the wrong password. "
+                "Deliberately the same for both."
+            )
+        },
+        403: {
+            "description": (
+                "`account_suspended`: the password was right, and the account is "
+                "suspended. Only a correct password learns this."
+            )
+        },
+        429: {
+            "description": (
+                "`too_many_attempts`: too many attempts from this address, on this "
+                "account, or on this account from this address. The same whether "
+                "or not the account exists. `Retry-After` says when to try again."
+            )
+        },
+    },
 )
 async def login(
     payload: LoginRequest,
@@ -107,6 +142,20 @@ async def logout(request: Request, session: DbSession, response: Response) -> Me
     response_model=UserOut,
     summary="Current user",
     description="[A-3] #31. Reference protected route: 401 without a valid token.",
+    responses={
+        401: {
+            "description": (
+                "`invalid_token`: missing, malformed or expired access token, or "
+                "the account no longer exists."
+            )
+        },
+        403: {
+            "description": (
+                "`account_suspended`: the account was suspended after this token "
+                "was issued."
+            )
+        },
+    },
 )
 async def me(user: CurrentUser) -> UserOut:
     return UserOut.model_validate(user)

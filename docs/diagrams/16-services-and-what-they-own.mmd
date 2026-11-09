@@ -1,0 +1,51 @@
+%% 16 — The services and what they own
+%% Drawn from: ADR 0003, ADR 0006, ADR 0010, ADR 0017, ADR 0019, ADR 0021, ADR 0022, ADR 0030,
+%%   sql/01-roles.sql, sql/02-schemas.sql
+%% -
+%% The detailed reference in docs/architecture.md, where the prose beside it
+%% says what each part shows. Moved from an inline block, unchanged, so
+%% GitHub stops clipping its labels.
+flowchart LR
+    browser["Browser<br/>React, Vite, Tailwind"]
+
+    subgraph svc["Backend services — FastAPI, each as its own Postgres role"]
+        direction TB
+        auth["auth :8000<br/>as auth_svc"]
+        market["market :8001<br/>as market_svc"]
+        ledger["ledger :8003<br/>as ledger_svc"]
+        audit["audit :8002<br/>as audit_svc"]
+        realtime["realtime :8004<br/>no role, no DATABASE_URL"]
+    end
+
+    subgraph pg["One Postgres instance — a schema per service, and no grants between them"]
+        direction TB
+        sAuth[("auth<br/>users<br/>refresh_tokens")]
+        sMarket[("market<br/>markets<br/>market_outcomes<br/>resolution_sources")]
+        sLedger[("ledger<br/>accounts, transactions, entries<br/>market_books, market_outcomes<br/>positions, orders, market_results<br/>leaderboard_generations, leaderboard_entries")]
+        sAudit[("audit<br/>admin_actions<br/>owned by the superuser")]
+    end
+
+    redis[("Redis<br/>no persistence")]
+
+    browser --> auth
+    browser --> market
+    browser --> ledger
+    browser --> audit
+    browser -->|"WebSocket /ws/prices"| realtime
+
+    ledger -->|"GET /internal/users/suspended<br/>POST /internal/users/lookup"| auth
+    ledger -->|"GET /internal/markets/published<br/>GET /public/markets/{id}<br/>POST /markets/{id}/settle<br/>POST /markets/{id}/void"| market
+
+    auth -->|owns| sAuth
+    market -->|owns| sMarket
+    ledger -->|owns| sLedger
+    audit ==>|"the only SELECT"| sAudit
+
+    auth -.->|"INSERT, no SELECT"| sAudit
+    market -.->|"INSERT, no SELECT"| sAudit
+    ledger -.->|"INSERT, no SELECT"| sAudit
+
+    market --x|"cross-schema read: denied"| sAuth
+
+    ledger -->|"PUBLISH market.price, order.update"| redis
+    realtime -->|"SUBSCRIBE both channels"| redis

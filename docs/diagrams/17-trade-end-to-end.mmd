@@ -1,0 +1,53 @@
+%% 17 — A trade, end to end
+%% Drawn from: ADR 0009, ADR 0010, ADR 0015, ADR 0017, ADR 0022, ADR 0030, D-049,
+%%   DECISIONS.md "One price frame per commit, at the final state_version",
+%%   backend/ledger_service/service/trading.py
+%% -
+%% The detailed reference in docs/architecture.md, where the prose beside it
+%% says what each part shows. Moved from an inline block, unchanged, so
+%% GitHub stops clipping its labels.
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant L as ledger
+    participant DB as Postgres, ledger schema
+    participant A as auth
+    participant M as market_service
+    participant R as Redis
+    participant RT as realtime
+
+    loop about every second, in the background on each replica
+        L->>A: GET /internal/users/suspended, LEDGER_SERVICE_KEY
+        A-->>L: every suspended id
+        L->>M: GET /internal/markets/published, LEDGER_SERVICE_KEY
+        M-->>L: every published market's stored status and close_time
+    end
+    Note over L,M: Each answer replaces the copy whole. ADR 0030
+
+    B->>L: POST /ledger/markets/{id}/trades<br/>outcome, side, quantity, limit, idempotency_key
+    L->>DB: look the derived key up, no lock
+
+    alt this key already names a committed transaction
+        DB-->>L: that transaction
+        L-->>B: 201, the stored result
+        Note over L: A replay takes no lock, writes nothing and asks nobody,<br/>so a trade that was charged and whose response was lost<br/>still answers with what it did. ADR 0017
+    else first time for this key
+        L->>L: the copy: is the trader suspended, is the market trading
+        Note over L: In memory, before the book lock, and both fail closed:<br/>403 account_suspended, 409 market_closed,<br/>503 if either copy is older than five seconds. ADR 0022, ADR 0017, ADR 0030
+        opt no book for this market yet: its first touch, ever
+            L->>M: GET /public/markets/{id}, the trader's token
+            M-->>L: b, the outcomes, the seed
+        end
+        L->>DB: open and fund the book — once per market<br/>mint the starting grant — once per trader, ever
+        L->>DB: SELECT FOR UPDATE on market_books, the wider lock first
+        L->>DB: one context statement after the lock: the key, the latch, close_time against<br/>clock_timestamp(), q, the holding, b and state_version from the locked book row (#35;641)
+        L->>L: trade_cost_of(q, b) in core/pricing.py
+        L->>DB: write q, the position, the transaction and its entries — pending
+        Note over L,DB: COMMIT. posting.post_all is the one statement that commits,<br/>so everything above it is pending until here and rolls back together.<br/>ADR 0009, ADR 0015
+        L->>R: PUBLISH market.price at the committed state_version
+        Note over L,R: After the commit, never before it, and never on a refusal or a replay.<br/>bus.publish logs a failure and swallows it: the trade has happened and is correct.<br/>A crash in this window loses the frame and a reconnecting client<br/>recovers from GET /ledger/markets/{id}/snapshot. ADR 0010, D-049
+        L-->>B: 201, the trade result
+        R-->>RT: the price frame
+        RT->>RT: drop anything not strictly newer for this market
+        RT-->>B: price frame on /ws/prices
+    end
