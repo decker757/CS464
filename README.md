@@ -131,7 +131,12 @@ docker compose up --build
 The auth service comes up on http://localhost:8000, the market service on
 http://localhost:8001, the audit service on http://localhost:8002 and the
 ledger on http://localhost:8003, each with interactive API docs at `/docs`. Those pages are the contract the frontend
-codes against, alongside [`docs/api/`](docs/api/).
+codes against, alongside [`docs/api/`](docs/api/). A state change, such as
+publishing a market, closing it or approving its outcome, is its own
+`POST /markets/{id}/<action>` route rather than a `PATCH` of a status field.
+That is on purpose: each step has its own permission, starting status, fields
+and audit entry
+([why](docs/api/market-service.md#why-a-state-change-is-its-own-endpoint)).
 
 Before auth, market and ledger start, compose runs `auth-migrate`,
 `market-migrate` and `ledger-migrate`. Each brings its service's tables up to
