@@ -1,0 +1,37 @@
+%% 18 — The market schema
+%% Drawn from: ADR 0003, ADR 0011, ADR 0013, ADR 0014, ADR 0016, ADR 0023, ADR 0025,
+%%   backend/market_service/model/entities.py
+%% -
+%% The detailed reference in docs/architecture.md, where the prose beside it
+%% says what each part shows. Moved from an inline block, unchanged, so
+%% GitHub stops clipping its labels.
+erDiagram
+    markets {
+        uuid id PK
+        uuid creator_id "names auth.users, and cannot be an FK"
+        uuid draft_key "unique with creator_id"
+        varchar status "non-native enum, so a plain varchar with no CHECK"
+        timestamptz close_time "trading stops the instant this passes"
+        timestamptz closed_at "earlier than close_time means an admin stopped it"
+        uuid proposal_id "one of seven proposal columns, all nulled on a reject"
+        uuid approved_by_id "with approved_by_username and approved_at"
+        timestamptz dispute_window_ends_at "approved_at plus the setting as it was then"
+        timestamptz voided_at "with void_reason, set only when voided"
+        numeric liquidity_b "b, handed to the ledger at first touch"
+        numeric seed_subsidy
+    }
+    market_outcomes {
+        uuid id PK
+        uuid market_id FK
+        int position "unique within the market"
+        varchar label
+    }
+    resolution_sources {
+        uuid id PK
+        uuid market_id FK
+        int position "unique within the market"
+        varchar url
+        varchar label
+    }
+    markets ||--o{ market_outcomes : "replaced wholesale on autosave"
+    markets ||--o{ resolution_sources : "replaced wholesale on autosave"

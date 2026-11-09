@@ -98,6 +98,8 @@ classDef ext      fill:#FFFFFF,stroke:#4A5568,color:#1A202C
   hops off. Leave it off, or "not built" lines silently become real ones.
 - A bare `%%` line with nothing after it breaks the parser. Use `%% -` as a
   blank line in a comment block.
+- `#` starts an entity code in a label, so `(#641)` silently drops the rest
+  of the line. Write an issue number as `#35;641`.
 - A per-file `%%{init: ...}%%` line after the comment block is fine for
   layout (`wrappingWidth`, ELK node order, lifeline CSS, sequence widths) and
   for a larger `fontSize` where print size needs it. Colours and the font
