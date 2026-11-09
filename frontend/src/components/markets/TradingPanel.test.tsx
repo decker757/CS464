@@ -1477,7 +1477,7 @@ describe('TradingPanel', () => {
       expect(sent[1].idempotency_key).not.toBe(sent[0].idempotency_key)
     })
 
-    it('after a reload, says a trade with no answer did not go through once a minute has passed since it was sent, and forgets its key', async () => {
+    it('after a reload, says a trade with no answer did not go through once five minutes have passed since it was sent, and forgets its key', async () => {
       mockPreview(previewResponse())
       let answer = noAnswer
       const sent = recordTrades(() => answer())
@@ -1487,7 +1487,7 @@ describe('TradingPanel', () => {
       await buyTenYes(actor)
       await screen.findByText(/could not be confirmed/i)
 
-      reload(unmount, 61)
+      reload(unmount, 301)
 
       expect(await screen.findByText('Your buy of 10 Yes did not go through.')).toBeInTheDocument()
 
@@ -1497,7 +1497,7 @@ describe('TradingPanel', () => {
       expect(sent[1].idempotency_key).not.toBe(sent[0].idempotency_key)
     })
 
-    it('does not take a not-found inside a minute of sending as final: it keeps checking, and says so when the trade commits late', async () => {
+    it('does not take a not-found inside five minutes of sending as final: it keeps checking, and says so when the trade commits late', async () => {
       // A trade still queued on the ledger has written nothing yet, so the
       // first answer can be "not found" for a trade that then commits
       // (ledger-service.md, the trade lookup). Saying "did not go through"
@@ -1515,7 +1515,7 @@ describe('TradingPanel', () => {
       expect(await screen.findByText('Checking whether your buy of 10 Yes went through…')).toBeInTheDocument()
       expect(screen.queryByText(/did not go through/i)).not.toBeInTheDocument()
 
-      await act(() => vi.advanceTimersByTimeAsync(50_000))
+      await act(() => vi.advanceTimersByTimeAsync(290_000))
 
       expect(await screen.findByText('Your buy of 10 Yes went through, for 5.1250 credits.')).toBeInTheDocument()
       expect(asked).toEqual([sent[0].idempotency_key, sent[0].idempotency_key])
@@ -1594,10 +1594,10 @@ describe('TradingPanel', () => {
       expect(asked).toEqual([])
     })
 
-    it('counts the minute from the latest attempt: a not-found that crosses a retry in flight does not forget the key', async () => {
+    it('counts the wait from the latest attempt: a not-found that crosses a retry in flight does not forget the key', async () => {
       // The trader retries while the panel is asking about the attempt from
       // before the reload. The ledger has not committed the retry yet, so it
-      // says not found; measured from the first attempt the minute is long
+      // says not found; measured from the first attempt the wait is long
       // over, and forgetting the key there would send the next click under a
       // new one while the retry may still commit.
       mockPreview(previewResponse())
@@ -1614,7 +1614,7 @@ describe('TradingPanel', () => {
       await buyTenYes(actor)
       await screen.findByText(/could not be confirmed/i)
 
-      reload(unmount, 120)
+      reload(unmount, 360)
       await screen.findByText(/checking whether your buy of 10 Yes/i)
       await buyTenYes(actor)
       await screen.findByText(/could not be confirmed/i)
@@ -1630,8 +1630,8 @@ describe('TradingPanel', () => {
 
     it('does not take a not-found as final while a retry from this page is still out', async () => {
       // The lookup takes no lock and answers at once; the retry may be queued
-      // behind the book's lock for longer than the minute. Only once it ends
-      // does the minute start.
+      // behind the book's lock for longer than the wait. Only once it ends
+      // does the wait start.
       mockPreview(previewResponse())
       let releaseRetry = () => {}
       let attempts = 0
@@ -1650,14 +1650,14 @@ describe('TradingPanel', () => {
       await screen.findByText(/checking whether your buy of 10 Yes/i)
       await buyTenYes(actor)
       await waitFor(() => expect(sent).toHaveLength(2))
-      await act(() => vi.advanceTimersByTimeAsync(61_000))
+      await act(() => vi.advanceTimersByTimeAsync(301_000))
       expect(screen.queryByText(/did not go through/i)).not.toBeInTheDocument()
 
       releaseRetry()
       expect(await screen.findByText(/could not be confirmed/i)).toBeInTheDocument()
-      // The minute runs from the retry's end, not its start, so the re-ask a
-      // minute after it was sent is still not final.
-      await act(() => vi.advanceTimersByTimeAsync(50_000))
+      // The wait runs from the retry's end, not its start, so the re-ask five
+      // minutes after it was sent is still not final.
+      await act(() => vi.advanceTimersByTimeAsync(290_000))
       expect(screen.queryByText(/did not go through/i)).not.toBeInTheDocument()
       await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
       await waitFor(() => expect(sent).toHaveLength(3))
@@ -1677,7 +1677,7 @@ describe('TradingPanel', () => {
       await screen.findByText(/checking whether your buy of 10 Yes/i)
       await buyTenYes(actor)
       await screen.findByText(/could not be confirmed/i)
-      await act(() => vi.advanceTimersByTimeAsync(61_000))
+      await act(() => vi.advanceTimersByTimeAsync(301_000))
 
       expect(await screen.findByText('Your buy of 10 Yes went through, for 5.1250 credits.')).toBeInTheDocument()
       expect(screen.queryByText(/could not be confirmed/i)).not.toBeInTheDocument()
@@ -1814,7 +1814,7 @@ describe('TradingPanel', () => {
       await within(tabA).findByText(/could not be confirmed/i)
       await actor.click(within(tabA).getByRole('button', { name: /^buy yes$/i }))
       await waitFor(() => expect(sent).toHaveLength(2))
-      vi.setSystemTime(Date.now() + 120_000)
+      vi.setSystemTime(Date.now() + 360_000)
 
       const tabB = renderPanel().container
 
