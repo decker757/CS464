@@ -1655,8 +1655,9 @@ describe('TradingPanel', () => {
 
       releaseRetry()
       expect(await screen.findByText(/could not be confirmed/i)).toBeInTheDocument()
-      // The wait runs from the retry's end, not its start, so the re-ask five
-      // minutes after it was sent is still not final.
+      // The wait runs from the retry's end, not its start, so a re-ask more
+      // than five minutes after it was sent, but under five after it ended,
+      // is still not final.
       await act(() => vi.advanceTimersByTimeAsync(290_000))
       expect(screen.queryByText(/did not go through/i)).not.toBeInTheDocument()
       await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
