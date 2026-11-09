@@ -8,11 +8,11 @@
 
 | Service | Method | Path | Auth | Idempotent | Main error codes |
 | --- | --- | --- | --- | --- | --- |
-| auth | POST | `/auth/register` | none | no key | 409 `duplicate_user`; 429 `too_many_attempts` † |
-| auth | POST | `/auth/login` | none | no key | 401 `invalid_credentials`; 403 `account_suspended`; 429 `too_many_attempts` † |
+| auth | POST | `/auth/register` | none | no key | 409 `duplicate_user`; 429 `too_many_attempts` |
+| auth | POST | `/auth/login` | none | no key | 401 `invalid_credentials`; 403 `account_suspended`; 429 `too_many_attempts` |
 | auth | POST | `/auth/refresh` | refresh token | no key | — |
 | auth | POST | `/auth/logout` | refresh token (optional) | no key | — |
-| auth | GET | `/auth/me` | token, any role | yes (HTTP GET) | 403 `account_suspended` † |
+| auth | GET | `/auth/me` | token, any role | yes (HTTP GET) | 403 `account_suspended` |
 | auth | GET | `/admin/users` | admin token | yes (HTTP GET) | 400 `malformed_cursor`; 403 `account_suspended` |
 | auth | POST | `/admin/users/lookup` | admin token | yes (writes nothing) | 403 `account_suspended` |
 | auth | PATCH | `/admin/users/{user_id}/role` | admin token | no key | 403 ‡; 404 `user_not_found`; 409 `last_administrator` |
@@ -54,9 +54,9 @@
 | ledger | POST | `/ledger/markets/{market_id}/settlement` | admin token | repeat-safe (route doc) | 404 `market_not_found`; 409 `dispute_window_open`, `market_already_voided`, `market_not_approved`; 503 `market_terms_unavailable`, `settlement_unconfirmed` |
 | ledger | POST | `/ledger/markets/{market_id}/void` | admin token | repeat-safe (route doc) | 403 `admin_has_a_stake`; 404 `market_not_found`; 409 `market_already_settled`, `market_not_voidable`; 422 `void_incomplete`; 503 `market_terms_unavailable`, `void_unconfirmed` |
 | audit | GET | `/audit/actions` | admin token | yes (HTTP GET) | 400 `malformed_cursor` |
-| realtime | WS | `/ws/prices` | token, any role | n/a | 4403 `origin_not_allowed`; 4408 `session_expired`; 4409 `slow_consumer`; error frame `invalid_market_id`, `malformed_command`, `too_many_subscriptions`, `unknown_action` † |
+| realtime | WS | `/ws/prices` | token, any role | n/a | 4403 `origin_not_allowed`; 4408 `session_expired`; 4409 `slow_consumer`; error frame `invalid_market_id`, `malformed_command`, `too_many_subscriptions`, `unknown_action` |
 
-† The route declares no `responses=`, so these codes come only from the walk over the code it can reach.
+The socket's codes come from the walk, because a WebSocket route has no `responses=`. `docs/api/realtime-service.md` lists the same close codes under "How a connection ends" and error frames under "Server to client".
 
 ‡ The route declares this status in prose without naming a code, and the code it can reach holds more than one error with that status. The walk counts every branch, so it cannot tell which of them this route really returns, and none is listed. The route's description in `/docs` says when it happens.
 

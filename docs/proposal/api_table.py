@@ -105,7 +105,10 @@ Main error codes
     declared with a response `model` is the ledger's request-validation
     envelope and is not filled from the walk.
 
-    Where the route declares nothing: the walk's codes, marked †.
+    Where the route declares nothing: the walk's codes, marked †. A
+    WebSocket route has nowhere to declare them, so the socket's codes are
+    the walk's too, unmarked, under a footnote naming the doc that lists
+    them (SOCKET_FOOTNOTE).
 
     Left out everywhere, because the Auth column and the conventions line
     already say them: 401/4401 `invalid_token`, 403 `not_an_administrator`,
@@ -221,6 +224,11 @@ GENERATED_NOTICE = (
 WALK_ONLY_FOOTNOTE = (
     "† The route declares no `responses=`, so these codes come only from the "
     "walk over the code it can reach."
+)
+SOCKET_FOOTNOTE = (
+    "The socket's codes come from the walk, because a WebSocket route has no "
+    "`responses=`. `docs/api/realtime-service.md` lists the same close codes "
+    "under \"How a connection ends\" and error frames under \"Server to client\"."
 )
 AMBIGUOUS_FOOTNOTE = (
     "‡ The route declares this status in prose without naming a code, and "
@@ -839,6 +847,11 @@ def _first_codes(groups: list[ErrorGroup]) -> str:
     return "; ".join(shown) or "—"
 
 
+def _is_walk_only(row: dict) -> bool:
+    """An HTTP route that declares no `responses=`; the socket cannot."""
+    return not row["declared_responses"] and row["method"] != "WS"
+
+
 def _table_lines(
     rows: list[dict],
     error_codes_by_service: dict,
@@ -850,11 +863,13 @@ def _table_lines(
         "| Service | Method | Path | Auth | Idempotent | Main error codes |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
+    any_marked = False
     for row in rows:
         groups = _error_groups(row, error_codes_by_service[row["service"]])
         errors = render_errors(groups)
-        if with_footnotes and groups and not row["declared_responses"]:
+        if with_footnotes and groups and _is_walk_only(row):
             errors += " †"
+            any_marked = True
         lines.append(
             f"| {row['service']} | {row['method']} | `{row['path']}` | "
             f"{_auth_label(row)} | {_idempotency_label(row)} | {errors} |"
@@ -862,8 +877,10 @@ def _table_lines(
     if not with_footnotes:
         return lines
     footnotes = []
-    if any(not row["declared_responses"] for row in rows):
+    if any_marked:
         footnotes.append(WALK_ONLY_FOOTNOTE)
+    if any(row["method"] == "WS" for row in rows):
+        footnotes.append(SOCKET_FOOTNOTE)
     if any(_ambiguous_statuses(row, error_codes_by_service[row["service"]]) for row in rows):
         footnotes.append(AMBIGUOUS_FOOTNOTE)
     for footnote in footnotes:
