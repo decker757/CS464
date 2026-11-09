@@ -12,7 +12,7 @@ Covers [1.1] #1, [1.2] #2, [1.3] #3, [F-4] #44, [2.3] #7, [3.1] #9, [3.2] #10,
 is decided by ADR 0025.
 
 A successful submission, publication, early close, outcome proposal, approval,
-rejection, send-back or settle also appends an entry to the shared audit log, in the same database
+rejection, send-back, settle or void also appends an entry to the shared audit log, in the same database
 transaction, so the two can never disagree. An autosave does not, and neither
 does an automatic close — the clock is not an actor. See
 [`audit-service.md`](audit-service.md) and
@@ -43,8 +43,10 @@ has not traded it, and why the reason is kept on the market:
 ## Why a state change is its own endpoint
 
 Most of this service's writes are not edits to a market. They move it from one
-status to the next: publish, close, propose, approve, reject, send back,
-settle and void. Each one is its own `POST /markets/{id}/<action>`, not a
+status to the next. An administrator publishes a market, closes it early,
+proposes its outcome, and approves, rejects or sends back a proposal. The
+ledger marks it settled or voided, as the last step of its own settlement or
+void. Each step is its own `POST /markets/{id}/<action>`, not a
 `PATCH /markets/{id}` that sets `status`. That is a deliberate step away from
 nouns-only REST, because each step has four things of its own that one
 generic `PATCH` would have to hide inside a single route:
@@ -52,9 +54,13 @@ generic `PATCH` would have to hide inside a single route:
 - **Who may take it.** Any administrator may close a market early
   ([ADR 0014](../adr/0014-closing-a-market-early.md)), but an outcome is
   approved or rejected only by a second administrator, never the proposer
-  ([ADR 0016](../adr/0016-deciding-a-proposal.md)).
-- **The one status it starts from.** Anything else is refused with that
-  step's own `409` code, such as `market_not_submitted` for a publish.
+  ([ADR 0016](../adr/0016-deciding-a-proposal.md)). Settle and void are
+  called only by the ledger, after it has paid out or refunded
+  ([ADR 0019](../adr/0019-settlement-across-services.md),
+  [ADR 0025](../adr/0025-voiding-a-flawed-market.md)).
+- **The statuses it may start from.** Most others are refused with that
+  step's own `409` code, such as `market_not_submitted` for a publish. An
+  early close is also judged on the clock, not only on the status (ADR 0014).
 - **Its own fields.** A close needs a `reason`. An approval quotes the
   `proposal_id` the reviewer read (ADR 0016). A publish takes no body at all
   ([ADR 0008](../adr/0008-publishing-a-market.md)).
@@ -65,8 +71,9 @@ A route per step keeps each rule, its tests and its `/docs` entry in one
 place. It is the shape Stripe uses for `POST /payment_intents/{id}/capture`,
 and what Google's API design guide calls a custom method. The ledger follows
 it for `POST /ledger/orders/{id}/cancel` and `POST /ledger/markets/{id}/void`.
-Plain creates stay noun-shaped: `POST /markets` saves a draft, and
-`POST /ledger/markets/{id}/trades` makes a trade.
+Plain creates stay noun-shaped: `POST /markets` saves or submits a draft,
+`POST /ledger/markets/{id}/trades` makes a trade, and
+`POST /ledger/markets/{id}/settlement` pays a market out.
 
 ## Endpoints
 
