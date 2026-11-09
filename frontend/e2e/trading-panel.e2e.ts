@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures'
 import { buy, publishMarket, registerAdmin, registerTrader, snapshot, startingGrant, uniqueName } from './support/backend'
-import { logIn, outcomeChoice } from './support/browser'
+import { logIn, loseFirstTradeReply, outcomeChoice } from './support/browser'
 import { creditsLess, creditsPlus, formatPreciseCredits, formatRoundedCredits } from './support/credits'
 import { holdUntilReleased } from '../src/test/holdUntilReleased'
 
@@ -275,15 +275,7 @@ test('a buy whose reply is lost is said to be unconfirmed, and sending it again 
   const market = await publishMarket(admin, `Will ${uniqueName('lost')} happen?`)
   const trader = await registerTrader('tl_trader')
 
-  // The first trade reaches the ledger and commits; the browser never hears
-  // back. The same path also lists a market's trades (GET), which must pass.
-  let replyDropped = false
-  await page.route('**/ledger/markets/*/trades', async route => {
-    if (route.request().method() !== 'POST' || replyDropped) return route.fallback()
-    replyDropped = true
-    await route.fetch()
-    await route.abort()
-  })
+  await loseFirstTradeReply(page)
 
   await logIn(page, trader)
   await page.goto(`/markets/${market.id}`)
@@ -307,4 +299,27 @@ test('a buy whose reply is lost is said to be unconfirmed, and sending it again 
   expect((await snapshot(trader, market.id)).state_version).toBe(1)
   await page.getByRole('button', { name: 'Sell', exact: true }).click()
   await expect(page.getByLabel('shares held')).toContainText('You hold 10.0000 shares')
+})
+
+// [FE][T-2] #585, through the real ledger's lookup (#584): a buy that commits
+// but whose reply never reaches the browser is reported as made after a
+// reload, by asking the ledger under the key the panel kept in the tab.
+test('after a reload, a buy whose reply was lost is reported as made', async ({ page }) => {
+  const admin = await registerAdmin('tr_admin')
+  const market = await publishMarket(admin, `Will ${uniqueName('reload')} happen?`)
+  const trader = await registerTrader('tr_trader')
+
+  await loseFirstTradeReply(page)
+
+  await logIn(page, trader)
+  await page.goto(`/markets/${market.id}`)
+  await page.getByLabel('Quantity (shares)').fill('10')
+  await expect(page.getByLabel('trade preview')).toBeVisible()
+  await page.getByRole('button', { name: /^buy yes$/i }).click()
+  await expect(page.getByRole('alert').filter({ hasText: 'Your buy of 10 Yes could not be confirmed' })).toBeVisible()
+
+  await page.reload()
+
+  await expect(page.getByText(/^Your buy of 10 Yes went through, for \d+\.\d{4} credits\.$/)).toBeVisible()
+  expect((await snapshot(trader, market.id)).state_version).toBe(1)
 })

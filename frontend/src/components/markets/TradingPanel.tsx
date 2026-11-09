@@ -4,21 +4,28 @@ import { describeInsufficientFunds, describeInsufficientShares, describeTradeErr
 import { postTrade, type TradePreview, type TradeSide } from '../../api/ledgerApi'
 import type { PublicOutcome } from '../../api/marketApi'
 import { useBalance } from '../../context/BalanceContext'
+import { useTradeKeys } from '../../hooks/useTradeKeys'
 import { useTradeQuote } from '../../hooks/useTradeQuote'
+import { describeUnconfirmedTrade } from '../../utils/describeTradeCheck'
 import { compareCredits, formatCreditsPrecise, isZeroCredits, subtractCredits, unsignedCredits } from '../../utils/formatCredits'
 import { priceLimitFor } from '../../utils/priceLimit'
+import { isSameTrade, nameOfTrade, type SentTrade } from '../../utils/sentTrade'
 import { describeSharesToSell } from '../../utils/orderInput'
 import Button from '../ui/Button'
 import { controlClass } from '../ui/controlClass'
 import { selectableClass } from '../ui/selectableClass'
 import HoldsNoneToSell from './HoldsNoneToSell'
 import LimitOrderFields from './LimitOrderFields'
+import TradeCheckNotices from './TradeCheckNotices'
 import TradePreviewSummary from './TradePreviewSummary'
 
 type OrderType = 'market' | 'limit'
 
 interface TradingPanelProps {
   marketId: string
+  // The logged-in trader. A trade with no answer is kept per trader, so its
+  // key outlives a reload without reaching whoever logs in next (#585).
+  traderId: string
   outcomes: PublicOutcome[]
   // The outcome to trade. It is chosen on the page's price blocks, where its
   // price is shown, so the panel offers no choice of its own (#429).
@@ -122,32 +129,6 @@ function sharesLeftToSell(held: string, reserved: string | undefined): string {
   return subtractCredits(held, reserved) ?? held
 }
 
-/** One trade as the ledger tells trades apart under one idempotency key:
- *  outcome, side and quantity. The label is for the message only. */
-interface SentTrade {
-  outcomeId: string
-  outcomeLabel: string
-  side: TradeSide
-  quantity: string
-}
-
-/** Whether the ledger would read `a` and `b` as one trade: same outcome and
- *  side, and the quantity compared numerically, so `10` and `10.0` are one
- *  (ledger-service.md's idempotency section). compareCredits reads an
- *  unparseable quantity as equal, which is safe only because a trade is sent
- *  with a preview, and a preview only for a quantity quantityError accepts. */
-function isSameTrade(a: SentTrade, b: SentTrade): boolean {
-  return a.outcomeId === b.outcomeId && a.side === b.side && compareCredits(a.quantity, b.quantity) === 0
-}
-
-/** What a trader is told about a trade that got no answer or a 5xx: it may
- *  have gone through, and which trade it was, since they may be looking at
- *  another outcome by now (#580). "From this page", because the panel keeps
- *  the key only while it is open: after a reload the same trade is a new one. */
-function describeUnconfirmedTrade(trade: SentTrade): string {
-  return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} could not be confirmed, and may have gone through. Check your portfolio before trading again, or send the same trade again from this page: it will not be made twice.`
-}
-
 /** A trade refused because its price moved, and, for `price_beyond_limit`,
  *  what it came to against its limit (#644). */
 interface RefusedTrade {
@@ -161,7 +142,7 @@ interface RefusedTrade {
  *  Nothing about what to do next — the re-quote may have failed, and the
  *  preview's own error says why. */
 function describeRefusedTrade({ trade, limitMiss }: RefusedTrade): string {
-  const refusal = `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} was not made: the price moved before it went through.`
+  const refusal = `Your ${nameOfTrade(trade)} was not made: the price moved before it went through.`
   if (!limitMiss) return refusal
   return `${refusal} It now comes to ${formatCreditsPrecise(limitMiss.currentTotal)} credits, past your limit of ${formatCreditsPrecise(limitMiss.limit)}.`
 }
@@ -181,14 +162,6 @@ function limitFields(side: TradeSide, priceLimit: string | null): { max_cost?: s
   return side === 'buy' ? { max_cost: priceLimit } : { min_proceeds: priceLimit }
 }
 
-/** A trade's key, kept until the ledger answers it definitely.
- *  `mayHaveCommitted` once an attempt under it got no answer or a 5xx. */
-interface KeyAwaitingAnswer {
-  key: string
-  trade: SentTrade
-  mayHaveCommitted: boolean
-}
-
 /** A trade the ledger answered with a 201. `sentMoreThanOnce` when it went
  *  out again under the key of an attempt that got no answer: the ledger makes
  *  one trade per key, so the trader is told one was made, not that this
@@ -206,7 +179,7 @@ interface CompletedTrade {
 function describeCompletedTrade(trade: CompletedTrade): string {
   const credits = formatCreditsPrecise(unsignedCredits(trade.total))
   if (trade.sentMoreThanOnce) {
-    return `Your ${trade.side} of ${trade.quantity} ${trade.outcomeLabel} went through once, for ${credits} credits. It was sent more than once, but only one trade was made.`
+    return `Your ${nameOfTrade(trade)} went through once, for ${credits} credits. It was sent more than once, but only one trade was made.`
   }
   const verb = trade.side === 'buy' ? 'Bought' : 'Sold'
   return `${verb} ${trade.quantity} ${trade.outcomeLabel} for ${credits} credits.`
@@ -241,7 +214,7 @@ function refusalBeforeSending({
 }
 
 export default function TradingPanel({
-  marketId, outcomes, outcomeId, limitOrdersAllowed, heldByOutcome, reservedSharesByOutcome, onTraded, onOrderPlaced,
+  marketId, traderId, outcomes, outcomeId, limitOrdersAllowed, heldByOutcome, reservedSharesByOutcome, onTraded, onOrderPlaced,
 }: TradingPanelProps) {
   const { available, refetch: refetchBalance } = useBalance()
 
@@ -256,22 +229,11 @@ export default function TradingPanel({
   const [submitErrorFor, setSubmitErrorFor] = useState('')
   const [submitError, setSubmitError] = useState('')
   const [lastTrade, setLastTrade] = useState<CompletedTrade | null>(null)
-  // Every trade sent and not yet answered definitely, each with its key. A
-  // key is dropped only once the server has given a definite answer: success,
-  // or a 4xx that means the trade did not happen. A lost reply or a 5xx
-  // means the server may have committed it anyway, and the only safe retry
-  // is one that reuses the key so the server's own idempotency check
-  // recognises it as the same trade rather than a new one
-  // (ledger-service.md's idempotency section) — throwing the key away on
-  // every failure, including these, is how a dropped connection buys twice.
-  // Kept per trade, so the retry is safe whatever was traded in between,
-  // and a different trade never goes out under another's key, which the
-  // ledger would refuse as idempotency_key_reused (#580). An unanswered
-  // trade's key lasts as long as the panel: if it did go through, placing
-  // the same trade again on purpose replays its 201 and buys nothing, and
-  // the confirmation says one trade was made (`sentMoreThanOnce`). Not to be
-  // cut short: a shorter life is how the retry stops being safe.
-  const keysAwaitingAnswerRef = useRef<KeyAwaitingAnswer[]>([])
+  const { keyFor, forgetKey, sendUnder, markMayHaveCommitted, markRefused, checks, dismissAnsweredChecks } = useTradeKeys({
+    marketId,
+    traderId,
+    onFoundCommitted: onTraded,
+  })
   // The trade that got no answer or a 5xx, said on screen whatever the panel
   // now shows, until the next trade is sent (#580).
   const [unconfirmedTrade, setUnconfirmedTrade] = useState<SentTrade | null>(null)
@@ -282,7 +244,12 @@ export default function TradingPanel({
   const visibleSubmitError = submitErrorFor === inputKey ? submitError : ''
   // inputKey leaves out the order type, so the ticket is checked here.
   const isRefusalShownInPlace = orderType === 'market' && visibleSubmitError !== ''
-  const pastTradeAlert = describePastTrade(unconfirmedTrade, refusedTrade, isRefusalShownInPlace)
+  // A check that has since answered for the same trade says what happened,
+  // and its key is gone, so the alert's "will not be made twice" no longer holds.
+  const isAnsweredByCheck = (trade: SentTrade) =>
+    checks.some(check => (check.answer === 'went-through' || check.answer === 'did-not-go-through') && isSameTrade(check.trade, trade))
+  const stillUnconfirmed = unconfirmedTrade && !isAnsweredByCheck(unconfirmedTrade) ? unconfirmedTrade : null
+  const pastTradeAlert = describePastTrade(stillUnconfirmed, refusedTrade, isRefusalShownInPlace)
   // Shown until the trader types the next quantity, and only that: tying it to
   // the outcome too hid a buy's confirmation from a trader who picked another
   // outcome while it was in flight (#566). It names its own outcome, so it
@@ -316,20 +283,6 @@ export default function TradingPanel({
     reservedShares,
   })
 
-  // The entry for the key a trade already went out under, if it is still
-  // awaiting a definite answer, or a new one for it.
-  const keyFor = (trade: SentTrade): KeyAwaitingAnswer => {
-    const awaiting = keysAwaitingAnswerRef.current.find(entry => isSameTrade(entry.trade, trade))
-    if (awaiting) return awaiting
-    const entry = { key: crypto.randomUUID(), trade, mayHaveCommitted: false }
-    keysAwaitingAnswerRef.current.push(entry)
-    return entry
-  }
-
-  const forgetKey = (key: string) => {
-    keysAwaitingAnswerRef.current = keysAwaitingAnswerRef.current.filter(entry => entry.key !== key)
-  }
-
   const submit = async () => {
     if (!preview || submitting) return
     const trade: SentTrade = { outcomeId, outcomeLabel: selectedOutcome?.label ?? '', side, quantity: quantity.trim() }
@@ -340,15 +293,16 @@ export default function TradingPanel({
     setSubmitError('')
     setUnconfirmedTrade(null)
     setRefusedTrade(null)
+    dismissAnsweredChecks()
     try {
-      const result = await postTrade(marketId, {
+      const result = await sendUnder(keyEntry, () => postTrade(marketId, {
         outcome_id: outcomeId,
         side,
         quantity: trade.quantity,
         state_version: preview.state_version,
         idempotency_key: idempotencyKey,
         ...limitFields(side, priceLimit),
-      })
+      }))
       forgetKey(idempotencyKey)
       setLastTrade({
         side,
@@ -374,6 +328,7 @@ export default function TradingPanel({
         // uses, so if it fails too, previewError already shows why — clear
         // submitError rather than leaving "Getting a fresh quote…" frozen
         // on screen regardless of how the re-quote turns out.
+        markRefused(keyEntry)
         setRefusedTrade({ trade, limitMiss: priceLimitMissOf(err) })
         setSubmitError(describeTradeError(err))
         const freshQuote = await refetchNow()
@@ -382,7 +337,7 @@ export default function TradingPanel({
         setSubmitError(describeTradeError(err))
         forgetKey(idempotencyKey)
       } else {
-        keyEntry.mayHaveCommitted = true
+        markMayHaveCommitted(keyEntry)
         setUnconfirmedTrade(trade)
       }
     } finally {
@@ -454,6 +409,7 @@ export default function TradingPanel({
       {/* Above both tickets and the "holds none to sell" offer: it is about a
           trade already sent, whatever the panel shows now (#580, #589). */}
       {pastTradeAlert && <p role="alert" className="mb-3 text-xs text-danger">{pastTradeAlert}</p>}
+      <TradeCheckNotices checks={checks} canTradeHere />
 
       {orderType === 'limit' ? (
         <LimitOrderFields
