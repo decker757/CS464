@@ -15,8 +15,10 @@
   [T-8] #28, [L-1] #38, [B-1] #359, ADR 0006, ADR 0007, ADR 0009, ADR 0011,
   ADR 0013, ADR 0015, ADR 0016, ADR 0017, ADR 0018, ADR 0019, ADR 0021,
   ADR 0023, ADR 0024
-- **Implemented in:** nothing yet. This record precedes the void stack for
-  #221, which is the first code that has to obey it.
+- **Implemented in:** the void stack for #221:
+  `backend/ledger_service/service/voiding.py`, and market_service's check
+  and record in `service/settling.py` and `service/market_service.py`. This
+  record preceded it.
 - **Citations:** every file:line is pinned to `dev` at 22e8e1e, after #412
   made the trading helpers public. A bare path is
   `backend/ledger_service/`'s; market_service's paths say so.

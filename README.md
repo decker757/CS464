@@ -6,6 +6,86 @@ than real money. Built for CS464 by Ernest, Ihsan and Michelle.
 
 Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6).
 
+## In five minutes
+
+**What it is, in trading terms.** An automated market maker, not an order
+book. Every trade is priced by LMSR against the market's outstanding shares.
+Traders never match each other. On two-outcome markets, limit orders rest
+until a trade moves the price through them, and then fill against the
+market maker inside that trade
+([ADR 0024](docs/adr/0024-resting-orders-fill-inside-the-trade.md)).
+Credits move through a double-entry ledger in Postgres. Each market's book
+is one row, and every write to it (a trade, an order, a cancel, settlement,
+a void) takes that row's lock first, so trades on one market run one at a
+time.
+
+**What it guarantees.** The full list, each with the test that goes red if
+it breaks, is under
+[Guarantees](#guarantees-and-the-tests-that-hold-them).
+- No balance is stored. Every movement writes legs that sum to zero, which
+  the tests assert per transaction, and a database trigger makes entries
+  append-only.
+- A trade sent twice executes once: the idempotency key is checked again
+  under the book lock.
+- A trade may name a price limit, the most it pays or the least it
+  accepts, and then fills within it at the current price or is refused
+  with the figures
+  ([ADR 0029](docs/adr/0029-price-limits-replace-exact-quotes.md)). A trade
+  without one is held to the exact quote it was shown.
+- Whether a trader or market may trade is read from a local copy at most
+  five seconds old, normally about one, so a suspension or an early close
+  takes effect about a second late. Past five seconds the ledger refuses
+  rather than guesses
+  ([ADR 0030](docs/adr/0030-the-ledger-keeps-a-local-copy.md)).
+- The rule for a race test: both sessions wait on a barrier, and the test
+  must fail with its lock removed (ADR 0015). Some older ones predate the
+  rule and use a plain `gather`.
+
+**What was measured.** On production (1-vCPU app servers, one managed
+Postgres with 1 vCPU, 2 GB and no standby), 50 traders for five minutes each
+run, with no errors in any run
+([`docs/load-test.md`](docs/load-test.md), 8 November). The load is
+closed-loop: each trader's loop is a snapshot, a buy, a sell and a
+one-second sleep, and it waits for every answer, so trades a second follow
+latency and are not a capacity figure.
+
+| Shape | Servers | Trades a second | Trade p95 | Trade p99 |
+| --- | --- | --- | --- | --- |
+| Five markets | 1 | 14 | 5.83 s | 6.99 s |
+| Five markets | 2 | 24 | 2.85 s | 3.77 s |
+| Five markets | 3 | 29 | 2.45 s | 3.11 s |
+| One market | 2 | 14 | 4.68 s | 5.45 s |
+
+#640's target was a five-market p95 under 500 ms; the best measured is
+2.45 s. One market is capped by its lock at about 73 ms a hold (derived
+from the throughput), so 50 traders on it queue for seconds. Across five
+markets a third server added 18%. These runs do not say whether the
+database or the app servers' CPU limited it, and the database's CPU was not
+recorded.
+
+**What it does not do yet.** The full list is under
+[Known limits](#known-limits).
+- There is no admission control. Nothing in the ledger bounds how long a
+  trade waits for its market, so a burst on one market raises latency
+  instead of being shed. The gateway gives up on the request after 60 s,
+  and the trade may still commit; the idempotency key is what makes the
+  retry safe.
+- The trade panel does not send a price limit yet; the API accepts one.
+
+**The next step, and what triggers it.** One writer per market in memory,
+with trades committed in batches:
+[ADR 0031](docs/adr/0031-a-per-market-trading-engine.md), Proposed. Its
+trigger, a one-market lock-wait p95 above 200 ms, was measured at 0.43 s. A
+cheaper single-statement write path comes first.
+
+**Where to look.** 31 ADRs in [`docs/adr/`](docs/adr/), the smaller
+decisions in [`DECISIONS.md`](DECISIONS.md), diagrams in
+[`docs/architecture.md`](docs/architecture.md). About 2,400 backend tests,
+covering 97.4% of backend statements (CI, 8 November); the ones that need a
+database run against real Postgres under each service's production role.
+About 900 frontend unit tests, and 73 Playwright tests against the real
+stack.
+
 ## Status
 
 | Area | Issues | State |
@@ -17,7 +97,7 @@ Planning lives in [Project v2 #6](https://github.com/users/decker757/projects/6)
 | Voiding | #221, UI #526 | shipped, both sides: an admin voids a flawed market and every holder is refunded at cost (ADR 0025) |
 | Admin and audit | [4.1]–[4.4] #13–#16, UI #57, #60, #479 | shipped, both sides, including the suspend control and a users list that filters by role and by status; promoting an admin is an API call and has no screen yet |
 | Credits | [B-1] #32, [B-2] #33, [F-1] #41, UI #376, #443, #410 | shipped; every balance is derived from append-only entries, and the portfolio shows profit and loss and how many shares a live sell order holds back |
-| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61, #429, #495, #566, #580, #592 | shipped, both sides: the price is the control that picks an outcome, a live price chart, and limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024). A trade's confirmation, or the warning that it could not be confirmed, shows even after the trader picks another outcome, and a trade sent again after no answer is made once and says so. A trade may name a price limit and executes within it at the current price (ADR 0029); the panel sends one of its own in #652 |
+| Trading | [T-1]–[T-8] #21–#28, UI #49, #50, #53, #61, #429, #495, #566, #580, #592 | shipped, both sides: the price is the control that picks an outcome, a live price chart, and limit orders, on two-outcome markets, that fill inside the trade that moves the price (ADR 0024). A trade's confirmation, or the warning that it could not be confirmed, shows even after the trader picks another outcome, and a trade sent again after no answer is made once and says so. A trade may name a price limit and executes within it at the current price (ADR 0029); the panel will send one of its own in #652, still open |
 | Discovery | [X-1]–[X-4] #34–#37, #446, #447, UI #54, #126, #209, #441, #444, #448, #450, #564 | shipped: search and filters, live prices, the trader's own holdings, bands for closing soon, trending and biggest movers, and cards that show the odds as a split bar and each outcome's change over the week |
 | Leaderboard | [L-1]–[L-3] #38–#40, UI #58 | shipped, both sides |
 | Layout and accessibility | #380, #437, #438, #452, #574 | every signed-in page fits a phone, with the navigation behind a menu button, and every text colour pair passes WCAG AA, including a browse chip's label while its price flashes |
@@ -387,8 +467,8 @@ another service is named.
   `service/test_concurrency.py::test_two_batches_racing_for_one_balance_debit_it_once`,
   `service/test_cascade_concurrency.py::test_a_trade_queued_behind_a_placement_fills_the_order_it_rested`,
   and `market_service/unit_test/service/test_publishing.py::test_publish_reads_the_clock_after_it_has_the_lock`.
-  A race test holds both sessions on a barrier, and is kept only if it fails
-  with the lock removed.
+  The rule for a new race test is that both sessions wait on a barrier and
+  the test fails with its lock removed; some older ones use a plain `gather`.
 - **A trade sent twice is made once.** The idempotency key is re-checked
   under the lock; a retry returns the original and writes nothing.
   `service/test_trade_replay.py::test_a_retry_returns_the_original_trade`,
@@ -404,8 +484,8 @@ another service is named.
 - **Entries are append-only, by a database trigger.**
   `service/test_append_only.py::test_an_entry_cannot_be_updated`,
   `::test_an_entry_cannot_be_deleted`.
-- **A trade names its slippage tolerance and executes within it at the
-  current price, or is refused with the figures**
+- **A trade that names a price limit executes within it at the current
+  price, or is refused with the figures**
   ([ADR 0029](docs/adr/0029-price-limits-replace-exact-quotes.md)).
   `service/test_trade_limits.py::test_a_buy_within_its_limit_executes_at_the_current_price_after_the_book_moved`,
   `::test_a_buy_beyond_its_limit_is_refused_with_the_current_total_and_nothing_moves`.
@@ -441,11 +521,11 @@ another service is named.
 
 Measured or decided, with the record that says so.
 
-- **One market is one lock.** About 84 ms per hold under load, so about 12
-  trades a second on one market, and a trade p95 of 4.72 s with 50 traders
-  on it, part lock queue and part CPU queue
-  ([`docs/load-test.md`](docs/load-test.md), 7 November). That is the
-  cost of serialising money through Postgres. The step past it, a single
+- **One market is one lock.** About 73 ms per hold under load, so about 14
+  trades a second on one market, and a trade p95 of 4.68 s with 50 traders
+  on it, with CPU to spare ([`docs/load-test.md`](docs/load-test.md),
+  8 November; on 7 November, before #667, 12 a second and 4.72 s). That is
+  the cost of serialising money through Postgres. The step past it, a single
   writer per market, is the proposed engine,
   [ADR 0031](docs/adr/0031-a-per-market-trading-engine.md).
 - **A hot market's lock queue no longer starves the ledger's reads, except
@@ -461,6 +541,14 @@ Measured or decided, with the record that says so.
   Reads and the readiness check share those two with everything else that
   takes no slot: cancels, settlement, void and the leaderboard refresher. A
   burst of cancels on a hot market can still use them up while it lasts.
+- **There is no admission control.** Nothing in the ledger bounds how long
+  a trade waits for its market: no lock timeout, and no cap on the queue in
+  each ledger (#669 asked for a timeout and was closed as not planned). Under
+  a burst on one market, each trade waits about one hold for every trade
+  ahead of it, and none is refused to keep the rest fast. A cap per market
+  that refuses at once with a retryable `503` is the usual answer, and is
+  not built. The gateway gives up on a request after 60 s while the trade
+  may still commit, so a client retries under the same idempotency key.
 - **A price is published after the trade commits, and a crash between the
   two loses that frame** ([ADR 0010](docs/adr/0010-realtime-price-broadcast.md)).
   A client that reconnects fetches a snapshot, which is the recovery path it
