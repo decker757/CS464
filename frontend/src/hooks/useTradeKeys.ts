@@ -9,7 +9,7 @@ import { readStoredTrades, removeStoredTrade, storeTrade, sweepExpiredTrades, ty
  *  `mayHaveCommitted` once an attempt under it got no answer or a 5xx.
  *  `isInFlight` while an attempt under it from this page has not ended.
  *  `sentAt` is when the latest attempt went out, or ended without an answer,
- *  in epoch milliseconds: what the minute below is counted from. */
+ *  in epoch milliseconds: what the wait below is counted from. */
 interface KeyAwaitingAnswer {
   key: string
   trade: SentTrade
@@ -20,11 +20,11 @@ interface KeyAwaitingAnswer {
 
 // How long after a trade's latest attempt was sent, or ended without an
 // answer, a "not found" is believed. A trade still queued on the ledger has
-// written nothing yet, and nothing on the servers bounds that wait, so an
-// earlier "not found" can be followed by its commit (ledger-service.md, the
-// trade lookup; #669 proposed bounding it and was closed). Before then, the
-// panel asks again.
-const NOT_FOUND_IS_FINAL_AFTER_MS = 60_000
+// written nothing yet, so an earlier "not found" can be followed by its commit
+// (ledger-service.md, the trade lookup). Nothing on the server bounds a
+// trade's wait (#669 was closed), so this is a margin well past the 60 s
+// gateway timeout and anything measured. Before then, the panel asks again.
+const NOT_FOUND_IS_FINAL_AFTER_MS = 300_000
 
 interface UseTradeKeysOptions {
   marketId: string
@@ -145,7 +145,7 @@ export function useTradeKeys({ marketId, traderId, onFoundCommitted }: UseTradeK
   }
 
   /** An attempt under `entry`'s key got no answer or a 5xx, so it may still
-   *  commit, and the minute starts again from now. Not stored again when a
+   *  commit, and the wait starts again from now. Not stored again when a
    *  check found the trade committed while this attempt was out: that check
    *  has forgotten the key, and this attempt could only have replayed it. */
   const markMayHaveCommitted = (entry: KeyAwaitingAnswer) => {
@@ -188,7 +188,7 @@ export function useTradeKeys({ marketId, traderId, onFoundCommitted }: UseTradeK
       removeStoredTrade(traderId, marketId, key)
     }
 
-    /** When the minute runs out for `entry`, or null while an attempt under
+    /** When the wait runs out for `entry`, or null while an attempt under
      *  it is out in any tab. Counted from its latest attempt in any tab: one
      *  sent elsewhere while this was being asked may itself be queued. */
     const finalAfter = async (entry: KeyAwaitingAnswer): Promise<number | null> => {
