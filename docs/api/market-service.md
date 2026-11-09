@@ -40,6 +40,34 @@ Why a flawed market is voided by the ledger first, by any administrator who
 has not traded it, and why the reason is kept on the market:
 [ADR 0025](../adr/0025-voiding-a-flawed-market.md).
 
+## Why a state change is its own endpoint
+
+Most of this service's writes are not edits to a market. They move it from one
+status to the next: publish, close, propose, approve, reject, send back,
+settle and void. Each one is its own `POST /markets/{id}/<action>`, not a
+`PATCH /markets/{id}` that sets `status`. That is a deliberate step away from
+nouns-only REST, because each step has four things of its own that one
+generic `PATCH` would have to hide inside a single route:
+
+- **Who may take it.** Any administrator may close a market early
+  ([ADR 0014](../adr/0014-closing-a-market-early.md)), but an outcome is
+  approved or rejected only by a second administrator, never the proposer
+  ([ADR 0016](../adr/0016-deciding-a-proposal.md)).
+- **The one status it starts from.** Anything else is refused with that
+  step's own `409` code, such as `market_not_submitted` for a publish.
+- **Its own fields.** A close needs a `reason`. An approval quotes the
+  `proposal_id` the reviewer read (ADR 0016). A publish takes no body at all
+  ([ADR 0008](../adr/0008-publishing-a-market.md)).
+- **Its own audit entry**, written in the same transaction
+  ([ADR 0006](../adr/0006-audit-log-write-path.md)).
+
+A route per step keeps each rule, its tests and its `/docs` entry in one
+place. It is the shape Stripe uses for `POST /payment_intents/{id}/capture`,
+and what Google's API design guide calls a custom method. The ledger follows
+it for `POST /ledger/orders/{id}/cancel` and `POST /ledger/markets/{id}/void`.
+Plain creates stay noun-shaped: `POST /markets` saves a draft, and
+`POST /ledger/markets/{id}/trades` makes a trade.
+
 ## Endpoints
 
 | Method | Path | Purpose |
