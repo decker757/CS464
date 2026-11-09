@@ -85,6 +85,22 @@ describe('describeTradeError on the two refusals that name figures', () => {
   })
 })
 
+describe('describeTradeError on a price that moved past the limit', () => {
+  // #644: the interim line while the panel fetches a fresh quote, the way
+  // quote_stale has one, so a refusal never reads as a generic failure.
+  it('says how far the price moved past the limit, and that a fresh quote is coming', () => {
+    const err = ledgerRefusal('price_beyond_limit', { limit: '5.1763', current_total: '5.3000', state_version: '2' })
+    expect(describeTradeError(err)).toBe(
+      'The price moved past your limit: this trade now comes to 5.3000 credits, and your limit was 5.1763. Getting a fresh quote…',
+    )
+  })
+
+  it('still says the price moved past the limit when the figures are missing', () => {
+    const err = ledgerRefusal('price_beyond_limit', {})
+    expect(describeTradeError(err)).toBe('The price moved past your limit. Getting a fresh quote…')
+  })
+})
+
 describe('describeOrderError', () => {
   it('names the bound a crossing buy has to stay below, in the units the limit field takes', () => {
     // ADR 0024 keeps the book one-sided, and the trader's own resting orders

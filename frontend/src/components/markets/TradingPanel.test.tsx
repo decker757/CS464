@@ -52,6 +52,26 @@ function mockPreviewError(code: string, message: string, status = 422, details?:
   )
 }
 
+// The two refusals that mean the price moved (#589, #644), as the ledger sends them.
+const PRICE_MOVED_DETAILS = {
+  quote_stale: { quoted: 1, current: 2 },
+  price_beyond_limit: { limit: '5.1763', current_total: '5.3000', state_version: 2 },
+}
+
+// The next trade is refused with `code`, but only once the returned function
+// is called, so the test can change the panel while the trade is in flight.
+function holdPriceMovedRefusal(code: keyof typeof PRICE_MOVED_DETAILS): () => void {
+  let answerTrade: () => void = () => {}
+  const tradeAnswered = new Promise<void>(resolve => { answerTrade = resolve })
+  server.use(
+    http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async () => {
+      await tradeAnswered
+      return HttpResponse.json({ error: { code, message: 'Refused.', details: PRICE_MOVED_DETAILS[code] } }, { status: 409 })
+    }),
+  )
+  return () => answerTrade()
+}
+
 // More shares of either outcome than any test here sells, so the sell clamp
 // is never what refuses a trade unless a test says what is held.
 const HELD_PLENTY = { 'o-yes': '100.0000', 'o-no': '100.0000' }
@@ -238,6 +258,122 @@ describe('TradingPanel', () => {
     expect(typeof sentBody?.idempotency_key).toBe('string')
   })
 
+  describe('price limits (#644)', () => {
+    function acceptTrade(record: (body: Record<string, unknown>) => void, total = '-5.1250') {
+      server.use(
+        http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async ({ request }) => {
+          record(await request.json() as Record<string, unknown>)
+          return HttpResponse.json({
+            transaction_id: 'tx-1', user_id: 'u1', market_id: MARKET_ID,
+            outcome_id: 'o-yes', side: 'buy', quantity: '10.0000', total, state_version: 3,
+          }, { status: 201 })
+        }),
+      )
+    }
+
+    it('sends a buy with the most it will pay, 1% over the quoted cost, and no minimum', async () => {
+      mockPreview(previewResponse())
+      let sentBody: Record<string, unknown> | undefined
+      acceptTrade(body => { sentBody = body })
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderPanel()
+      await typeQuantity(actor, '10')
+      await screen.findByLabelText('trade preview')
+
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+      await screen.findByText(/bought/i)
+
+      expect(sentBody).toMatchObject({ max_cost: '5.1763', state_version: 1 })
+      expect(sentBody).not.toHaveProperty('min_proceeds')
+    })
+
+    it('sends a sell with the least it will accept, 1% under the quoted proceeds, and no maximum', async () => {
+      mockPreview(previewResponse({ side: 'sell', total: '4.9876' }))
+      let sentBody: Record<string, unknown> | undefined
+      acceptTrade(body => { sentBody = body }, '4.9876')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderPanel()
+      await actor.click(screen.getByRole('button', { name: 'Sell' }))
+      await typeQuantity(actor, '10')
+      await screen.findByLabelText('trade preview')
+
+      await actor.click(screen.getByRole('button', { name: /^sell yes$/i }))
+      await waitFor(() => expect(sentBody).toBeDefined())
+
+      expect(sentBody).toMatchObject({ min_proceeds: '4.9377' })
+      expect(sentBody).not.toHaveProperty('max_cost')
+    })
+
+    it('shows the limit before the click, on both sides', async () => {
+      mockPreview(previewResponse())
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderPanel()
+      await typeQuantity(actor, '10')
+      expect(await screen.findByLabelText('trade preview')).toHaveTextContent(/pay at most\s*5\.1763 credits/i)
+
+      mockPreview(previewResponse({ side: 'sell', total: '4.9876' }))
+      await actor.click(screen.getByRole('button', { name: 'Sell' }))
+      await act(() => vi.advanceTimersByTimeAsync(300))
+      expect(await screen.findByLabelText('trade preview')).toHaveTextContent(/receive at least\s*4\.9377 credits/i)
+    })
+
+    it('confirms what the trade actually cost when the price moved within the limit, not the quote', async () => {
+      mockPreview(previewResponse())
+      acceptTrade(() => {}, '-5.1500')
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderPanel()
+      await typeQuantity(actor, '10')
+      await screen.findByLabelText('trade preview')
+
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+
+      expect(await screen.findByText(/bought 10\.0000 yes for 5\.1500 credits/i)).toBeInTheDocument()
+    })
+
+    it('re-quotes on price_beyond_limit, asks to confirm again, and sends the same key with the new limit', async () => {
+      let previewCalls = 0
+      server.use(
+        http.get(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/preview`, () => {
+          previewCalls += 1
+          return HttpResponse.json(previewCalls === 1
+            ? previewResponse({ state_version: 1 })
+            : previewResponse({ state_version: 2, total: '-5.3000' }))
+        }),
+      )
+      const sent: Record<string, unknown>[] = []
+      server.use(
+        http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, async ({ request }) => {
+          sent.push(await request.json() as Record<string, unknown>)
+          if (sent.length === 1) {
+            return HttpResponse.json(
+              { error: { code: 'price_beyond_limit', message: 'Beyond.', details: { limit: '5.1763', current_total: '5.3000', state_version: 2 } } },
+              { status: 409 },
+            )
+          }
+          return HttpResponse.json({
+            transaction_id: 'tx-1', user_id: 'u1', market_id: MARKET_ID,
+            outcome_id: 'o-yes', side: 'buy', quantity: '10.0000', total: '-5.3000', state_version: 3,
+          }, { status: 201 })
+        }),
+      )
+      const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderPanel()
+      await typeQuantity(actor, '10')
+      await screen.findByLabelText('trade preview')
+
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+      expect(await screen.findByText(/prices moved\. check the new quote and confirm again/i)).toBeInTheDocument()
+      expect(screen.getByLabelText('trade preview')).toHaveTextContent(/pay at most\s*5\.3530 credits/i)
+
+      await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+      await screen.findByText(/bought/i)
+
+      expect(sent).toHaveLength(2)
+      expect(sent[1].idempotency_key).toBe(sent[0].idempotency_key)
+      expect(sent[1]).toMatchObject({ max_cost: '5.3530', state_version: 2 })
+    })
+  })
+
   it('clears the quantity field, refetches the balance and re-reads the holding after a successful trade', async () => {
     mockPreview(previewResponse())
     const refetch = vi.fn(async () => {})
@@ -396,6 +532,9 @@ describe('TradingPanel', () => {
     await screen.findByText(/this market has closed/i)
     expect(screen.queryByText(/getting a fresh quote/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/check the new quote and confirm again/i)).not.toBeInTheDocument()
+    // Nothing in place says the trade was not made, so the alert above the
+    // tickets does, without asking for a price that is not coming (#589).
+    expect(screen.getByText(/^Your buy of 10 Yes was not made: the price moved before it went through\.$/)).toBeInTheDocument()
   })
 
   it('shows the balance and amount needed on insufficient_funds, formatted like everywhere else', async () => {
@@ -521,6 +660,78 @@ describe('TradingPanel', () => {
     await waitFor(() => expect(keys).toHaveLength(2))
 
     expect(keys[0]).toBe(keys[1])
+  })
+
+  it.each(['quote_stale', 'price_beyond_limit'] as const)('says a trade refused as %s was not made, naming it, after the trader picked another outcome', async code => {
+    mockPreview(previewResponse())
+    const answerTrade = holdPriceMovedRefusal(code)
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { rerender } = renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    // The No price block, clicked while the Yes buy is still in flight (#589).
+    rerender(panel({ outcomeId: 'o-no' }))
+    answerTrade()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/buy of 10 Yes was not made/i)
+  })
+
+  it('says how far past its limit a refused trade went, after the trader picked another outcome', async () => {
+    // The interim line with the figures lasts only until the re-quote
+    // answers; the alert above the tickets is what stays.
+    mockPreview(previewResponse())
+    const answerTrade = holdPriceMovedRefusal('price_beyond_limit')
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { rerender } = renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    rerender(panel({ outcomeId: 'o-no' }))
+    answerTrade()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /^Your buy of 10 Yes was not made: the price moved before it went through\. It now comes to 5\.3000 credits, past your limit of 5\.1763\.$/,
+    )
+  })
+
+  it('says a trade refused as quote_stale was not made after the trader switched to the Limit ticket', async () => {
+    mockPreview(previewResponse())
+    const answerTrade = holdPriceMovedRefusal('quote_stale')
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel({ limitOrdersAllowed: true })
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    // The market ticket, where "Prices moved" would show, is not on screen.
+    await actor.click(screen.getByRole('button', { name: 'Limit' }))
+    answerTrade()
+
+    expect(await screen.findByText(/buy of 10 Yes was not made/i)).toBeInTheDocument()
+  })
+
+  it('says a quote_stale refusal once, in place, while the trader is still on that trade', async () => {
+    mockPreview(previewResponse())
+    server.use(
+      http.post(`${LEDGER_BASE}/ledger/markets/${MARKET_ID}/trades`, () =>
+        HttpResponse.json(
+          { error: { code: 'quote_stale', message: 'Stale.', details: { quoted: 1, current: 2 } } },
+          { status: 409 },
+        ),
+      ),
+    )
+    const actor = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPanel()
+    await typeQuantity(actor, '10')
+    await screen.findByLabelText('trade preview')
+
+    await actor.click(screen.getByRole('button', { name: /^buy yes$/i }))
+    await screen.findByText(/prices moved\. check the new quote/i)
+
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
   })
 
   it('says a trade with no answer could not be confirmed, naming it, after the trader picked another outcome', async () => {

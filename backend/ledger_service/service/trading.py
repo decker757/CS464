@@ -138,6 +138,7 @@ from core.errors import (
     InsufficientSharesHeld,
     MarketClosed,
     QuoteStale,
+    TradeNotFound,
     UnknownOutcome,
 )
 from core.limit_orders import PlannedFill, RestingOrder, cascade_of
@@ -559,6 +560,28 @@ async def read_trade_context(
         reserved_shares=first.reserved_shares,
         db_now=first.db_now,
     )
+
+
+async def get_by_key(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    market_id: uuid.UUID,
+    client_key: str,
+) -> TradeResult:
+    """The trade this caller committed in this market under `client_key`, as
+    a retry would replay it. #584.
+
+    Raises `TradeNotFound` when none did. The key is derived from the caller
+    and the market, so another trader's trade can never match. Unlocked and
+    read-only: the answer decides no write here.
+    """
+    transaction = await posting.find_by_idempotency_key(
+        session, trade_key(user_id, market_id, client_key)
+    )
+    if transaction is None:
+        raise TradeNotFound
+    return result_of(transaction)
 
 
 async def list_outcomes(

@@ -56,6 +56,12 @@ UtcDatetime = Annotated[datetime, AfterValidator(as_utc)]
 # DECISIONS.md, "The batch snapshot takes at most 200 ids, and refuses more".
 MAX_SNAPSHOT_IDS = 200
 
+# The longest client idempotency key a trade or an order takes: what is left
+# of `transactions.idempotency_key`'s 255 after an 80-character derivation
+# prefix. The trade lookup takes the same bound, so every key the trade route
+# accepts can be looked up.
+MAX_CLIENT_KEY_LENGTH = 175
+
 
 class BalanceOut(BaseModel):
     """What one user holds, as at this request."""
@@ -632,7 +638,7 @@ class TradeIn(BaseModel):
     )
     idempotency_key: str = Field(
         min_length=1,
-        max_length=175,
+        max_length=MAX_CLIENT_KEY_LENGTH,
         description=(
             "One trade, once, however many times this is sent. The stored "
             "key is derived — `trade:<user_id>:<market_id>:<this value>` — "
@@ -751,7 +757,7 @@ class OrderIn(BaseModel):
     )
     idempotency_key: str = Field(
         min_length=1,
-        max_length=175,
+        max_length=MAX_CLIENT_KEY_LENGTH,
         description=(
             "One order, once. The stored key is "
             "`order:<user_id>:<market_id>:<this value>`, so this string only "

@@ -297,8 +297,16 @@ export interface TradeRequest {
   outcome_id: string
   side: TradeSide
   quantity: string
+  // Decides nothing once a limit is sent: the ledger then prices the trade at
+  // the current book and checks it against the limit instead (#640, #644).
   state_version: number
   idempotency_key: string
+  // The most a buy will pay, and the least a sell will accept, at four places
+  // (#644). One or the other, by side; neither when no limit could be worked
+  // out, and then the ledger keeps the exact state_version rule, for now: once
+  // every client sends a limit, the ledger will refuse a trade without one.
+  max_cost?: string
+  min_proceeds?: string
 }
 
 export interface TradeResult {
