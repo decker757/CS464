@@ -1,0 +1,97 @@
+%% 19 — The ledger schema
+%% Drawn from: ADR 0005, ADR 0009, ADR 0017, ADR 0018, ADR 0019, ADR 0021, ADR 0024, ADR 0025,
+%%   backend/ledger_service/model/entities.py
+%% -
+%% The detailed reference in docs/architecture.md, where the prose beside it
+%% says what each part shows. Moved from an inline block, unchanged, so
+%% GitHub stops clipping its labels.
+erDiagram
+    accounts {
+        uuid id PK
+        varchar kind "user, platform or market_pool"
+        uuid owner_id "unique with kind; names auth.users, a market, or all zeros for the platform, and cannot be an FK"
+        timestamptz created_at
+    }
+    transactions {
+        uuid id PK
+        varchar kind "signup_grant, market_seed, trade_buy, trade_sell, settlement, settlement_residue, void_refund, void_residue"
+        varchar idempotency_key "unique; derived by the server, never stored as sent"
+        varchar request_fingerprint "over the legs, so a reused key naming different money is refused"
+        timestamptz occurred_at
+        jsonb context
+    }
+    entries {
+        uuid id PK
+        uuid transaction_id FK
+        uuid account_id FK
+        numeric amount "signed and never zero; a balance is SUM over an account"
+        timestamptz created_at
+    }
+    market_books {
+        uuid market_id PK "names market.markets, and cannot be an FK"
+        numeric liquidity_b "b, snapshotted at first touch and never re-read"
+        numeric seed_subsidy
+        uuid pool_account_id FK
+        bigint state_version "advanced in the same transaction as the trade"
+        numeric credits_traded "every trade's credits, raised beside state_version"
+        timestamptz state_changed_at
+        timestamptz opened_at
+    }
+    market_outcomes {
+        uuid market_id PK
+        uuid outcome_id PK
+        int position "unique within the market"
+        numeric q "the LMSR share vector the price is computed from"
+    }
+    positions {
+        uuid user_id PK
+        uuid market_id PK, FK
+        uuid outcome_id PK, FK
+        numeric quantity "never negative; no shorting"
+        numeric cost_basis
+        timestamptz updated_at
+    }
+    market_results {
+        uuid market_id PK "also the FK to market_books"
+        varchar kind "settled or voided"
+        uuid outcome_id "the winner, FK with market_id into market_outcomes; null on a void"
+        timestamptz recorded_at
+        text reason "a void's, set exactly when voided"
+        uuid voided_by "the administrator who voided, set exactly when voided"
+    }
+    orders {
+        uuid id PK
+        bigint seq "one identity for the table; at one price, orders fill in seq order"
+        uuid user_id
+        uuid market_id FK
+        uuid outcome_id FK
+        varchar side
+        numeric limit_price "strictly between 0 and 1"
+        numeric quantity
+        numeric filled_quantity
+        numeric budget "set if and only if the side is buy"
+        varchar status
+        varchar idempotency_key "unique"
+    }
+    leaderboard_generations {
+        uuid id PK
+        timestamptz computed_at
+        int ranked_users
+    }
+    leaderboard_entries {
+        uuid generation_id FK "part of the primary key, with rank"
+        int rank "part of the primary key"
+        uuid user_id
+        varchar username "stored, because the ledger cannot read auth.users"
+        numeric net_worth
+    }
+
+    accounts ||--o{ entries : "balance is SUM(amount) over these"
+    transactions ||--|{ entries : "legs that sum to zero"
+    accounts ||--o| market_books : "its pool account"
+    market_books ||--|{ market_outcomes : "the book's outcomes and their q"
+    market_outcomes ||--o{ positions : "what a user holds"
+    market_outcomes ||--o{ orders : "resting against"
+    market_books ||--o| market_results : "one row per finished market"
+    market_outcomes |o--o| market_results : "the winner; none on a void"
+    leaderboard_generations ||--o{ leaderboard_entries : "one generation's ranking"

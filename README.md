@@ -564,9 +564,10 @@ Measured or decided, with the record that says so.
 
 ## Architecture
 
-Three diagrams, in [`docs/architecture.md`](docs/architecture.md). They are
-mermaid, so GitHub renders them and there is nothing to install or regenerate,
-and each one names the ADR or `DECISIONS.md` entry it was drawn from — a
+Three diagrams, in [`docs/architecture.md`](docs/architecture.md), the ERD
+split in two. Each is a Mermaid source in `docs/diagrams/`, rendered to SVG
+by `docs/diagrams/render.py` (GitHub's own Mermaid rendering clips their
+labels), and each one names the ADR or `DECISIONS.md` entry it was drawn from — a
 diagram with no provenance drifts away from the decision it describes and
 nobody notices.
 
