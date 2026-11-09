@@ -568,8 +568,6 @@ Measured or decided, with the record that says so.
   one database** ([ADR 0006](docs/adr/0006-audit-log-write-path.md)).
 - **One managed Postgres, one region, and no staging environment.** Staging
   is dropped from scope (ADR 0026, amended 2026-11-08).
-- **The trade panel does not yet send its own slippage tolerance.** The
-  backend accepts one; #652 is the frontend half.
 
 ## Architecture
 
